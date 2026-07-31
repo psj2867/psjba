@@ -53,14 +53,14 @@ class TestMainWindowChromeButton:
         w = MainWindow(mock_config, mock_db, mock_manager)
         qtbot.addWidget(w)
         w._set_chrome_status("connected")
-        assert "Chrome 연결 됨" in w._chrome_btn.text()
+        assert "Chrome 연결됨" in w._chrome_btn.text()
         assert w._chrome_btn.isEnabled()
 
     def test_set_disconnected(self, qtbot, mock_config, mock_db, mock_manager):
         w = MainWindow(mock_config, mock_db, mock_manager)
         qtbot.addWidget(w)
         w._set_chrome_status("disconnected")
-        assert "Chrome 연결 안 됨" in w._chrome_btn.text()
+        assert "Chrome 연결하기" in w._chrome_btn.text()
         assert w._chrome_btn.isEnabled()
 
     def test_set_connecting(self, qtbot, mock_config, mock_db, mock_manager):

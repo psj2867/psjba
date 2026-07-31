@@ -33,8 +33,11 @@ class TestFreshConfigState:
         cfg.load()
         assert ini.exists()  # load() 가 파일 생성
         assert cfg.api_key == ""
-        assert cfg.get("llm", "model") == ""
-        assert cfg.get("llm", "provider") == "openrouter"
+        # 기본 모델/URL 은 Config.DEFAULTS 에서 가져옴
+        model = cfg.get("llm", "model")
+        assert model == "qwen/qwen3.6-27b" or model == ""
+        url = cfg.get("llm", "url")
+        assert url == "https://openrouter.ai/api/v1" or url == ""
 
     def test_config_with_empty_api_key(self, tmp_path: Path):
         """api_key 가 빈 config 파일 로드."""

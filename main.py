@@ -8,6 +8,7 @@
 
 import asyncio
 import logging
+import os
 import signal
 import sys
 from pathlib import Path
@@ -34,7 +35,7 @@ def setup_logging(config: Config) -> None:
     root_logger.setLevel(logging.DEBUG)
 
     console = logging.StreamHandler(sys.stderr)
-    console.setLevel(logging.WARNING)
+    console.setLevel(logging.INFO)
     console.setFormatter(
         logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
     )
@@ -53,7 +54,9 @@ def setup_logging(config: Config) -> None:
             )
             root_logger.addHandler(file_handler)
             root_logger.setLevel(level)
-            logger.info(f"Logging enabled: level={level_str}, path={log_path}")
+            logger.info("Logging enabled: level=%s path=%s", level_str, log_path)
+    else:
+        logger.info("Logging disabled (console only)")
 
 
 def setup_signal_handlers(
@@ -75,19 +78,24 @@ def setup_signal_handlers(
 async def run(config: Config) -> None:
     shutdown_event = asyncio.Event()
 
+    logger.info("Step 1/10: Config loaded (path=%s)", CONFIG_PATH)
+
+    # DB
     db_path = config.get("sqlite", "path", "./browser_agent.data")
     db = Database(db_path)
     await db.connect()
     await db.initialize()
-    logger.info(f"Database connected: {db_path}")
+    logger.info("Step 2/10: Database ready (path=%s)", db_path)
 
+    # 워크스페이스
     workspace_dir = config.get("workspace", "workspace_dir", "./psjba_temp")
     Path(workspace_dir).mkdir(parents=True, exist_ok=True)
     Path(workspace_dir, "screenshots").mkdir(parents=True, exist_ok=True)
     Path(workspace_dir, "downloads").mkdir(parents=True, exist_ok=True)
     Path(workspace_dir, "exports").mkdir(parents=True, exist_ok=True)
-    logger.info(f"Workspace ready: {workspace_dir}")
+    logger.info("Step 3/10: Workspace ready (dir=%s)", workspace_dir)
 
+    # PlaywrightManager
     manager = PlaywrightManager(
         cdp_host=config.get("cdp", "host", "127.0.0.1"),
         cdp_port=config.get("cdp", "port", 9222),
@@ -97,17 +105,24 @@ async def run(config: Config) -> None:
         headless=config.get("chrome", "headless", False),
         workspace_dir=workspace_dir,
     )
+    logger.info("Step 4/10: PlaywrightManager created (cdp=%s:%s, headless=%s)",
+                config.get("cdp", "host", "127.0.0.1"),
+                config.get("cdp", "port", 9222),
+                config.get("chrome", "headless", False))
 
+    # Cron
     cron_executor = CronExecutor(config=config, db=db, manager=manager)
     cron_scheduler = CronScheduler()
     cron_scheduler.set_dependencies(db=db, executor=cron_executor)
     await cron_scheduler.start()
-    logger.info(
-        f"CronScheduler started: {cron_scheduler.registered_count} jobs"
-    )
+    logger.info("Step 5/10: CronScheduler started (%d jobs)",
+                cron_scheduler.registered_count)
 
+    # MainWindow
     window = MainWindow(config=config, db=db, manager=manager)
+    logger.info("Step 6/10: MainWindow created")
 
+    # 시그널
     window.prompt_submitted.connect(
         lambda text: asyncio.ensure_future(
             _handle_prompt(config, db, manager, window, text)
@@ -116,11 +131,14 @@ async def run(config: Config) -> None:
     window.session_reset_requested.connect(
         lambda: asyncio.ensure_future(_handle_session_reset(db, window))
     )
+    setup_signal_handlers(shutdown_event=shutdown_event)
+    logger.info("Step 7/10: Signals connected")
 
-    setup_signal_handlers(
-        shutdown_event=shutdown_event,
-    )
+    # 창 닫힘 → shutdown trigger
+    window.closed.connect(shutdown_event.set)
+    logger.info("Step 7b/10: Window closed signal connected")
 
+    # 세션 복원
     session_id = await db.get_current_session_id()
     if session_id:
         messages = await db.get_messages(session_id, limit=100)
@@ -130,21 +148,25 @@ async def run(config: Config) -> None:
                 for m in messages
             ]
             window._chat.load_messages(msg_dicts)
-            logger.info(f"Session restored: {session_id} ({len(messages)} messages)")
+            logger.info("Step 8/10: Session restored (id=%s, %d msgs)",
+                        session_id, len(messages))
     else:
         from src.models.schemas import Session
         session = Session(title="새 대화", type="chat")
         await db.create_session(session)
         await db.set_current_session_id(session.id)
         session_id = session.id
-        logger.info(f"New session created: {session_id}")
+        logger.info("Step 8/10: New session created (id=%s)", session_id)
 
+    # UI 표시
+    logger.info("Step 9/10: Showing window")
     window.show()
 
+    # 필수값 확인
     api_key = config.api_key
     model = config.get("llm", "model", "")
     if not api_key or not model:
-        logger.warning("api_key or model not set, opening settings dialog")
+        logger.warning("Step 10/10: api_key or model not set, prompting user")
         from PySide6.QtWidgets import QMessageBox
         QMessageBox.information(
             window,
@@ -152,8 +174,10 @@ async def run(config: Config) -> None:
             "API 키와 모델을 설정(⚙️)에서 설정해주세요.",
         )
         window._open_settings()
+    else:
+        logger.info("Step 10/10: api_key and model configured")
 
-    logger.info("Application started")
+    logger.info("Application started successfully")
 
     try:
         # run_forever 대신 shutdown_event 를 기다림
@@ -168,6 +192,10 @@ async def run(config: Config) -> None:
         if manager.is_connected:
             await manager.disconnect()
         await db.close()
+        # QApplication 정리 — Qt 이벤트 루프가 아직 활성 상태이므로 quit()이 유효함
+        app = qasync.QApplication.instance()
+        if app:
+            app.quit()
         logger.info("Application stopped")
 
 
@@ -178,6 +206,7 @@ async def _handle_prompt(
     window: MainWindow,
     text: str,
 ) -> None:
+    logger.info("User prompt: %s", text[:80])
     from langchain_core.messages import HumanMessage, AIMessage
     from src.agent.graph import create_agent_graph
     from src.models.schemas import Message
@@ -257,6 +286,7 @@ async def _handle_prompt(
 
 
 async def _handle_session_reset(db: Database, window: MainWindow) -> None:
+    logger.info("Session reset requested")
     from src.models.schemas import Session
 
     current_id = await db.get_current_session_id()
@@ -307,6 +337,10 @@ def main() -> None:
         pass
 
     logger.info("PSJBA exited.")
+
+    # run() finally 에서 모든 자원 정리 + QApplication.quit() 완료
+    # 그래도 QApplication 싱글톤이 프로세스를 잡고 있으면 os._exit(0) 로 강제 종료
+    os._exit(0)
 
 
 if __name__ == "__main__":

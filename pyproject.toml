@@ -23,3 +23,8 @@ dependencies = [
 
 [tool.shiv]
 entry_point = "main:main"
+
+[tool.pytest.ini_options]
+markers = [
+    "openrouter: OpenRouter API 호출이 필요한 테스트 (네트워크 필요)",
+]
