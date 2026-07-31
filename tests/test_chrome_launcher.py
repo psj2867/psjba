@@ -89,25 +89,36 @@ class TestProcessManagement:
         assert launcher.is_chrome_process_alive() is False
 
 
-@pytest.mark.asyncio
 class TestAsyncMethods:
-    async def test_quick_check_not_connected(self):
+    def test_quick_check_not_connected(self):
         """연결 안 된 상태에서 quick_check는 False."""
-        launcher = ChromeLauncher(host="127.0.0.1", port=19999)
-        result = await launcher.quick_check()
-        assert result is False
+        import asyncio
+        async def _test():
+            from src.chrome.launcher import ChromeLauncher
+            launcher = ChromeLauncher(host="127.0.0.1", port=19999)
+            return await launcher.quick_check()
+        assert asyncio.run(_test()) is False
 
-    async def test_check_cdp_connection_not_connected(self):
-        launcher = ChromeLauncher(host="127.0.0.1", port=19999)
-        result = await launcher.check_cdp_connection(timeout=0.5)
-        assert result is False
+    def test_check_cdp_connection_not_connected(self):
+        import asyncio
+        async def _test():
+            from src.chrome.launcher import ChromeLauncher
+            launcher = ChromeLauncher(host="127.0.0.1", port=19999)
+            return await launcher.check_cdp_connection(timeout=0.5)
+        assert asyncio.run(_test()) is False
 
-    async def test_launch_chrome_no_path(self):
-        launcher = ChromeLauncher(chrome_path="")
-        result = await launcher.launch_chrome()
-        assert result is False
+    def test_launch_chrome_no_path(self):
+        import asyncio
+        async def _test():
+            from src.chrome.launcher import ChromeLauncher
+            launcher = ChromeLauncher(chrome_path="")
+            return await launcher.launch_chrome()
+        assert asyncio.run(_test()) is False
 
-    async def test_launch_chrome_path_not_exist(self):
-        launcher = ChromeLauncher(chrome_path="/nonexistent/chrome.exe")
-        result = await launcher.launch_chrome()
-        assert result is False
+    def test_launch_chrome_path_not_exist(self):
+        import asyncio
+        async def _test():
+            from src.chrome.launcher import ChromeLauncher
+            launcher = ChromeLauncher(chrome_path="/nonexistent/chrome.exe")
+            return await launcher.launch_chrome()
+        assert asyncio.run(_test()) is False
