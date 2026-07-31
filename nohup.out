@@ -1,0 +1,25 @@
+[0m
+  ⠀                                ▄     
+  █▀▀█ █▀▀█ █▀▀█ █▀▀▄ █▀▀▀ █▀▀█ █▀▀█ █▀▀█
+  █  █ █  █ █▀▀▀ █  █ █    █  █ █  █ █▀▀▀
+  ▀▀▀▀ █▀▀▀ ▀▀▀▀ ▀  ▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀
+[0m
+[94m[1m  Local access:       [0m http://localhost:4096
+[94m[1m  Network access:     [0m http://10.0.0.243:4096
+662 |     var file = this.spawnfile = options.file, spawnargs;
+663 |     if (options.args === @undefined)
+664 |       spawnargs = this.spawnargs = [];
+665 |     else
+666 |       validateArray(options.args, "options.args"), spawnargs = this.spawnargs = options.args;
+667 |       if (this.#handle = Bun.spawn({
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              ^
+error: Executable not found in $PATH: "xdg-open"
+      path: "xdg-open",
+     errno: -2,
+   syscall: "spawn xdg-open",
+ spawnargs: [ "http://localhost:4096" ],
+      code: "ENOENT"
+
+      at spawn (node:child_process:667:35)
+      at spawn (node:child_process:14:39)
+      at <anonymous> (/$bunfs/root/chunk-xwzjdf62.js:2:3353)

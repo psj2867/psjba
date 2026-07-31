@@ -1,0 +1,484 @@
+import json
+import logging
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Optional
+from uuid import uuid4
+
+import aiosqlite
+
+from src.models.schemas import CronJob, Message, Meta, Session
+
+logger = logging.getLogger("psjba.database")
+
+SCHEMA_VERSION = "1"
+APP_VERSION = "0.1.0"
+
+CREATE_TABLE_META = """
+CREATE TABLE IF NOT EXISTS psjba_meta (
+    key   TEXT PRIMARY KEY NOT NULL,
+    value TEXT NOT NULL
+);
+"""
+
+CREATE_TABLE_SESSION = """
+CREATE TABLE IF NOT EXISTS psjba_session (
+    id          TEXT PRIMARY KEY NOT NULL,
+    title       TEXT NOT NULL DEFAULT '새 대화',
+    type        TEXT NOT NULL DEFAULT 'chat' CHECK(type IN ('chat', 'cron')),
+    cron_job_id TEXT REFERENCES psjba_cron_job(id),
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL,
+    status      TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'archived', 'deleted'))
+);
+"""
+
+CREATE_TABLE_MESSAGE = """
+CREATE TABLE IF NOT EXISTS psjba_message (
+    id          TEXT PRIMARY KEY NOT NULL,
+    session_id  TEXT NOT NULL REFERENCES psjba_session(id),
+    role        TEXT NOT NULL CHECK(role IN ('user', 'assistant', 'tool', 'system')),
+    content     TEXT NOT NULL,
+    token_usage TEXT,
+    model       TEXT,
+    created_at  TEXT NOT NULL
+);
+"""
+
+CREATE_TABLE_CRON_JOB = """
+CREATE TABLE IF NOT EXISTS psjba_cron_job (
+    id          TEXT PRIMARY KEY NOT NULL,
+    name        TEXT NOT NULL,
+    schedule    TEXT NOT NULL,
+    prompt      TEXT NOT NULL,
+    status      TEXT NOT NULL DEFAULT 'enable' CHECK(status IN ('enable', 'disable', 'deleted')),
+    last_run_at TEXT,
+    next_run_at TEXT,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+"""
+
+CREATE_MESSAGE_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_message_session ON psjba_message(session_id, created_at);
+"""
+
+CREATE_FTS5_TABLE = """
+CREATE VIRTUAL TABLE IF NOT EXISTS psjba_message_fts USING fts5(
+    content,
+    session_id UNINDEXED,
+    content='psjba_message',
+    content_rowid='rowid'
+);
+"""
+
+FTS5_TRIGGERS = [
+    """
+    CREATE TRIGGER IF NOT EXISTS psjba_message_ai AFTER INSERT ON psjba_message BEGIN
+        INSERT INTO psjba_message_fts(rowid, content, session_id)
+        VALUES (new.rowid, new.content, new.session_id);
+    END;
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS psjba_message_ad AFTER DELETE ON psjba_message BEGIN
+        INSERT INTO psjba_message_fts(psjba_message_fts, rowid, content, session_id)
+        VALUES ('delete', old.rowid, old.content, old.session_id);
+    END;
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS psjba_message_au AFTER UPDATE ON psjba_message BEGIN
+        INSERT INTO psjba_message_fts(psjba_message_fts, rowid, content, session_id)
+        VALUES ('delete', old.rowid, old.content, old.session_id);
+        INSERT INTO psjba_message_fts(rowid, content, session_id)
+        VALUES (new.rowid, new.content, new.session_id);
+    END;
+    """,
+]
+
+
+class Database:
+    def __init__(self, db_path: str = "./browser_agent.data"):
+        self._db_path = str(Path(db_path).resolve())
+        self._conn: Optional[aiosqlite.Connection] = None
+
+    async def connect(self) -> None:
+        self._conn = await aiosqlite.connect(self._db_path)
+        self._conn.row_factory = aiosqlite.Row
+        await self._conn.execute("PRAGMA journal_mode=WAL;")
+        await self._conn.execute("PRAGMA foreign_keys=ON;")
+
+    async def close(self) -> None:
+        if self._conn:
+            await self._conn.close()
+            self._conn = None
+
+    @property
+    def conn(self) -> aiosqlite.Connection:
+        if self._conn is None:
+            raise RuntimeError("Database not connected")
+        return self._conn
+
+    async def initialize(self) -> None:
+        await self.conn.execute(CREATE_TABLE_META)
+        await self.conn.execute(CREATE_TABLE_CRON_JOB)
+        await self.conn.execute(CREATE_TABLE_SESSION)
+        await self.conn.execute(CREATE_TABLE_MESSAGE)
+        await self.conn.execute(CREATE_MESSAGE_INDEX)
+        await self.conn.execute(CREATE_FTS5_TABLE)
+        for trigger in FTS5_TRIGGERS:
+            await self.conn.execute(trigger)
+        await self.conn.commit()
+
+        stored_version = await self._get_meta("schema_version")
+        if stored_version is None:
+            await self._set_meta("schema_version", SCHEMA_VERSION)
+            await self._set_meta("app_version", APP_VERSION)
+        elif stored_version != SCHEMA_VERSION:
+            raise RuntimeError(
+                f"Schema version mismatch: DB={stored_version}, code={SCHEMA_VERSION}"
+            )
+
+    async def _get_meta(self, key: str) -> Optional[str]:
+        cursor = await self.conn.execute(
+            "SELECT value FROM psjba_meta WHERE key = ?", (key,)
+        )
+        row = await cursor.fetchone()
+        return row["value"] if row else None
+
+    async def _set_meta(self, key: str, value: str) -> None:
+        await self.conn.execute(
+            "INSERT OR REPLACE INTO psjba_meta(key, value) VALUES (?, ?)",
+            (key, value),
+        )
+
+    async def get_meta(self, key: str) -> Optional[str]:
+        return await self._get_meta(key)
+
+    async def set_meta(self, key: str, value: str) -> None:
+        await self._set_meta(key, value)
+        await self.conn.commit()
+
+    async def get_current_session_id(self) -> Optional[str]:
+        val = await self._get_meta("current_session_id")
+        if val:
+            cursor = await self.conn.execute(
+                "SELECT id FROM psjba_session WHERE id = ? AND status = 'active'",
+                (val,),
+            )
+            row = await cursor.fetchone()
+            if row:
+                return val
+        return None
+
+    async def set_current_session_id(self, session_id: str) -> None:
+        await self._set_meta("current_session_id", session_id)
+        await self.conn.commit()
+
+    async def update_last_run_at(self) -> None:
+        now = datetime.now().isoformat()
+        await self._set_meta("last_run_at", now)
+        await self.conn.commit()
+
+    async def create_session(self, session: Session) -> Session:
+        await self.conn.execute(
+            """INSERT INTO psjba_session(id, title, type, cron_job_id, created_at, updated_at, status)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                session.id,
+                session.title,
+                session.type,
+                session.cron_job_id,
+                session.created_at.isoformat(),
+                session.updated_at.isoformat(),
+                session.status,
+            ),
+        )
+        await self.conn.commit()
+        return session
+
+    async def archive_session(self, session_id: str) -> None:
+        now = datetime.now().isoformat()
+        await self.conn.execute(
+            "UPDATE psjba_session SET status = 'archived', updated_at = ? WHERE id = ?",
+            (now, session_id),
+        )
+        await self.conn.commit()
+
+    async def get_session(self, session_id: str) -> Optional[Session]:
+        cursor = await self.conn.execute(
+            "SELECT * FROM psjba_session WHERE id = ?", (session_id,)
+        )
+        row = await cursor.fetchone()
+        return self._row_to_session(row) if row else None
+
+    async def update_session_title(
+        self, session_id: str, title: str
+    ) -> None:
+        now = datetime.now().isoformat()
+        await self.conn.execute(
+            "UPDATE psjba_session SET title = ?, updated_at = ? WHERE id = ?",
+            (title, now, session_id),
+        )
+        await self.conn.commit()
+
+    async def list_sessions(
+        self,
+        page: int = 1,
+        page_size: int = 20,
+        session_type: Optional[str] = None,
+    ) -> tuple[list[dict[str, Any]], int]:
+        conditions = ["s.status != 'deleted'"]
+        params: list[Any] = []
+        if session_type:
+            conditions.append("s.type = ?")
+            params.append(session_type)
+        where = " AND ".join(conditions)
+
+        count_cursor = await self.conn.execute(
+            f"SELECT COUNT(*) FROM psjba_session s WHERE {where}", params
+        )
+        count_row = await count_cursor.fetchone()
+        total = count_row[0]
+
+        offset = (page - 1) * page_size
+        cursor = await self.conn.execute(
+            f"""SELECT s.*, 
+                       (SELECT content FROM psjba_message 
+                        WHERE session_id = s.id AND role = 'user' 
+                        ORDER BY created_at ASC LIMIT 1) as first_prompt
+                FROM psjba_session s
+                WHERE {where}
+                ORDER BY s.created_at DESC
+                LIMIT ? OFFSET ?""",
+            (*params, page_size, offset),
+        )
+        rows = await cursor.fetchall()
+        sessions = [dict(r) for r in rows]
+        return sessions, total
+
+    async def count_cron_sessions(self, cron_job_id: str) -> int:
+        cursor = await self.conn.execute(
+            "SELECT COUNT(*) FROM psjba_session WHERE cron_job_id = ? AND status != 'deleted'",
+            (cron_job_id,),
+        )
+        row = await cursor.fetchone()
+        return row[0]
+
+    async def archive_cron_sessions(self, cron_job_id: str) -> int:
+        now = datetime.now().isoformat()
+        cursor = await self.conn.execute(
+            """UPDATE psjba_session 
+               SET status = 'archived', updated_at = ? 
+               WHERE cron_job_id = ? AND status = 'active'""",
+            (now, cron_job_id),
+        )
+        await self.conn.commit()
+        return cursor.rowcount
+
+    async def save_message(self, message: Message) -> Message:
+        await self.conn.execute(
+            """INSERT INTO psjba_message(id, session_id, role, content, token_usage, model, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                message.id,
+                message.session_id,
+                message.role,
+                message.content,
+                message.token_usage,
+                message.model,
+                message.created_at.isoformat(),
+            ),
+        )
+        await self.conn.commit()
+        return message
+
+    async def get_messages(
+        self,
+        session_id: str,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[Message]:
+        cursor = await self.conn.execute(
+            """SELECT * FROM psjba_message 
+               WHERE session_id = ? 
+               ORDER BY created_at ASC
+               LIMIT ? OFFSET ?""",
+            (session_id, limit, offset),
+        )
+        rows = await cursor.fetchall()
+        return [self._row_to_message(r) for r in rows]
+
+    async def get_message_count(self, session_id: str) -> int:
+        cursor = await self.conn.execute(
+            "SELECT COUNT(*) FROM psjba_message WHERE session_id = ?",
+            (session_id,),
+        )
+        row = await cursor.fetchone()
+        return row[0]
+
+    async def search_messages(
+        self, session_id: str, query: str, limit: int = 20
+    ) -> list[dict[str, Any]]:
+        cursor = await self.conn.execute(
+            """SELECT m.id, m.role, m.content, m.created_at
+               FROM psjba_message_fts fts
+               JOIN psjba_message m ON m.rowid = fts.rowid
+               WHERE fts.session_id = ? AND fts.content MATCH ?
+               ORDER BY m.created_at DESC
+               LIMIT ?""",
+            (session_id, query, limit),
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+    async def create_cron_job(self, job: CronJob) -> CronJob:
+        await self.conn.execute(
+            """INSERT INTO psjba_cron_job(id, name, schedule, prompt, status, last_run_at, next_run_at, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                job.id,
+                job.name,
+                job.schedule,
+                job.prompt,
+                job.status,
+                job.last_run_at.isoformat() if job.last_run_at else None,
+                job.next_run_at.isoformat() if job.next_run_at else None,
+                job.created_at.isoformat(),
+                job.updated_at.isoformat(),
+            ),
+        )
+        await self.conn.commit()
+        return job
+
+    async def get_cron_job(self, job_id: str) -> Optional[CronJob]:
+        cursor = await self.conn.execute(
+            "SELECT * FROM psjba_cron_job WHERE id = ?", (job_id,)
+        )
+        row = await cursor.fetchone()
+        return self._row_to_cron_job(row) if row else None
+
+    async def update_cron_job(self, job: CronJob) -> None:
+        await self.conn.execute(
+            """UPDATE psjba_cron_job 
+               SET name=?, schedule=?, prompt=?, status=?, 
+                   last_run_at=?, next_run_at=?, updated_at=?
+               WHERE id=?""",
+            (
+                job.name,
+                job.schedule,
+                job.prompt,
+                job.status,
+                job.last_run_at.isoformat() if job.last_run_at else None,
+                job.next_run_at.isoformat() if job.next_run_at else None,
+                datetime.now().isoformat(),
+                job.id,
+            ),
+        )
+        await self.conn.commit()
+
+    async def list_cron_jobs(
+        self, include_deleted: bool = False
+    ) -> list[CronJob]:
+        if include_deleted:
+            cursor = await self.conn.execute(
+                "SELECT * FROM psjba_cron_job ORDER BY created_at DESC"
+            )
+        else:
+            cursor = await self.conn.execute(
+                "SELECT * FROM psjba_cron_job WHERE status != 'deleted' ORDER BY created_at DESC"
+            )
+        rows = await cursor.fetchall()
+        return [self._row_to_cron_job(r) for r in rows]
+
+    async def get_enabled_cron_jobs(self) -> list[CronJob]:
+        cursor = await self.conn.execute(
+            "SELECT * FROM psjba_cron_job WHERE status = 'enable'"
+        )
+        rows = await cursor.fetchall()
+        return [self._row_to_cron_job(r) for r in rows]
+
+    async def delete_cron_job(self, job_id: str) -> None:
+        now = datetime.now().isoformat()
+        await self.conn.execute(
+            "UPDATE psjba_cron_job SET status = 'deleted', updated_at = ? WHERE id = ?",
+            (now, job_id),
+        )
+        await self.conn.commit()
+
+    async def toggle_cron_job(self, job_id: str) -> Optional[bool]:
+        job = await self.get_cron_job(job_id)
+        if not job:
+            return None
+        new_status = "disable" if job.status == "enable" else "enable"
+        await self.conn.execute(
+            "UPDATE psjba_cron_job SET status = ?, updated_at = ? WHERE id = ?",
+            (new_status, datetime.now().isoformat(), job_id),
+        )
+        await self.conn.commit()
+        return new_status == "enable"
+
+    async def get_cron_session_logs(
+        self,
+        cron_job_id: str,
+        page: int = 1,
+        page_size: int = 20,
+    ) -> tuple[list[dict[str, Any]], int]:
+        count_cursor = await self.conn.execute(
+            "SELECT COUNT(*) FROM psjba_session WHERE cron_job_id = ? AND status != 'deleted'",
+            (cron_job_id,),
+        )
+        total = (await count_cursor.fetchone())[0]
+
+        offset = (page - 1) * page_size
+        cursor = await self.conn.execute(
+            """SELECT s.id, s.created_at, s.title,
+                      (SELECT content FROM psjba_message 
+                       WHERE session_id = s.id AND role = 'assistant' 
+                       ORDER BY created_at DESC LIMIT 1) as last_response
+               FROM psjba_session s
+               WHERE s.cron_job_id = ? AND s.status != 'deleted'
+               ORDER BY s.created_at DESC
+               LIMIT ? OFFSET ?""",
+            (cron_job_id, page_size, offset),
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows], total
+
+    def _row_to_session(self, row: aiosqlite.Row) -> Session:
+        return Session(
+            id=row["id"],
+            title=row["title"],
+            type=row["type"],
+            cron_job_id=row["cron_job_id"],
+            created_at=datetime.fromisoformat(row["created_at"]),
+            updated_at=datetime.fromisoformat(row["updated_at"]),
+            status=row["status"],
+        )
+
+    def _row_to_message(self, row: aiosqlite.Row) -> Message:
+        return Message(
+            id=row["id"],
+            session_id=row["session_id"],
+            role=row["role"],
+            content=row["content"],
+            token_usage=row["token_usage"],
+            model=row["model"],
+            created_at=datetime.fromisoformat(row["created_at"]),
+        )
+
+    def _row_to_cron_job(self, row: aiosqlite.Row) -> CronJob:
+        return CronJob(
+            id=row["id"],
+            name=row["name"],
+            schedule=row["schedule"],
+            prompt=row["prompt"],
+            status=row["status"],
+            last_run_at=datetime.fromisoformat(row["last_run_at"])
+            if row["last_run_at"]
+            else None,
+            next_run_at=datetime.fromisoformat(row["next_run_at"])
+            if row["next_run_at"]
+            else None,
+            created_at=datetime.fromisoformat(row["created_at"]),
+            updated_at=datetime.fromisoformat(row["updated_at"]),
+        )

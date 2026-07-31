@@ -1,0 +1,254 @@
+"""LangChain tool bindings — PlaywrightManager + Database 메서드를 tool로 래핑."""
+
+import json
+import logging
+from typing import Optional
+
+from langchain_core.tools import tool
+
+from src.browser.manager import PlaywrightManager
+from src.database import Database
+
+logger = logging.getLogger("psjba.agent.tools")
+
+
+def create_browser_tools(
+    manager: PlaywrightManager,
+) -> list:
+    """PlaywrightManager 메서드를 LangChain tool 리스트로 생성한다.
+
+    Args:
+        manager: 연결된 PlaywrightManager 인스턴스
+
+    Returns:
+        @tool 데코레이터가 적용된 비동기 함수 리스트
+    """
+
+    @tool
+    async def browser_navigate(url: str) -> str:
+        """Navigate to a URL in the browser."""
+        return await manager.browser_navigate(url)
+
+    @tool
+    async def browser_click(
+        selector: str,
+        text: Optional[str] = None,
+        aria_label: Optional[str] = None,
+        role: Optional[str] = None,
+    ) -> str:
+        """Click an element by CSS selector. Supports self-healing fallback (XPath, text, aria-label, role)."""
+        return await manager.browser_click(
+            selector, text=text, aria_label=aria_label, role=role
+        )
+
+    @tool
+    async def browser_type(selector: str, text: str, clear: bool = False) -> str:
+        """Type text into an input field found by CSS selector."""
+        return await manager.browser_type(selector, text, clear=clear)
+
+    @tool
+    async def browser_select_option(selector: str, value: str) -> str:
+        """Select an option from a dropdown by value."""
+        return await manager.browser_select_option(selector, value)
+
+    @tool
+    async def browser_hover(selector: str) -> str:
+        """Hover over an element found by CSS selector."""
+        return await manager.browser_hover(selector)
+
+    @tool
+    async def browser_scroll(direction: str = "down", amount: Optional[int] = None) -> str:
+        """Scroll the page. direction: up, down, top, bottom. amount: pixels (optional)."""
+        return await manager.browser_scroll(direction, amount)
+
+    @tool
+    async def browser_focus(selector: str) -> str:
+        """Focus on an element found by CSS selector."""
+        return await manager.browser_focus(selector)
+
+    @tool
+    async def browser_press_key(key: str) -> str:
+        """Press a keyboard key (Enter, Tab, Escape, ArrowDown, etc.)."""
+        return await manager.browser_press_key(key)
+
+    @tool
+    async def browser_wait(milliseconds: int) -> str:
+        """Wait for specified time in milliseconds."""
+        return await manager.browser_wait(milliseconds)
+
+    @tool
+    async def browser_new_tab(url: Optional[str] = None) -> str:
+        """Open a new browser tab. Optionally navigate to a URL."""
+        return await manager.browser_new_tab(url)
+
+    @tool
+    async def browser_close_tab() -> str:
+        """Close the current active tab."""
+        return await manager.browser_close_tab()
+
+    @tool
+    async def browser_switch_tab(target: str) -> str:
+        """Switch to a tab by index (0-based) or URL."""
+        return await manager.browser_switch_tab(target)
+
+    @tool
+    async def browser_list_tabs() -> str:
+        """List all open browser tabs with index, URL, and title."""
+        return await manager.browser_list_tabs()
+
+    @tool
+    async def browser_get_focused_tab() -> str:
+        """Get info about the currently active tab (index, URL, title)."""
+        return await manager.browser_get_focused_tab()
+
+    @tool
+    async def browser_screenshot(full_page: bool = False) -> str:
+        """Take a screenshot and save it. Only use when the user explicitly requests a screenshot."""
+        return await manager.browser_screenshot(full_page=full_page)
+
+    @tool
+    async def browser_snapshot() -> str:
+        """Get the accessibility tree of the current page. Use this to understand the page structure before taking actions."""
+        return await manager.browser_snapshot()
+
+    @tool
+    async def browser_get_dom() -> str:
+        """Get the HTML content of the current page."""
+        return await manager.browser_get_dom()
+
+    @tool
+    async def browser_get_url() -> str:
+        """Get the current page URL."""
+        return await manager.browser_get_url()
+
+    @tool
+    async def browser_get_title() -> str:
+        """Get the current page title."""
+        return await manager.browser_get_title()
+
+    @tool
+    async def chrome_health() -> str:
+        """Check Chrome/CDP connection health and get comprehensive browser status. Returns connection status, tab count, focused tab info, CDP settings, headless mode, and Chrome PID if available. Safe to call even when not connected."""
+        return await manager.chrome_health()
+
+    @tool
+    async def chrome_start() -> str:
+        """Connect to Chrome CDP, or launch Chrome and connect if not already running. Use this when you need to interact with the browser but chrome_health() shows not connected. Returns connection result with health info on success."""
+        return await manager.chrome_start()
+
+    @tool
+    async def browser_execute_script(script: str) -> str:
+        """Execute JavaScript on the current page and return the result."""
+        return await manager.browser_execute_script(script)
+
+    return [
+        chrome_health,
+        chrome_start,
+        browser_navigate,
+        browser_click,
+        browser_type,
+        browser_select_option,
+        browser_hover,
+        browser_scroll,
+        browser_focus,
+        browser_press_key,
+        browser_wait,
+        browser_new_tab,
+        browser_close_tab,
+        browser_switch_tab,
+        browser_list_tabs,
+        browser_get_focused_tab,
+        browser_screenshot,
+        browser_snapshot,
+        browser_get_dom,
+        browser_get_url,
+        browser_get_title,
+        browser_execute_script,
+    ]
+
+
+def create_cron_tools(manager: PlaywrightManager) -> list:
+    """크론 도구 리스트를 생성한다 (현재 stub)."""
+
+    @tool
+    async def cron_add(name: str, schedule: str, prompt: str) -> str:
+        """Add a new cron job. schedule is a cron expression (5 fields)."""
+        return await manager.cron_add(name, schedule, prompt)
+
+    @tool
+    async def cron_list() -> str:
+        """List all registered cron jobs."""
+        return await manager.cron_list()
+
+    @tool
+    async def cron_edit(
+        job_id: str,
+        name: Optional[str] = None,
+        schedule: Optional[str] = None,
+        prompt: Optional[str] = None,
+    ) -> str:
+        """Edit a cron job. Provide job_id and any fields to change."""
+        return await manager.cron_edit(job_id, name=name, schedule=schedule, prompt=prompt)
+
+    @tool
+    async def cron_toggle(job_id: str) -> str:
+        """Toggle a cron job between enabled and disabled."""
+        return await manager.cron_toggle(job_id)
+
+    @tool
+    async def cron_remove(job_id: str) -> str:
+        """Remove (soft-delete) a cron job."""
+        return await manager.cron_remove(job_id)
+
+    return [cron_add, cron_list, cron_edit, cron_toggle, cron_remove]
+
+
+def create_memory_tools(db: Database, session_id: str) -> list:
+    """메모리 검색 도구 리스트를 생성한다.
+
+    Args:
+        db: 연결된 Database 인스턴스
+        session_id: 현재 대화 세션 ID
+    """
+
+    @tool
+    async def memory_search(query: str) -> str:
+        """Search past messages in this session by keyword. Useful for recalling earlier conversation context that may have been removed from the sliding window."""
+        try:
+            results = await db.search_messages(session_id, query)
+            if not results:
+                return f"No results found for '{query}'"
+            lines = []
+            for r in results:
+                role = r.get("role", "unknown")
+                content = r.get("content", "")
+                created = r.get("created_at", "")
+                preview = content[:200] + ("..." if len(content) > 200 else "")
+                lines.append(f"[{role}] ({created}) {preview}")
+            return f"Found {len(results)} results:\n" + "\n".join(lines)
+        except Exception as e:
+            return f"Memory search error: {e}"
+
+    return [memory_search]
+
+
+def create_all_tools(
+    manager: PlaywrightManager,
+    db: Optional[Database] = None,
+    session_id: str = "",
+) -> list:
+    """모든 도구를 하나의 리스트로 생성한다.
+
+    Args:
+        manager: PlaywrightManager 인스턴스
+        db: Database 인스턴스 (memory_search용, None이면 memory_search 제외)
+        session_id: 현재 세션 ID
+
+    Returns:
+        모든 LangChain tool 리스트
+    """
+    tools = create_browser_tools(manager)
+    tools.extend(create_cron_tools(manager))
+    if db and session_id:
+        tools.extend(create_memory_tools(db, session_id))
+    return tools
