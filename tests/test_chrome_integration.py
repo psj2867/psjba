@@ -162,27 +162,27 @@ class TestChromeLauncherAsync:
         assert result is False
 
     def test_check_cdp_success(self):
-        """CDP 연결 성공 시 True 반환."""
+        """CDP 연결 성공 시 True 반환 (urllib.request)."""
         async def _test():
             from src.chrome.launcher import ChromeLauncher
             launcher = ChromeLauncher(host="127.0.0.1", port=9222)
-            with patch("aiohttp.ClientSession.get") as mock_get:
-                mock_resp = AsyncMock()
+            with patch("urllib.request.urlopen") as mock_urlopen:
+                mock_resp = MagicMock()
                 mock_resp.status = 200
-                mock_resp.json.return_value = {"Browser": "Chrome/130.0"}
-                mock_get.return_value.__aenter__.return_value = mock_resp
+                mock_resp.read.return_value = b'{"Browser":"Chrome/130.0"}'
+                mock_urlopen.return_value.__enter__.return_value = mock_resp
                 return await launcher.check_cdp_connection(timeout=1.0)
         assert asyncio.run(_test())
 
     def test_check_cdp_not_200(self):
-        """CDP 응답이 200이 아니면 False."""
+        """CDP 응답이 200이 아니면 False (urllib.request)."""
         async def _test():
             from src.chrome.launcher import ChromeLauncher
             launcher = ChromeLauncher(host="127.0.0.1", port=9222)
-            with patch("aiohttp.ClientSession.get") as mock_get:
-                mock_resp = AsyncMock()
+            with patch("urllib.request.urlopen") as mock_urlopen:
+                mock_resp = MagicMock()
                 mock_resp.status = 404
-                mock_get.return_value.__aenter__.return_value = mock_resp
+                mock_urlopen.return_value.__enter__.return_value = mock_resp
                 return await launcher.check_cdp_connection(timeout=1.0)
         assert asyncio.run(_test()) is False
 
