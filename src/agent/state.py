@@ -18,3 +18,5 @@ class AgentState(TypedDict, total=False):
     last_screenshot_path: str
     error_count: int
     is_final: bool
+    tool_call_count: int
+    intervention_queue: list[str]  # 공유 참조 — 실행 중 사용자 입력

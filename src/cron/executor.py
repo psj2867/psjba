@@ -85,6 +85,7 @@ class CronExecutor:
                 "last_screenshot_path": "",
                 "error_count": 0,
                 "is_final": False,
+                "intervention_queue": [],
             }
 
             from langchain_core.messages import HumanMessage

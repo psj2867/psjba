@@ -128,6 +128,7 @@ async def call_model(
 
     슬라이딩 윈도우를 적용하고, 시스템 프롬프트에 동적 a11y 트리를 주입한다.
     tool_call_count 가 max_tool_calls 를 초과하면 즉시 종료한다.
+    intervention_queue 가 있으면 실행 중 사용자 입력을 컨텍스트에 주입한다.
 
     Args:
         state: 현재 에이전트 상태
@@ -138,6 +139,15 @@ async def call_model(
     Returns:
         상태 업데이트 딕셔너리 (messages 추가)
     """
+    # ── intervention 큐 확인: 실행 중 사용자 입력을 메시지로 주입 ──
+    queue = state.get("intervention_queue")
+    injected_msgs: list[BaseMessage] = []
+    if queue:
+        while queue:
+            text = queue.pop(0)
+            logger.info("Injecting intervention: %s", text[:80])
+            injected_msgs.append(HumanMessage(content=text))
+
     # 최대 tool call 횟수 초과 시 즉시 종료
     current_count = state.get("tool_call_count", 0)
     if current_count >= max_tool_calls:
@@ -159,6 +169,10 @@ async def call_model(
     messages = list(state.get("messages", []))
 
     messages = _apply_sliding_window(messages, max_context_messages)
+
+    # 주입된 intervention 메시지를 LLM 컨텍스트에 추가
+    if injected_msgs:
+        messages = messages + injected_msgs
 
     a11y_tree = state.get("accessibility_tree", "(No page loaded)")
     system_prompt = build_system_prompt(a11y_tree)
@@ -200,7 +214,7 @@ async def call_model(
         duration = time.monotonic() - call_start
         logger.error(f"LLM call failed after {duration:.1f}s: {e}")
         return {
-            "messages": [
+            "messages": injected_msgs + [
                 AIMessage(content=f"LLM error: {e}. Please try again.")
             ],
             "error_count": state.get("error_count", 0) + 1,
@@ -241,7 +255,7 @@ async def call_model(
                 warn_msg += f" [{finish_str}]"
             logger.warning(warn_msg)
 
-    return {"messages": [response]}
+    return {"messages": injected_msgs + [response]}
 
 
 async def execute_tool(
