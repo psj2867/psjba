@@ -46,6 +46,10 @@ class MainWindow(QMainWindow):
 
     prompt_submitted = Signal(str)
     session_reset_requested = Signal()
+    closed = Signal()  # 창 닫힘 → shutdown trigger
+
+    # ─── 정지 플래그 (CancelledError 가 안 먹히는 경우 대비) ─────
+    stop_requested: bool = False
 
     def __init__(
         self,
@@ -58,18 +62,44 @@ class MainWindow(QMainWindow):
         self._db = db
         self._manager = manager
         self._agent_task = None
+        self.intervention_queue: list[str] = []  # 실행 중 사용자 입력 큐
         self._init_ui()
+        self._try_set_titlebar_color("#1a1a2e")
         self._startup_chrome_check()
+
+    def closeEvent(self, event) -> None:
+        """창 닫힘 → closed 시그널 발생."""
+        logger.info("Window close event")
+        self.closed.emit()
+        super().closeEvent(event)
+
+    def _try_set_titlebar_color(self, color_hex: str) -> None:
+        """Windows DWM API로 타이틀바 배경색 변경 (실패 시 조용히 무시)."""
+        try:
+            import ctypes
+            from ctypes import wintypes
+            r, g, b = bytes.fromhex(color_hex.lstrip("#"))
+            color_ref = r | (g << 8) | (b << 16)
+            DWMWA_CAPTION_COLOR = 35
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                wintypes.HWND(int(self.winId())),
+                DWMWA_CAPTION_COLOR,
+                ctypes.byref(ctypes.c_int(color_ref)),
+                ctypes.sizeof(ctypes.c_int),
+            )
+        except Exception:
+            logger.debug("DWM titlebar color not supported on this system")
 
     def _init_ui(self) -> None:
         self.setWindowTitle("Browser Agent")
-        self.setMinimumSize(800, 600)
+        self.setMinimumSize(600, 400)
+        self.resize(900, 700)
 
         central = QWidget()
         self.setCentralWidget(central)
         layout = QVBoxLayout(central)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(8)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(4)
 
         top_bar = QHBoxLayout()
 
@@ -85,7 +115,7 @@ class MainWindow(QMainWindow):
 
         top_bar.addStretch()
 
-        self._chrome_btn = QPushButton("🔗 Chrome 연결 안 됨")
+        self._chrome_btn = QPushButton("🔗 Chrome 연결하기")
         self._chrome_btn.setStyleSheet(CHROME_BTN_STYLE_DISCONNECTED)
         self._chrome_btn.clicked.connect(self._on_chrome_btn_click)
         top_bar.addWidget(self._chrome_btn)
@@ -104,27 +134,51 @@ class MainWindow(QMainWindow):
     # ─── Chrome 연결 ──────────────────────────────────────────
 
     def _startup_chrome_check(self) -> None:
-        """프로그램 시작 시 5초 타임아웃으로 CDP 테스트."""
-        self._set_chrome_status("connecting")
+        """시작 시 CDP 연결 확인 (완전 동기, async/Task 생성 안 함).
 
-        async def _check():
-            ok = await self._manager._launcher.check_cdp_connection(
-                timeout=STARTUP_CDP_TIMEOUT
-            )
-            if ok:
-                result = await self._manager.connect()
-                return "Chrome connected" in result or "Already" in result
-            return False
+        Python 3.14+ Windows ProactorEventLoop 에서
+        ensure_future + async I/O 시 "Cannot enter into task while another task
+        is being executed" RuntimeError 가 발생한다.
+        이 문제를 피하기 위해 QTimer + 동기 HTTP 요청으로 처리한다.
 
-        self._run_async_background(_check, self._on_startup_check_done)
-
-    def _on_startup_check_done(self, connected: bool) -> None:
-        if connected:
-            self._set_chrome_status("connected")
-        else:
+        API 키가 없으면 건너뛴다 (설정 저장 시 재시도).
+        """
+        api_key = self._config.api_key
+        if not api_key:
+            logger.info("Skipping startup Chrome check: API key not configured yet")
             self._set_chrome_status("disconnected")
+            return
+        self._set_chrome_status("connecting")
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(50, self._check_cdp_sync)
+
+    def _check_cdp_sync(self) -> None:
+        """동기 HTTP 요청으로 CDP 연결 확인. Task 생성 없음."""
+        host = self._manager._launcher._host
+        port = self._manager._launcher._port
+        url = f"http://{host}:{port}/json/version"
+        try:
+            import urllib.error
+            import urllib.request
+
+            req = urllib.request.Request(url)
+            with urllib.request.urlopen(req, timeout=1.0) as resp:
+                if resp.status == 200:
+                    logger.info("Chrome CDP detected on startup (%s:%s)", host, port)
+                    # CDP 포트 확인됨 → Manager 실제 연결 (UI "connecting" 유지)
+                    from PySide6.QtCore import QTimer
+                    QTimer.singleShot(0, self._connect_chrome)
+                    return
+        except urllib.error.URLError as e:
+            logger.info("Chrome CDP not available on startup: %s", e.reason)
+        except (TimeoutError, OSError) as e:
+            logger.info("Chrome CDP not available on startup: %s", e)
+        except Exception as e:
+            logger.info("Chrome CDP check error: %s", e)
+        self._set_chrome_status("disconnected")
 
     def _on_chrome_btn_click(self) -> None:
+        logger.info("Chrome button clicked")
         if self._manager.is_connected:
             self._disconnect_chrome()
         else:
@@ -132,14 +186,18 @@ class MainWindow(QMainWindow):
 
     def _connect_chrome(self) -> None:
         self._set_chrome_status("connecting")
+        logger.info("Chrome connect requested, launching...")
 
         async def _do():
+            logger.info("Calling manager.connect(launch_if_needed=True)...")
             result = await self._manager.connect(launch_if_needed=True)
+            logger.info("manager.connect returned: %s", result)
             return "Chrome connected" in result or "Already" in result
 
-        self._run_async_background(_do, self._on_connect_done)
+        self._run_async_background(_do(), self._on_connect_done)
 
     def _on_connect_done(self, connected: bool) -> None:
+        logger.info("Chrome connect result: connected=%s", connected)
         if connected:
             self._set_chrome_status("connected")
         else:
@@ -150,11 +208,11 @@ class MainWindow(QMainWindow):
             await self._manager.disconnect()
             return False
 
-        self._run_async_background(_do, self._on_connect_done)
+        self._run_async_background(_do(), self._on_connect_done)
 
     def _set_chrome_status(self, status: str) -> None:
         if status == "connected":
-            self._chrome_btn.setText("🔗 Chrome 연결 됨")
+            self._chrome_btn.setText("🔗 Chrome 연결됨")
             self._chrome_btn.setStyleSheet(CHROME_BTN_STYLE_CONNECTED)
             self._chrome_btn.setEnabled(True)
             self._prompt.set_running(False)
@@ -163,18 +221,20 @@ class MainWindow(QMainWindow):
             self._chrome_btn.setStyleSheet(CHROME_BTN_STYLE_CONNECTING)
             self._chrome_btn.setEnabled(False)
         else:
-            self._chrome_btn.setText("🔗 Chrome 연결 안 됨")
+            self._chrome_btn.setText("🔗 Chrome 연결하기")
             self._chrome_btn.setStyleSheet(CHROME_BTN_STYLE_DISCONNECTED)
             self._chrome_btn.setEnabled(True)
 
     # ─── 설정 창 ──────────────────────────────────────────────
 
     def _open_settings(self) -> None:
+        logger.info("Settings dialog opened")
         dlg = SettingsDialog(self._config, self._db, parent=self)
         dlg.config_saved.connect(self._on_config_saved)
         dlg.exec()
 
     def _on_config_saved(self) -> None:
+        logger.info("Config saved")
         self._manager.update_config(
             cdp_host=self._config.get("cdp", "host", "127.0.0.1"),
             cdp_port=self._config.get("cdp", "port", 9222),
@@ -183,38 +243,66 @@ class MainWindow(QMainWindow):
             headless=self._config.get("chrome", "headless", False),
             workspace_dir=self._config.get("workspace", "workspace_dir", "./psjba_temp"),
         )
+        # 설정 저장 후 Chrome 연결 재시도 (API 키가 이제 설정됨)
+        if not self._manager.is_connected:
+            logger.info("Config saved, retrying Chrome connection...")
+            self._startup_chrome_check()
 
     # ─── 프롬프트 처리 ────────────────────────────────────────
-
     def _on_prompt_submitted(self, text: str) -> None:
-        if not self._manager.is_connected:
+        logger.info("Prompt submitted: %s", text[:80])
+        # 실행 중이면 intervention 큐에 추가
+        if self._prompt._is_running:
+            self.intervention_queue.append(text)
+            self._chat.add_user_message(text)
+            logger.info("Queued as intervention (%d in queue)", len(self.intervention_queue))
             return
-        self._prompt.set_running(True)
         self._chat.add_user_message(text)
+        self._prompt.set_running(True)
+        self.stop_requested = False
         self.prompt_submitted.emit(text)
 
     def _on_stop_agent(self) -> None:
-        if self._agent_task and not self._agent_task.done():
-            self._agent_task.cancel()
-        self._prompt.set_running(False)
+        logger.info("Agent stop requested")
+        self.stop_requested = True
+        # 태스크를 cancel하지 않고 stop_requested 플래그로 astream 루프를 빠져나가게 함
+        # (중간 결과는 정상 처리되고, intervention 큐 소비로 이어짐)
 
     def _on_session_reset(self) -> None:
+        logger.info("Session reset button clicked")
         self._chat.clear()
         self.session_reset_requested.emit()
+
+    def show_ai_thinking(self, text: str = "🤖 응답 중...") -> None:
+        """AI 응답 대기 스켈레톤을 채팅에 추가한다."""
+        self._chat.add_thinking_skeleton(text)
 
     def add_ai_response(
         self,
         content: str,
         tool_calls=None,
     ) -> None:
-        """외부(Agent)에서 AI 응답을 채팅에 추가."""
-        self._chat.add_ai_block(content, tool_calls)
+        """외부(Agent)에서 AI 응답을 채팅에 추가.
+
+        첫 번째 호출은 thinking skeleton(있다면)을 교체하고,
+        이후 호출은 새 블록으로 추가한다.
+        """
+        if self._chat._thinking_block:
+            self._chat.replace_thinking_skeleton(content, tool_calls)
+        else:
+            self._chat.add_ai_block(content, tool_calls)
         self._prompt.set_running(False)
 
     # ─── 비동기 유틸 ──────────────────────────────────────────
 
     def _run_async_background(self, coro, callback=None) -> None:
-        """백그라운드에서 코루틴 실행 완료 후 콜백."""
+        """백그라운드에서 코루틴 실행 완료 후 콜백.
+
+        Note: Python 3.14+ Windows ProactorEventLoop 환경에서는
+        이 Task 생성이 "Cannot enter into task while another task is being
+        executed" RuntimeError 를 유발할 수 있다. 해당 예외는
+        main.py 의 event loop exception handler 에서 debug log 로 전환된다.
+        """
         try:
             import qasync
         except ImportError:
@@ -231,7 +319,11 @@ class MainWindow(QMainWindow):
         async def _wrapper():
             try:
                 result = await coro
-            except Exception:
+            except asyncio.CancelledError:
+                logger.debug("Background task cancelled")
+                result = None
+            except Exception as e:
+                logger.error("Background task error: %s [%s]", e, type(e).__name__)
                 result = None
             if callback:
                 from PySide6.QtCore import QTimer

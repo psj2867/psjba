@@ -82,9 +82,9 @@ def create_browser_tools(
         return await manager.browser_new_tab(url)
 
     @tool
-    async def browser_close_tab() -> str:
-        """Close the current active tab."""
-        return await manager.browser_close_tab()
+    async def browser_close_tab(target: str = "") -> str:
+        """Close a tab. If target is empty, close the current active tab. Otherwise target can be a tab index (0-based) or a URL."""
+        return await manager.browser_close_tab(target)
 
     @tool
     async def browser_switch_tab(target: str) -> str:
@@ -117,16 +117,6 @@ def create_browser_tools(
         return await manager.browser_get_dom()
 
     @tool
-    async def browser_get_url() -> str:
-        """Get the current page URL."""
-        return await manager.browser_get_url()
-
-    @tool
-    async def browser_get_title() -> str:
-        """Get the current page title."""
-        return await manager.browser_get_title()
-
-    @tool
     async def chrome_health() -> str:
         """Check Chrome/CDP connection health and get comprehensive browser status. Returns connection status, tab count, focused tab info, CDP settings, headless mode, and Chrome PID if available. Safe to call even when not connected."""
         return await manager.chrome_health()
@@ -140,6 +130,25 @@ def create_browser_tools(
     async def browser_execute_script(script: str) -> str:
         """Execute JavaScript on the current page and return the result."""
         return await manager.browser_execute_script(script)
+
+    @tool
+    async def browser_click_by_ref(ref: int) -> str:
+        """Click an element by its accessibility tree ref number. Use this after calling browser_snapshot() to see the [#N] ref numbers next to interactive elements. This is more reliable than guessing a CSS selector."""
+        return await manager.browser_click_by_ref(ref)
+
+    @tool
+    async def workspace_write(filename: str, content: str) -> str:
+        """Save content to a file in the workspace exports folder. Use this to save generated data, reports, or any text output the user might want to keep. Only allows safe filenames (letters, numbers, dots, dashes, underscores)."""
+        return await manager.workspace_write(filename, content)
+
+    @tool
+    async def current_datetime() -> str:
+        """Get the current date and time. Returns the current local date and time with timezone info. Use this when you need to know the current time, date, or timestamp."""
+        from datetime import datetime
+        import time
+        now = time.localtime()
+        tz_name = time.tzname[1 if now.tm_isdst > 0 else 0]
+        return datetime.now().strftime(f"%Y-%m-%d %H:%M:%S ({tz_name})")
 
     return [
         chrome_health,
@@ -161,14 +170,15 @@ def create_browser_tools(
         browser_screenshot,
         browser_snapshot,
         browser_get_dom,
-        browser_get_url,
-        browser_get_title,
         browser_execute_script,
+        browser_click_by_ref,
+        workspace_write,
+        current_datetime,
     ]
 
 
-def create_cron_tools(manager: PlaywrightManager) -> list:
-    """크론 도구 리스트를 생성한다 (현재 stub)."""
+def create_cron_tools(manager: PlaywrightManager, db: Any = None) -> list:
+    """크론 도구 리스트를 생성한다."""
 
     @tool
     async def cron_add(name: str, schedule: str, prompt: str) -> str:
@@ -200,7 +210,27 @@ def create_cron_tools(manager: PlaywrightManager) -> list:
         """Remove (soft-delete) a cron job."""
         return await manager.cron_remove(job_id)
 
-    return [cron_add, cron_list, cron_edit, cron_toggle, cron_remove]
+    @tool
+    async def cron_to_session(message: str) -> str:
+        """Send a message from a cron job to the main chat session so the user sees it.
+        Use this to report progress, results, or ask the user something."""
+        if db is None:
+            return "cron_to_session error: database not available"
+        main_session_id = await db.get_current_session_id()
+        if not main_session_id:
+            return "cron_to_session error: no active main session"
+        from src.models.schemas import Message as Msg
+        from datetime import datetime
+        db_msg = Msg(
+            session_id=main_session_id,
+            role="assistant",
+            content=f"[크론→메인] {message}",
+            created_at=datetime.now(),
+        )
+        await db.save_message(db_msg)
+        return f"cron_to_session: message sent to main session '{message[:60]}'"
+
+    return [cron_add, cron_list, cron_edit, cron_toggle, cron_remove, cron_to_session]
 
 
 def create_memory_tools(db: Database, session_id: str) -> list:
@@ -248,7 +278,8 @@ def create_all_tools(
         모든 LangChain tool 리스트
     """
     tools = create_browser_tools(manager)
-    tools.extend(create_cron_tools(manager))
+
+    tools.extend(create_cron_tools(manager, db=db))
     if db and session_id:
         tools.extend(create_memory_tools(db, session_id))
     return tools

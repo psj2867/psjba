@@ -2,8 +2,9 @@
 
 import json
 import logging
+import re
 import time
-from typing import Any, Literal, Optional
+from typing import Any, Optional
 
 from langchain_core.messages import (
     AIMessage,
@@ -56,6 +57,7 @@ def _apply_sliding_window(
 
     user_indices = [
         i for i, m in enumerate(non_system) if isinstance(m, HumanMessage)
+        and m.additional_kwargs.get("role") != "developer"
     ]
 
     if len(user_indices) <= max_context:
@@ -74,6 +76,42 @@ def _apply_sliding_window(
     return result
 
 
+_TOOL_NAME_PATTERN = re.compile(
+    r"^(browser_(?:navigate|click|type|select_option|hover|scroll|focus|"
+    r"press_key|wait|new_tab|close_tab|switch_tab|list_tabs|"
+    r"get_focused_tab|screenshot|snapshot|get_dom|"
+    r"execute_script|click_by_ref)"
+    r"|chrome_(?:health|start)"
+    r"|cron_(?:add|list|edit|toggle|remove|to_session)"
+    r"|memory_search|workspace_write|current_datetime)\(\)?$"
+)
+
+
+def _detect_text_tool_call(content: str) -> Optional[str]:
+    """모델이 텍스트로 도구 이름만 출력했는지 감지한다.
+
+    예: "browser_snapshot()" 또는 "chrome_health" 형태의 텍스트.
+    tool_call 을 해야 하는데 텍스트로 출력한 경우를 식별.
+
+    Returns:
+        매칭된 도구 이름, 또는 None
+    """
+    clean = content.strip().rstrip(")")
+    m = _TOOL_NAME_PATTERN.match(clean)
+    return m.group(0) if m else None
+
+
+def _extract_finish_reason(response: BaseMessage) -> str:
+    """AIMessage.response_metadata 에서 finish_reason 추출.
+
+    Returns:
+        "finish_reason=stop" 형태, 또는 빈 문자열
+    """
+    meta = getattr(response, "response_metadata", {}) or {}
+    finish_reason = meta.get("finish_reason") or meta.get("finish_details", {}).get("type")
+    return f"finish_reason={finish_reason}" if finish_reason else ""
+
+
 def _is_tool_error(result: str) -> bool:
     """도구 실행 결과가 오류인지 판단한다."""
     lower = result.lower()
@@ -84,19 +122,40 @@ async def call_model(
     state: AgentState,
     llm: BaseChatModel,
     max_context_messages: int = 30,
+    max_tool_calls: int = 30,
 ) -> dict[str, Any]:
     """LLM을 호출하여 다음 액션을 결정한다.
 
     슬라이딩 윈도우를 적용하고, 시스템 프롬프트에 동적 a11y 트리를 주입한다.
+    tool_call_count 가 max_tool_calls 를 초과하면 즉시 종료한다.
 
     Args:
         state: 현재 에이전트 상태
         llm: ChatOpenAI 인스턴스
         max_context_messages: 슬라이딩 윈도우 크기
+        max_tool_calls: 한 프롬프트 당 최대 tool call 횟수
 
     Returns:
         상태 업데이트 딕셔너리 (messages 추가)
     """
+    # 최대 tool call 횟수 초과 시 즉시 종료
+    current_count = state.get("tool_call_count", 0)
+    if current_count >= max_tool_calls:
+        logger.warning(
+            f"Tool call limit reached: {current_count}/{max_tool_calls}, ending"
+        )
+        return {
+            "messages": [
+                AIMessage(
+                    content=(
+                        f"최대 tool call 횟수({max_tool_calls}회)에 도달했습니다. "
+                        f"작업을 완료하지 못했습니다. "
+                        f"더 간단한 작업으로 나누어 다시 시도해 주세요."
+                    )
+                )
+            ],
+            "is_final": True,
+        }
     messages = list(state.get("messages", []))
 
     messages = _apply_sliding_window(messages, max_context_messages)
@@ -111,10 +170,35 @@ async def call_model(
         f"(window: {len(messages)} after sliding)"
     )
 
+    # 마지막 메시지(사용자 입력 or 툴 결과) 요약 로그
+    if messages:
+        last = messages[-1]
+        if isinstance(last, HumanMessage):
+            logger.info(f"LLM request >> user: {last.content[:120]}")
+        elif isinstance(last, ToolMessage):
+            try:
+                data = json.loads(last.content)
+                logger.info(
+                    f"LLM request >> tool result: "
+                    f"{data.get('tool', '?')} | "
+                    f"{(data.get('result', '') or '')[:100]}"
+                )
+            except (json.JSONDecodeError, TypeError):
+                logger.info(f"LLM request >> tool result: {last.content[:120]}")
+        elif isinstance(last, AIMessage):
+            hints = ""
+            if hasattr(last, "tool_calls") and last.tool_calls:
+                hints = f" [{len(last.tool_calls)} tools]"
+            logger.info(f"LLM request >> ai{hints}: {last.content[:120]}")
+
+    call_start = time.monotonic()
+    logger.debug("LLM call starting...")
+
     try:
         response = await llm.ainvoke(final_messages)
     except Exception as e:
-        logger.error(f"LLM call failed: {e}")
+        duration = time.monotonic() - call_start
+        logger.error(f"LLM call failed after {duration:.1f}s: {e}")
         return {
             "messages": [
                 AIMessage(content=f"LLM error: {e}. Please try again.")
@@ -122,12 +206,40 @@ async def call_model(
             "error_count": state.get("error_count", 0) + 1,
         }
 
+    call_duration = time.monotonic() - call_start
+    finish_str = _extract_finish_reason(response)
+
     has_tool_calls = hasattr(response, "tool_calls") and response.tool_calls
     if has_tool_calls:
-        logger.info(
-            f"LLM requested {len(response.tool_calls)} tool calls: "
-            f"{[tc['name'] for tc in response.tool_calls]}"
+        tool_names = [tc["name"] for tc in response.tool_calls]
+        log_msg = (
+            f"LLM response ({call_duration:.1f}s): "
+            f"{len(response.tool_calls)} tool calls "
+            f"→ {tool_names}"
         )
+        if finish_str:
+            log_msg += f" | {finish_str}"
+        logger.info(log_msg)
+    else:
+        content = str(response.content or "").strip()
+        log_msg = (
+            f"LLM response ({call_duration:.1f}s): "
+            f"\"{content[:200]}\""
+        )
+        if finish_str:
+            log_msg += f" | {finish_str}"
+        logger.info(log_msg)
+        # 모델이 텍스트로 도구 이름만 출력한 경우 경고 (tool_call 누락)
+        text_tool_match = _detect_text_tool_call(content)
+        if text_tool_match:
+            warn_msg = (
+                f"⚠️ STOP: model output '{text_tool_match}' as text "
+                f"instead of a tool_call. "
+                f"tool_choice='any' may not be supported by this model."
+            )
+            if finish_str:
+                warn_msg += f" [{finish_str}]"
+            logger.warning(warn_msg)
 
     return {"messages": [response]}
 
@@ -210,7 +322,18 @@ async def execute_tool(
 
     new_error_count = error_count + 1 if any_error else 0
 
-    updates: dict[str, Any] = {"messages": tool_messages}
+    # tool call 횟수 증가 및 로그
+    current_tool_count = state.get("tool_call_count", 0)
+    tool_call_count = current_tool_count + len(last_ai.tool_calls)
+    logger.info(
+        f"Tool call progress: {tool_call_count} "
+        f"(last batch: {len(last_ai.tool_calls)})"
+    )
+
+    updates: dict[str, Any] = {
+        "messages": tool_messages,
+        "tool_call_count": tool_call_count,
+    }
 
     if any_error:
         updates["error_count"] = new_error_count
@@ -233,45 +356,48 @@ async def execute_tool(
 def assess_error(
     state: AgentState,
     max_retries: int = 3,
-) -> Literal["call_model", "__end__"]:
-    """도구 실행 결과를 평가하여 다음 라우팅을 결정한다.
+) -> dict:
+    """도구 실행 결과를 평가하여 상태를 업데이트한다.
+
+    노드 반환값은 dict(state update) 여야 한다.
+    라우팅은 graph.py 의 conditional edge(lambda state: ...) 가 담당한다.
 
     Args:
         state: 현재 에이전트 상태
         max_retries: 최대 재시도 횟수
-
-    Returns:
-        "call_model" (재시도 또는 정상继续) 또는 "__end__" (포기)
     """
     error_count = state.get("error_count", 0)
     is_final = state.get("is_final", False)
 
     if is_final:
         logger.info("assess_error: is_final=True, ending")
-        return "__end__"
+        return {}
 
     if error_count == 0:
         logger.info("assess_error: no error, continue")
-        return "call_model"
+        return {}
 
     if error_count < max_retries:
         logger.info(
-            f"assess_error: error_count={error_count}, retrying "
-            f"({max_retries - error_count} retries left)"
+            "assess_error: error_count=%d, retrying (%d retries left)",
+            error_count,
+            max_retries - error_count,
         )
-        return "call_model"
+        return {}
 
     logger.warning(
-        f"assess_error: error_count={error_count} >= {max_retries}, giving up"
+        "assess_error: error_count=%d >= %d, giving up",
+        error_count,
+        max_retries,
     )
-
-    state["messages"] = state.get("messages", []) + [
-        AIMessage(
-            content=(
-                f"I've encountered {error_count} consecutive errors and cannot "
-                f"complete the task. Please check the browser state and try again."
+    return {
+        "is_final": True,
+        "messages": [
+            AIMessage(
+                content=(
+                    f"I've encountered {error_count} consecutive errors and cannot "
+                    f"complete the task. Please check the browser state and try again."
+                )
             )
-        )
-    ]
-    state["is_final"] = True
-    return "__end__"
+        ],
+    }
