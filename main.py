@@ -205,25 +205,22 @@ async def run(config: Config) -> None:
 
     # 시그널
     def _on_prompt(text: str) -> None:
-        """프롬프트 제출 처리 + intervention 큐 소비 루프."""
-        async def _run_loop(initial_text: str) -> None:
-            texts_to_process = [initial_text]
-            while texts_to_process:
-                current_text = texts_to_process.pop(0)
-                # 첫 번째 프롬프트는 이미 set_running(True) 상태,
-                # intervention은 _handle_prompt가 set_running(False)로 끝났으므로 재설정
-                if current_text != initial_text:
+        """프롬프트 제출 처리 — 큐 기반, 큐 소비 루프."""
+        async def _run_loop() -> None:
+            try:
+                while window.intervention_queue:
+                    current_text = window.intervention_queue.pop(0)
                     window._prompt.set_running(True)
                     window.stop_requested = False
-                await _handle_prompt(config, db, manager, window, current_text)
-                # intervention 큐 소비 (stop_requested여도 소비함)
-                if window.intervention_queue:
-                    texts_to_process.extend(window.intervention_queue)
-                    window.intervention_queue.clear()
+                    await _handle_prompt(config, db, manager, window, current_text)
+                    await asyncio.sleep(0)
+            finally:
+                window._queue_processor_running = False
 
-        task = asyncio.ensure_future(_run_loop(text))
-        window._agent_task = task  # stop 버튼에서 참조 가능
+        task = asyncio.ensure_future(_run_loop())
+        window._agent_task = task
         def _log_task_error(t: asyncio.Task) -> None:
+            window._queue_processor_running = False
             if t.cancelled():
                 logger.warning("Task _run_loop was cancelled")
                 window._agent_task = None
@@ -397,6 +394,7 @@ async def _handle_prompt(
         state = {
             "messages": messages,
             "session_id": session_id,
+            "intervention_queue": window.intervention_queue,
             "url": "",
             "page_title": "",
             "accessibility_tree": "",

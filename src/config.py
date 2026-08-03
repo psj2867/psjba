@@ -42,7 +42,7 @@ def decrypt_api_key(ciphertext: str) -> str:
 DEFAULTS: dict[str, dict[str, Any]] = {
     "llm": {
         "api_key": "",
-        "model": "qwen/qwen3.6-27b",
+        "model": "deepseek/deepseek-v4-flash",
         "url": "https://openrouter.ai/api/v1",
         "max_tokens": 4096,
         "temperature": 0.0,
@@ -62,8 +62,9 @@ DEFAULTS: dict[str, dict[str, Any]] = {
         "path": "./browser_agent.data",
     },
     "agent": {
-        "sliding_window_size": 30,
+        "sliding_window_size": 10,
         "cron_timeout": 300,
+        "max_tool_calls": 30,
     },
     "workspace": {
         "workspace_dir": "./psjba_temp",

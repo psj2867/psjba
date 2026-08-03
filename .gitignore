@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.pyo
+deploy/
+*.data
+*.data-wal
+*.data-shm
+nohup.out
+structure_summary.md
+libEGL.so.1

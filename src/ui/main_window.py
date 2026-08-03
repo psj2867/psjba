@@ -63,6 +63,7 @@ class MainWindow(QMainWindow):
         self._manager = manager
         self._agent_task = None
         self.intervention_queue: list[str] = []  # 실행 중 사용자 입력 큐
+        self._queue_processor_running: bool = False
         self._init_ui()
         self._try_set_titlebar_color("#1a1a2e")
         self._startup_chrome_check()
@@ -251,27 +252,43 @@ class MainWindow(QMainWindow):
     # ─── 프롬프트 처리 ────────────────────────────────────────
     def _on_prompt_submitted(self, text: str) -> None:
         logger.info("Prompt submitted: %s", text[:80])
-        # 실행 중이면 intervention 큐에 추가
-        if self._prompt._is_running:
-            self.intervention_queue.append(text)
-            self._chat.add_user_message(text)
-            logger.info("Queued as intervention (%d in queue)", len(self.intervention_queue))
-            return
         self._chat.add_user_message(text)
-        self._prompt.set_running(True)
-        self.stop_requested = False
-        self.prompt_submitted.emit(text)
+        # 모든 프롬프트는 큐 기반 처리
+        self.intervention_queue.append(text)
+        # 처리 중이 아니면 큐 프로세서 시작
+        if not self._queue_processor_running:
+            self._queue_processor_running = True
+            self._prompt.set_running(True)
+            self.stop_requested = False
+            self.prompt_submitted.emit(text)
 
     def _on_stop_agent(self) -> None:
         logger.info("Agent stop requested")
         self.stop_requested = True
-        # 태스크를 cancel하지 않고 stop_requested 플래그로 astream 루프를 빠져나가게 함
-        # (중간 결과는 정상 처리되고, intervention 큐 소비로 이어짐)
+        # 큐에 남은 항목을 DB에 로그로만 저장하고 비운다 (처리는 안 함)
+        if self.intervention_queue:
+            queued = list(self.intervention_queue)
+            self.intervention_queue.clear()
+            logger.info("Draining %d queued item(s) to DB (no processing)", len(queued))
+            self._run_async_background(self._save_queued_to_db(queued))
 
     def _on_session_reset(self) -> None:
         logger.info("Session reset button clicked")
         self._chat.clear()
         self.session_reset_requested.emit()
+
+    async def _save_queued_to_db(self, texts: list[str]) -> None:
+        """정지 시 큐에 남은 사용자 입력을 DB에만 저장한다 (처리 안 함)."""
+        from src.models.schemas import Message
+
+        session_id = await self._db.get_current_session_id()
+        if not session_id:
+            logger.warning("No active session to save queued messages")
+            return
+        for text in texts:
+            msg = Message(session_id=session_id, role="user", content=text)
+            await self._db.save_message(msg)
+        logger.info("Saved %d queued message(s) to session %s", len(texts), session_id)
 
     def show_ai_thinking(self, text: str = "🤖 응답 중...") -> None:
         """AI 응답 대기 스켈레톤을 채팅에 추가한다."""

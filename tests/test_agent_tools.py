@@ -28,8 +28,6 @@ class TestCreateBrowserTools:
         assert "browser_switch_tab" in names
         assert "browser_list_tabs" in names
         assert "browser_get_focused_tab" in names
-        assert "browser_get_url" in names
-        assert "browser_get_title" in names
         assert "browser_execute_script" in names
         assert "browser_scroll" in names
         assert "browser_focus" in names

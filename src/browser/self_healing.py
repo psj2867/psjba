@@ -92,39 +92,55 @@ class SelfHealingSelector:
             logger.warning("Self-healing: giving up after 3 consecutive failures")
             return None
 
-        strategies = [
-            ("CSS", self._try_css(selector, timeout)),
-            ("XPath", self._try_xpath(selector, timeout)),
-        ]
+        # 1) CSS 먼저 시도
+        try:
+            css_locator = await self._try_css(selector, timeout)
+            if css_locator is not None and await css_locator.count() > 0:
+                self._consecutive_failures = 0
+                logger.info("Self-healing: found element with CSS strategy")
+                return css_locator.first
+        except Exception as e:
+            logger.debug("Self-healing: CSS failed: %s", e)
+
+        # 2) CSS 실패 시에만 fallback 코루틴 생성 → 미소비 경고 방지
+        try:
+            xpath_locator = await self._try_xpath(selector, timeout)
+            if xpath_locator is not None and await xpath_locator.count() > 0:
+                self._consecutive_failures = 0
+                logger.info("Self-healing: found element with XPath strategy")
+                return xpath_locator.first
+        except Exception as e:
+            logger.debug("Self-healing: XPath failed: %s", e)
 
         if text:
-            strategies.append(("Text", self._try_text(text, timeout)))
-        if aria_label:
-            strategies.append(("AriaLabel", self._try_aria_label(aria_label, timeout)))
-        if role:
-            strategies.append(("Role", self._try_role(role, timeout)))
-
-        if text and not any(s[0] == "Text" for s in strategies):
-            strategies.append(("Text", self._try_text(text, timeout)))
-        if aria_label and not any(s[0] == "AriaLabel" for s in strategies):
-            strategies.append(("AriaLabel", self._try_aria_label(aria_label, timeout)))
-        if role and not any(s[0] == "Role" for s in strategies):
-            strategies.append(("Role", self._try_role(role, timeout)))
-
-        for strategy_name, coro in strategies:
             try:
-                locator = await coro
-                if locator is not None:
-                    count = await locator.count()
-                    if count > 0:
-                        self._consecutive_failures = 0
-                        logger.info(
-                            f"Self-healing: found element with {strategy_name} strategy"
-                        )
-                        return locator.first
+                text_locator = await self._try_text(text, timeout)
+                if text_locator is not None and await text_locator.count() > 0:
+                    self._consecutive_failures = 0
+                    logger.info("Self-healing: found element with Text strategy")
+                    return text_locator.first
             except Exception as e:
-                logger.debug(f"Self-healing: {strategy_name} failed: {e}")
-                continue
+                logger.debug("Self-healing: Text failed: %s", e)
+
+        if aria_label:
+            try:
+                aria_locator = await self._try_aria_label(aria_label, timeout)
+                if aria_locator is not None and await aria_locator.count() > 0:
+                    self._consecutive_failures = 0
+                    logger.info("Self-healing: found element with AriaLabel strategy")
+                    return aria_locator.first
+            except Exception as e:
+                logger.debug("Self-healing: AriaLabel failed: %s", e)
+
+        if role:
+            try:
+                role_locator = await self._try_role(role, timeout)
+                if role_locator is not None and await role_locator.count() > 0:
+                    self._consecutive_failures = 0
+                    logger.info("Self-healing: found element with Role strategy")
+                    return role_locator.first
+            except Exception as e:
+                logger.debug("Self-healing: Role failed: %s", e)
 
         self._consecutive_failures += 1
         logger.warning(

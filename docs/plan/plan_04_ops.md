@@ -23,7 +23,7 @@
    - **무한 스크롤**: 사용자가 채팅 로그를 위로 스크롤하면 DB에서 이전 메시지를 추가 로드 (QListWidget 또는 QTextBrowser scroll event 감지, 한 번에 30개씩)
    - **메모리 캐시 정리**: 스크롤되어 화면 밖으로 나간 메시지 중 **3분 이상 경과**한 메시지는 UI 위젯에서 제거 (메모리에서만 제거, DB에는 보존). 사용자가 다시 위로 스크롤하면 DB에서 다시 로드
    - 없거나 status가 'archived'면 → 새 psjba_session 생성 (title: "새 대화", type: chat, status: active). `current_session_id`에 새 세션 ID 저장
-7. **Chrome CDP 연결 확인 (5초 타임아웃)**: CDP 포트에 5초 타임아웃으로 연결 확인. 결과에 따라 UI 상태를 "Chrome 연결 됨" 또는 "Chrome 연결 안 됨"으로 설정. (자동 실행 안 함, 사용자가 버튼 클릭 시에만 Chrome 실행)
+7. **Chrome CDP 연결 확인 (5초 타임아웃)**: CDP 포트에 5초 타임아웃으로 연결 확인. 결과에 따라 UI 상태를 "Chrome 연결됨" 또는 "Chrome 연결하기"으로 설정. (자동 실행 안 함, 사용자가 버튼 클릭 시에만 Chrome 실행)
 8. **크론 작업 복원**: psjba_cron_job에서 status='enable'인 작업을 읽어 aiocron 스케줄러에 등록
 9. **언어 설정 로드**: config.ini에서 language 값 읽기 (기본값 "ko"). 이후 모든 에러 메시지 및 UI 출력에 적용
 10. **필수값 확인 및 설정 화면 표시**: 메모리의 `api_key`와 `model` 값 확인
@@ -78,7 +78,7 @@ def setup_signal_handlers(loop, db_conn, cron_manager, playwright_manager):
 
 ## 11. 프롬프트 처리 시나리오
 
-1. 사용자가 프롬프트 입력 후 Shift+Enter 또는 전송 버튼 클릭
+1. 사용자가 프롬프트 입력 후 Enter 또는 전송 버튼 클릭
 2. 전송 버튼 즉시 0.3초간 비활성화 + 색상 변화 피드백, 이후 "중지" 버튼으로 변경
 3. 입력 검증 (빈 칸 체크)
 4. SQLite에 사용자 메시지 저장 (current_session_id에 해당하는 세션 사용, session_id를 LangGraph State에 전달)

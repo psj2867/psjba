@@ -14,6 +14,7 @@
 - last_screenshot_path: 최근 스크린샷 파일 경로 (사용자 요청 시, 선택적)
 - error_count: 연속 오류 횟수 (self-healing 판단 기준)
 - is_final: 종료 여부 플래그
+- tool_call_count: 현재 프롬프트에서 실행된 누적 tool call 횟수 (max_tool_calls 초과 시 강제 종료)
 
 ### 그래프 구조 (3개 노드 + 1개 조건부 엣지)
 
@@ -22,6 +23,7 @@
 - LLM은 도구 바인딩되어 있어 응답에 tool_calls 포함 가능
 - 시스템 프롬프트에 접근성 트리를 동적으로 주입
 - messages 개수가 sliding_window_size 초과 시, 오래된 메시지를 제거 (슬라이딩 윈도우)
+- **tool_call_count >= max_tool_calls 이면 LLM 호출 없이 즉시 is_final=True 반환** (무한루프 방지)
 
 **2. execute_tool 노드**
 - LLM이 요청한 도구 호출을 받아 PlaywrightManager의 해당 메서드로 직접 실행
@@ -203,8 +205,8 @@ CSS 선택자 실패 시 다음 순서로 대체 전략을 시도한다:
 
 ### Chrome 실행 정책
 - **시작 시**: CDP 포트(기본 9222)에 연결 가능한지 확인 (**timeout 5초, 자동 실행 안 함**)
-  - 가능 → Chrome이 이미 실행 중이므로 PlaywrightManager가 연결만 함 → "Chrome 연결 됨"
-  - 불가능 → "Chrome 연결 안 됨" 상태로 시작 (사용자가 버튼 클릭 시 실행)
+  - 가능 → Chrome이 이미 실행 중이므로 PlaywrightManager가 연결만 함 → "Chrome 연결됨"
+  - 불가능 → "Chrome 연결하기" 상태로 시작 (사용자가 버튼 클릭 시 실행)
 - **버튼 클릭 시**: 1초 타임아웃으로 CDP 연결 확인 → 실패 시 config.ini의 path로 Chrome 실행 → 연결
 - **종료 시**: PlaywrightManager만 disconnect. Chrome 프로세스는 유지
 - **재실행 시**: CDP 포트 확인 후 기존 Chrome 재사용 or 새로 실행

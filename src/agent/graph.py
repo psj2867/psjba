@@ -19,11 +19,14 @@ logger = logging.getLogger("psjba.agent.graph")
 
 
 def _should_continue(state: AgentState) -> str:
-    """call_model 이후 라우팅: tool_calls 있으면 execute_tool, 없으면 END."""
+    """call_model 이후 라우팅: 마지막 AIMessage에 tool_calls 있으면 execute_tool, 없으면 END."""
     messages = state.get("messages", [])
+    # 가장 마지막 AI 메시지만 확인 (이전 루프의 tool_calls는 무시)
     for msg in reversed(messages):
-        if isinstance(msg, AIMessage) and hasattr(msg, "tool_calls") and msg.tool_calls:
-            return "execute_tool"
+        if isinstance(msg, AIMessage):
+            if hasattr(msg, "tool_calls") and msg.tool_calls:
+                return "execute_tool"
+            return "__end__"
     return "__end__"
 
 
@@ -33,8 +36,9 @@ def create_agent_graph(
     db: Optional[Database] = None,
     session_id: str = "",
     llm: Optional[BaseChatModel] = None,
-    max_context_messages: int = 30,
+    max_context_messages: int = 10,
     max_retries: int = 3,
+    max_tool_calls: int = 30,
 ) -> StateGraph:
     """LangGraph 에이전트 그래프를 생성하고 컴파일한다.
 
@@ -61,13 +65,18 @@ def create_agent_graph(
     for t in tools:
         tool_dict[t.name] = t
 
-    bound_llm = llm.bind_tools(tools)
+    bound_llm = llm.bind_tools(tools, tool_choice="auto")
 
     graph = StateGraph(AgentState)
 
     graph.add_node(
         "call_model",
-        partial(call_model, llm=bound_llm, max_context_messages=max_context_messages),
+        partial(
+            call_model,
+            llm=bound_llm,
+            max_context_messages=max_context_messages,
+            max_tool_calls=max_tool_calls,
+        ),
     )
     graph.add_node(
         "execute_tool",
