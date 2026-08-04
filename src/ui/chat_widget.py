@@ -18,15 +18,15 @@ from PySide6.QtWidgets import (
 logger = logging.getLogger("psjba.ui.chat_widget")
 
 TOOL_CALL_STYLE = (
-    "QFrame { border: 1px solid #2a2a4a; border-radius: 6px; margin: 2px 0; "
-    "background-color: #16213e; }"
+    "QFrame { border: 1px solid #dce1e8; border-radius: 6px; margin: 2px 0; "
+    "background-color: #f8fafc; }"
 )
 MSG_STYLE = (
-    "QFrame { background-color: #0f3460; border-radius: 8px; "
+    "QFrame { background-color: #4f46e5; border-radius: 8px; "
     "padding: 6px 12px; margin: 3px 12px; }"
 )
 AI_MSG_STYLE = (
-    "QFrame { background-color: #1e1e3a; border-radius: 8px; "
+    "QFrame { background-color: #ffffff; border-radius: 8px; "
     "padding: 6px 12px; margin: 3px 12px; }"
 )
 
@@ -48,14 +48,14 @@ class _ToolCallWidget(QFrame):
         layout.setSpacing(2)
 
         self._header = QLabel(f"▶ {tool_name}")
-        self._header.setStyleSheet("color: #4FC3F7; font-weight: bold; border: none;")
+        self._header.setStyleSheet("color: #4f46e5; font-weight: bold; border: none;")
         self._header.setCursor(Qt.CursorShape.PointingHandCursor)
         self._header.mousePressEvent = self._toggle
         layout.addWidget(self._header)
 
         self._detail = QLabel()
         self._detail.setWordWrap(True)
-        self._detail.setStyleSheet("color: #aaa; font-size: 11px; border: none;")
+        self._detail.setStyleSheet("color: #64748b; font-size: 11px; border: none;")
         self._detail.setText(
             f"Input: {tool_input[:300]}\n\nResult: {tool_result[:500]}"
         )
@@ -88,7 +88,7 @@ class _ContentBrowser(QTextBrowser):
             QSizePolicy.Expanding, QSizePolicy.Fixed
         )
         self.setStyleSheet(
-            "QTextBrowser { background: transparent; color: white; border: none; "
+            "QTextBrowser { background: transparent; color: #1e293b; border: none; "
             "padding: 0px; margin: 0px; }"
         )
         if align_right:
@@ -154,7 +154,7 @@ class _MessageBlock(QFrame):
 
                 divider = QFrame()
                 divider.setFrameShape(QFrame.Shape.HLine)
-                divider.setStyleSheet("color: #555;")
+                divider.setStyleSheet("color: #dce1e8;")
                 layout.addWidget(divider)
 
             layout.addWidget(self._make_content_browser(content))
@@ -191,12 +191,12 @@ class ChatWidget(QWidget):
             Qt.ScrollBarPolicy.ScrollBarAsNeeded
         )
         self._scroll_area.setStyleSheet(
-            "QScrollArea { border: none; background-color: #1a1a2e; }"
+            "QScrollArea { border: none; background-color: #f0f2f5; }"
         )
         layout.addWidget(self._scroll_area)
 
         self._container = QWidget()
-        self._container.setStyleSheet("background-color: #1a1a2e;")
+        self._container.setStyleSheet("background-color: #f0f2f5;")
         self._container_layout = QVBoxLayout(self._container)
         self._container_layout.setContentsMargins(4, 2, 4, 2)
         self._container_layout.setSpacing(2)

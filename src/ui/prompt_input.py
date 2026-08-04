@@ -41,10 +41,10 @@ class PromptInput(QWidget):
         font.setPointSize(12)
         self._text_edit.setFont(font)
         self._text_edit.setStyleSheet(
-            "QTextEdit { background-color: #16213e; color: #e0e0e0; "
-            "border: 1px solid #2a2a4a; border-radius: 8px; padding: 8px; "
-            "selection-background-color: #0f3460; }"
-            "QTextEdit:focus { border: 1px solid #4FC3F7; }"
+            "QTextEdit { background-color: #ffffff; color: #1e293b; "
+            "border: 1px solid #dce1e8; border-radius: 8px; padding: 8px; "
+            "selection-background-color: #e0e7ff; }"
+            "QTextEdit:focus { border: 1px solid #4f46e5; }"
         )
         self._text_edit.installEventFilter(self)
         layout.addWidget(self._text_edit)
@@ -63,11 +63,11 @@ class PromptInput(QWidget):
         self._stop_btn.setFixedSize(32, 32)
         self._stop_btn.setToolTip("실행 정지")
         self._stop_btn.setStyleSheet(
-            "QPushButton { background-color: #4a1a1a; color: #ff6b6b; "
-            "border: 1px solid #ff6b6b; border-radius: 6px; font-weight: bold; font-size: 14px; }"
-            "QPushButton:hover { background-color: #5a2a2a; }"
-            "QPushButton:disabled { background-color: #1a1a2e; color: #444; "
-            "border: 1px solid #2a2a4a; }"
+            "QPushButton { background-color: #fef2f2; color: #ef4444; "
+            "border: 1px solid #ef4444; border-radius: 6px; font-weight: bold; font-size: 14px; }"
+            "QPushButton:hover { background-color: #fee2e2; }"
+            "QPushButton:disabled { background-color: #ffffff; color: #cbd5e1; "
+            "border: 1px solid #dce1e8; }"
         )
         self._stop_btn.setEnabled(False)
         self._stop_btn.clicked.connect(self._on_stop)
@@ -76,12 +76,12 @@ class PromptInput(QWidget):
         self._send_btn = QPushButton("전송")
         self._send_btn.setFixedWidth(80)
         self._send_btn.setStyleSheet(
-            "QPushButton { background-color: #0f3460; color: white; "
-            "border: 1px solid #4FC3F7; border-radius: 6px; padding: 6px; "
+            "QPushButton { background-color: #4f46e5; color: white; "
+            "border: 1px solid #4f46e5; border-radius: 6px; padding: 6px; "
             "font-weight: bold; }"
-            "QPushButton:hover { background-color: #1e2d50; }"
-            "QPushButton:disabled { background-color: #16213e; color: #555; "
-            "border: 1px solid #2a2a4a; }"
+            "QPushButton:hover { background-color: #4338ca; }"
+            "QPushButton:disabled { background-color: #ffffff; color: #94a3b8; "
+            "border: 1px solid #dce1e8; }"
         )
         self._send_btn.clicked.connect(self._on_send)
         btn_layout.addWidget(self._send_btn)
