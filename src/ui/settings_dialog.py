@@ -847,20 +847,26 @@ class SettingsDialog(QDialog):
 
             self._clear_layout(self._cron_l3_time_layout)
             self._cron_l3_time_list = []
+            # load_messages와 동일한 필터 적용 (빈 블록은 타임라인에서 제외)
+            visible_idx = 0
             for m in messages:
+                has_content = m.content and m.content.strip()
+                has_tool_calls = getattr(m, "tool_calls", None)
+                if m.role in ("assistant", "tool") and not has_content and not has_tool_calls:
+                    continue
                 ts = getattr(m, "created_at", None)
                 time_str = ts.strftime("%m-%d %H:%M") if isinstance(ts, datetime) else ""
                 self._cron_l3_time_list.append({"time": time_str, "role": m.role, "content": m.content})
 
-            for idx, item in enumerate(self._cron_l3_time_list):
-                btn = QPushButton(f"{item['time']} [{item['role']}]")
+                btn = QPushButton(f"{time_str} [{m.role}]")
                 btn.setStyleSheet(
                     "QPushButton { text-align: left; border: 1px solid #dce1e8; "
                     "border-radius: 4px; padding: 4px; font-size: 11px; "
                     "background-color: #ffffff; }"
                     "QPushButton:hover { background-color: #f0f2f5; border: 1px solid #4f46e5; }"
                 )
-                btn.clicked.connect(lambda checked, i=idx: self._scroll_cron_l3_to(i))
+                btn.clicked.connect(lambda checked, i=visible_idx: self._scroll_cron_l3_to(i))
+                visible_idx += 1
                 count = self._cron_l3_time_layout.count()
                 self._cron_l3_time_layout.insertWidget(count - 1, btn)
 
@@ -882,7 +888,7 @@ class SettingsDialog(QDialog):
         _on_loaded(messages)
 
     def _scroll_cron_l3_to(self, idx: int) -> None:
-        pass
+        self._cron_l3_chat.scroll_to_message(idx)
 
     # ─── 로그 탭 (2단계 드릴다운) ─────────────────────────────────
 
@@ -1086,27 +1092,33 @@ class SettingsDialog(QDialog):
 
         self._clear_layout(self._log_l2_time_layout)
         self._log_l2_time_list = []
+        # load_messages와 동일한 필터 적용 (빈 블록은 타임라인에서 제외)
+        visible_idx = 0
         for m in messages:
+            has_content = m.content and m.content.strip()
+            # DB에서 tool_calls 정보는 별도 저장 안 하므로 항상 None
+            if m.role in ("assistant", "tool") and not has_content:
+                continue
             ts = getattr(m, "created_at", None)
             time_str = ts.strftime("%m-%d %H:%M") if isinstance(ts, datetime) else ""
             self._log_l2_time_list.append({"time": time_str, "role": m.role, "content": m.content})
 
-        for idx, item in enumerate(self._log_l2_time_list):
-            btn = QPushButton(f"{item['time']} [{item['role']}]")
+            btn = QPushButton(f"{time_str} [{m.role}]")
             btn.setStyleSheet(
                 "QPushButton { text-align: left; border: 1px solid #dce1e8; "
                 "border-radius: 4px; padding: 4px; font-size: 11px; "
                 "background-color: #ffffff; }"
                 "QPushButton:hover { background-color: #f0f2f5; border: 1px solid #4f46e5; }"
             )
-            btn.clicked.connect(lambda checked, i=idx: self._scroll_log_l2_to(i))
+            btn.clicked.connect(lambda checked, i=visible_idx: self._scroll_log_l2_to(i))
+            visible_idx += 1
             count = self._log_l2_time_layout.count()
             self._log_l2_time_layout.insertWidget(count - 1, btn)
 
         self._log_stacked.setCurrentIndex(1)
 
     def _scroll_log_l2_to(self, idx: int) -> None:
-        pass
+        self._log_l2_chat.scroll_to_message(idx)
 
     # ─── 설정 로드/저장 ───────────────────────────────────────────
 

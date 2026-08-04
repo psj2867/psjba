@@ -30,6 +30,7 @@ from src.database import Database
 from src.browser.manager import PlaywrightManager
 from src.cron.scheduler import CronScheduler
 from src.cron.executor import CronExecutor
+from src.cron.job_scheduler import JobScheduler
 from src.models.schemas import Message, Session
 from src.ui.main_window import MainWindow
 
@@ -195,12 +196,18 @@ async def run(config: Config) -> None:
     logger.info("Step 5/10: CronScheduler started (%d jobs)",
                 cron_scheduler.registered_count)
 
+    # 1회성 JobScheduler
+    job_scheduler = JobScheduler(config=config, db=db, manager=manager)
+    await job_scheduler.start()
+    logger.info("Step 5a/10: JobScheduler started")
+
     # manager에 크론 의존성 주입
     manager.set_cron_dependencies(db=db, cron_scheduler=cron_scheduler)
     logger.info("Step 5b/10: Cron dependencies injected into manager")
 
     # MainWindow
     window = MainWindow(config=config, db=db, manager=manager)
+    manager.set_main_window(window)
     logger.info("Step 6/10: MainWindow created")
 
     # 시그널
@@ -304,6 +311,7 @@ async def run(config: Config) -> None:
         # 종료 정리
         cron_scheduler.stop_all()
         cron_executor.cancel_all()
+        await job_scheduler.stop()
         if manager.is_connected:
             await manager.disconnect()
         await db.close()

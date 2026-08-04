@@ -21,6 +21,11 @@ TOOL_CALL_STYLE = (
     "QFrame { border: 1px solid #dce1e8; border-radius: 6px; margin: 2px 0; "
     "background-color: #f8fafc; }"
 )
+CODE_BLOCK_STYLE = (
+    "QLabel { background-color: #f1f5f9; color: #334155; border: 1px solid #e2e8f0; "
+    "border-radius: 4px; padding: 6px 8px; font-family: Consolas, Menlo, monospace; "
+    "font-size: 11px; }"
+)
 MSG_STYLE = (
     "QFrame { background-color: #818cf8; border-radius: 8px; "
     "padding: 6px 12px; margin: 3px 12px; }"
@@ -29,6 +34,27 @@ AI_MSG_STYLE = (
     "QFrame { background-color: #ffffff; border-radius: 8px; "
     "padding: 6px 12px; margin: 3px 12px; }"
 )
+
+
+def _looks_like_json(text: str) -> bool:
+    """JSON 형식(객체/배열)으로 시작하는지 검사한다."""
+    stripped = text.strip()
+    if not stripped:
+        return False
+    return stripped[0] in ("{", "[")
+
+
+def _format_json_result(text: str, limit: int = 3000) -> str:
+    """JSON 결과를 보기 좋게 들여쓰기된 코드블럭 텍스트로 포맷팅한다."""
+    stripped = text.strip()
+    try:
+        parsed = json.loads(stripped)
+        pretty = json.dumps(parsed, ensure_ascii=False, indent=2)
+    except (json.JSONDecodeError, ValueError):
+        pretty = stripped
+    if len(pretty) > limit:
+        pretty = pretty[:limit] + "\n... (truncated)"
+    return pretty
 
 
 class _ToolCallWidget(QFrame):
@@ -53,12 +79,19 @@ class _ToolCallWidget(QFrame):
         self._header.mousePressEvent = self._toggle
         layout.addWidget(self._header)
 
-        self._detail = QLabel()
+        # result가 JSON이면 코드블럭으로 포맷팅
+        if _looks_like_json(tool_result):
+            formatted = _format_json_result(tool_result)
+            self._detail = QLabel(
+                f"Input: {tool_input[:300]}\n\nResult:\n```json\n{formatted}\n```"
+            )
+            self._detail.setStyleSheet(CODE_BLOCK_STYLE)
+        else:
+            self._detail = QLabel(
+                f"Input: {tool_input[:300]}\n\nResult: {tool_result[:500]}"
+            )
+            self._detail.setStyleSheet("color: #64748b; font-size: 11px; border: none;")
         self._detail.setWordWrap(True)
-        self._detail.setStyleSheet("color: #64748b; font-size: 11px; border: none;")
-        self._detail.setText(
-            f"Input: {tool_input[:300]}\n\nResult: {tool_result[:500]}"
-        )
         self._detail.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
@@ -144,6 +177,8 @@ class _MessageBlock(QFrame):
             layout.setContentsMargins(8, 6, 8, 6)
             layout.setSpacing(4)
 
+            has_content = content and content.strip()
+
             if tool_calls:
                 for tc in tool_calls:
                     name = tc.get("name", "unknown")
@@ -152,12 +187,14 @@ class _MessageBlock(QFrame):
                     tc_widget = _ToolCallWidget(name, args_str, result)
                     layout.addWidget(tc_widget)
 
-                divider = QFrame()
-                divider.setFrameShape(QFrame.Shape.HLine)
-                divider.setStyleSheet("color: #dce1e8;")
-                layout.addWidget(divider)
+            if has_content:
+                    divider = QFrame()
+                    divider.setFrameShape(QFrame.Shape.HLine)
+                    divider.setStyleSheet("color: #dce1e8;")
+                    layout.addWidget(divider)
 
-            layout.addWidget(self._make_content_browser(content))
+            if has_content:
+                layout.addWidget(self._make_content_browser(content))
 
     @staticmethod
     def _make_content_browser(content: str, align_right: bool = False, text_color: str = "#1e293b") -> _ContentBrowser:
@@ -346,6 +383,9 @@ class ChatWidget(QWidget):
             if role == "user":
                 self.add_user_message(content)
             elif role in ("assistant", "tool"):
+                # content도 tool_calls도 없는 빈 AI 메시지는 건너뜀 (공백 블록 방지)
+                if not (content and content.strip()) and not tool_calls:
+                    continue
                 self.add_ai_block(content, tool_calls)
         self._scroll_to_bottom()
 
@@ -356,6 +396,16 @@ class ChatWidget(QWidget):
                 item.widget().deleteLater()
         self._thinking_block = None
         self._last_ai_block = None
+
+    def scroll_to_message(self, index: int) -> None:
+        """N번째 메시지 블록으로 스크롤 이동. (로그 타임라인용)"""
+        count = self._container_layout.count()
+        # count-1 = stretch 아이템 (마지막)
+        if index < 0 or index >= count - 1:
+            return
+        item = self._container_layout.itemAt(index)
+        if item and item.widget():
+            self._scroll_area.ensureWidgetVisible(item.widget())
 
     # --- 내부 헬퍼 ---
 

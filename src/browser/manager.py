@@ -684,6 +684,10 @@ class PlaywrightManager:
         self._db = db
         self._cron_scheduler = cron_scheduler
 
+    def set_main_window(self, window: Any) -> None:
+        """MainWindow 참조를 주입한다 (cron_to_session UI 업데이트용)."""
+        self._main_window = window
+
     # ─── 크론 도구 구현 ────────────────────────────────────────
 
     async def cron_add(self, name: str, schedule: str, prompt: str) -> str:
@@ -792,6 +796,17 @@ class PlaywrightManager:
             await self._cron_scheduler.remove_job(job_id)
 
         return f"cron_remove: job '{job.name}' (id={job_id}) removed"
+
+    async def add_main_session_message(self, message: str) -> str:
+        """메인 세션 채팅창에 메시지를 표시한다."""
+        if hasattr(self, "_main_window") and self._main_window is not None:
+            try:
+                self._main_window._chat.add_ai_block(f"[크론→메인] {message}")
+                return f"add_main_session_message: displayed '{message[:60]}'"
+            except Exception as e:
+                logger.warning("Failed to display main window chat: %s", e)
+                return f"add_main_session_message error: {e}"
+        return "add_main_session_message error: main window not available"
 
     # ─── 메모리 검색 (스텁 — database.py FTS5 활용) ────────
 

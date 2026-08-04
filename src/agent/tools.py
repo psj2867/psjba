@@ -178,7 +178,7 @@ def create_browser_tools(
 
 
 def create_cron_tools(manager: PlaywrightManager, db: Any = None) -> list:
-    """크론 도구 리스트를 생성한다."""
+    """크론 + 1회성 job 도구 리스트를 생성한다."""
 
     @tool
     async def cron_add(name: str, schedule: str, prompt: str) -> str:
@@ -214,23 +214,31 @@ def create_cron_tools(manager: PlaywrightManager, db: Any = None) -> list:
     async def cron_to_session(message: str) -> str:
         """Send a message from a cron job to the main chat session so the user sees it.
         Use this to report progress, results, or ask the user something."""
-        if db is None:
-            return "cron_to_session error: database not available"
-        main_session_id = await db.get_current_session_id()
-        if not main_session_id:
-            return "cron_to_session error: no active main session"
-        from src.models.schemas import Message as Msg
-        from datetime import datetime
-        db_msg = Msg(
-            session_id=main_session_id,
-            role="assistant",
-            content=f"[크론→메인] {message}",
-            created_at=datetime.now(),
-        )
-        await db.save_message(db_msg)
-        return f"cron_to_session: message sent to main session '{message[:60]}'"
+        return await manager.add_main_session_message(message)
 
-    return [cron_add, cron_list, cron_edit, cron_toggle, cron_remove, cron_to_session]
+    @tool
+    async def job_add(name: str, time_str: str, prompt: str) -> str:
+        """Add a one-time scheduled job. time_str is a datetime in ISO format (e.g. '2026-07-30T15:30:00' or '2026-07-30 15:30:00')."""
+        if db is None:
+            return "job_add error: database not available"
+        from datetime import datetime
+        from src.models.schemas import ScheduledJob
+        parsed = time_str.replace("T", " ").strip()
+        dt = datetime.fromisoformat(parsed)
+        if dt <= datetime.now():
+            return f"job_add error: time must be in the future (now: {datetime.now().isoformat()[:19]})"
+        job = ScheduledJob(
+            name=name,
+            scheduled_at=dt,
+            prompt=prompt,
+        )
+        await db.create_scheduled_job(job)
+        return (
+            f"Scheduled one-time job '{name}' created: "
+            f"will run at {dt.isoformat()[:19]} (ID: {job.id})"
+        )
+
+    return [cron_add, cron_list, cron_edit, cron_toggle, cron_remove, cron_to_session, job_add]
 
 
 def create_memory_tools(db: Database, session_id: str) -> list:

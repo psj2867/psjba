@@ -36,6 +36,8 @@ def _apply_sliding_window(
     min_keep개의 최근 user 메시지는 절대 제거하지 않음.
     assistant 메시지는 user 메시지에 종속되어 함께 제거됨.
 
+    첫 번째 user 메시지는 항상 유지 (툴 목록이 포함된 컨텍스트 유지).
+
     Args:
         messages: 전체 메시지 리스트
         max_context: 최대 user 메시지 수
@@ -67,6 +69,12 @@ def _apply_sliding_window(
     cutoff_user_idx = user_indices[cutoff_count]
 
     keep_start = cutoff_user_idx + 1
+
+    # 첫 번째 user 메시지는 항상 유지 (툴 목록이 포함된 컨텍스트)
+    first_user_idx = user_indices[0]
+    if keep_start > first_user_idx:
+        keep_start = first_user_idx
+
     trimmed = non_system[keep_start:]
 
     if not trimmed:
@@ -83,6 +91,7 @@ _TOOL_NAME_PATTERN = re.compile(
     r"execute_script|click_by_ref)"
     r"|chrome_(?:health|start)"
     r"|cron_(?:add|list|edit|toggle|remove|to_session)"
+    r"|job_add"
     r"|memory_search|workspace_write|current_datetime)\(\)?$"
 )
 
@@ -175,7 +184,11 @@ async def call_model(
         messages = messages + injected_msgs
 
     a11y_tree = state.get("accessibility_tree", "(No page loaded)")
-    system_prompt = build_system_prompt(a11y_tree)
+    # 첫 요청(call_model)에만 툴 목록 포함.
+    # messages에 ToolMessage가 있으면 tool loop 안 → 툴 설명이 이미 컨텍스트에 있음
+    has_tool_msgs = any(isinstance(m, ToolMessage) for m in messages)
+    include_tools = not has_tool_msgs
+    system_prompt = build_system_prompt(a11y_tree, include_tools=include_tools)
 
     final_messages = [SystemMessage(content=system_prompt)] + messages
 
