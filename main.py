@@ -410,9 +410,28 @@ async def _handle_prompt(
         try:
             # astream 사용: 각 노드 실행 사이에 이벤트 루프에 yield 하여
             # Qt UI 이벤트가 처리될 기회를 준다 (UI 멈춤 방지)
+            # 매 이벤트마다 AI content를 확인하여 실시간 표시한다.
             final_state = None
+            last_ai_msg_id: str | None = None
             async for event in graph.astream(state, stream_mode="values"):
                 final_state = event
+                # 실시간 AI content 표시 (툴 콜 없이 알려주는 텍스트)
+                try:
+                    event_msgs = event.get("messages", [])
+                    if event_msgs:
+                        for m in reversed(event_msgs):
+                            if m.type != "ai":
+                                continue
+                            msg_id = getattr(m, "id", None)
+                            if msg_id is not None and msg_id == last_ai_msg_id:
+                                break
+                            last_ai_msg_id = msg_id
+                            content = str(m.content or "").strip()
+                            if content:
+                                window._chat.update_ai_content(content)
+                            break
+                except Exception as e:
+                    logger.debug("Real-time content update failed: %s", e)
                 await asyncio.sleep(0)  # Qt 이벤트 루프에 명시적 양보
                 # stop 플래그 체크 (CancelledError 가 안 먹히는 엔진 대비)
                 if window.stop_requested:
@@ -450,10 +469,7 @@ async def _handle_prompt(
                          "id": tc.get("id", "")}
                         for tc in last.tool_calls
                     ]
-                window._chat.replace_thinking_skeleton(
-                    str(last.content),
-                    tool_calls=tool_calls,
-                )
+                window._chat.finalize_ai_response(str(last.content), tool_calls=tool_calls)
 
             # 모든 새 메시지 DB 저장 (단, developer role 메시지는 저장 안 함)
             for msg in new_messages:

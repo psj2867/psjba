@@ -175,6 +175,7 @@ class ChatWidget(QWidget):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self._thinking_block: Optional[_MessageBlock] = None
+        self._last_ai_block: Optional[_MessageBlock] = None  # 실시간 갱신용
         self._init_ui()
 
     def _init_ui(self) -> None:
@@ -273,7 +274,51 @@ class ChatWidget(QWidget):
             self._insert_block(new_block)
 
         old_block.deleteLater()
+        self._last_ai_block = new_block  # 실시간 갱신 대상 등록
         self._scroll_to_bottom()
+
+    # --- 실시간 AI content 갱신 ---
+
+    def update_ai_content(self, content: str) -> None:
+        """현재 AI 블록의 content를 실시간 갱신한다.
+
+        _thinking_block이 있으면 skeleton을 실제 AI 블록으로 교체하고,
+        _last_ai_block이 있으면 해당 블록의 content만 갱신한다.
+        둘 다 없으면 새 블록을 추가한다.
+        """
+        if self._thinking_block:
+            # 응답 대기중 skeleton → 첫 AI content로 교체
+            self.replace_thinking_skeleton(content)
+            return
+
+        if self._last_ai_block:
+            for browser in self._last_ai_block.findChildren(QTextBrowser):
+                if browser.objectName() == "content":
+                    browser.setMarkdown(content)
+                    break
+        else:
+            self.add_ai_block(content)
+
+    def finalize_ai_response(
+        self,
+        content: str,
+        tool_calls: Optional[list[dict[str, Any]]] = None,
+    ) -> None:
+        """최종 AI 응답 표시.
+
+        스켈론이 남아있으면 교체하고, 이미 실시간으로 표시된 블록이 있으면
+        content만 최종 갱신한다. (중복 블록 방지)
+        """
+        if self._thinking_block:
+            self.replace_thinking_skeleton(content, tool_calls)
+        elif self._last_ai_block:
+            for browser in self._last_ai_block.findChildren(QTextBrowser):
+                if browser.objectName() == "content":
+                    browser.setMarkdown(content)
+                    break
+            self._scroll_to_bottom()
+        else:
+            self.add_ai_block(content, tool_calls)
 
     # --- AI 응답 블록 ---
 
@@ -284,6 +329,7 @@ class ChatWidget(QWidget):
     ) -> None:
         block = _MessageBlock("assistant", content, tool_calls)
         self._insert_block(block)
+        self._last_ai_block = block
         self._scroll_to_bottom()
 
     # --- 세션 로드 / 초기화 ---
@@ -309,6 +355,7 @@ class ChatWidget(QWidget):
             if item.widget():
                 item.widget().deleteLater()
         self._thinking_block = None
+        self._last_ai_block = None
 
     # --- 내부 헬퍼 ---
 
