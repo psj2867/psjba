@@ -76,7 +76,7 @@ class _ToolCallWidget(QFrame):
 class _ContentBrowser(QTextBrowser):
     """내용물 높이만큼만 차지하는 QTextBrowser (내부 스크롤 없음, sizeHint 최소화)."""
 
-    def __init__(self, content: str, align_right: bool = False) -> None:
+    def __init__(self, content: str, align_right: bool = False, text_color: str = "#1e293b") -> None:
         super().__init__()
         self._last_width = 0
         self.setObjectName("content")
@@ -88,7 +88,7 @@ class _ContentBrowser(QTextBrowser):
             QSizePolicy.Expanding, QSizePolicy.Fixed
         )
         self.setStyleSheet(
-            "QTextBrowser { background: transparent; color: #1e293b; border: none; "
+            f"QTextBrowser {{ background: transparent; color: {text_color}; border: none; "
             "padding: 0px; margin: 0px; }"
         )
         if align_right:
@@ -137,7 +137,7 @@ class _MessageBlock(QFrame):
             layout = QVBoxLayout(self)
             layout.setContentsMargins(8, 6, 8, 6)
             layout.setSpacing(4)
-            layout.addWidget(self._make_content_browser(content, align_right=True))
+            layout.addWidget(self._make_content_browser(content, align_right=True, text_color="#ffffff"))
         else:
             self.setStyleSheet(AI_MSG_STYLE)
             layout = QVBoxLayout(self)
@@ -160,9 +160,9 @@ class _MessageBlock(QFrame):
             layout.addWidget(self._make_content_browser(content))
 
     @staticmethod
-    def _make_content_browser(content: str, align_right: bool = False) -> _ContentBrowser:
+    def _make_content_browser(content: str, align_right: bool = False, text_color: str = "#1e293b") -> _ContentBrowser:
         """마크다운(테이블/코드블록 포함)을 렌더링하는 읽기 전용 브라우저."""
-        return _ContentBrowser(content, align_right=align_right)
+        return _ContentBrowser(content, align_right=align_right, text_color=text_color)
 
 
 class ChatWidget(QWidget):
