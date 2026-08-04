@@ -144,6 +144,8 @@ class _MessageBlock(QFrame):
             layout.setContentsMargins(8, 6, 8, 6)
             layout.setSpacing(4)
 
+            has_content = content and content.strip()
+
             if tool_calls:
                 for tc in tool_calls:
                     name = tc.get("name", "unknown")
@@ -152,12 +154,14 @@ class _MessageBlock(QFrame):
                     tc_widget = _ToolCallWidget(name, args_str, result)
                     layout.addWidget(tc_widget)
 
-                divider = QFrame()
-                divider.setFrameShape(QFrame.Shape.HLine)
-                divider.setStyleSheet("color: #555;")
-                layout.addWidget(divider)
+                if has_content:
+                    divider = QFrame()
+                    divider.setFrameShape(QFrame.Shape.HLine)
+                    divider.setStyleSheet("color: #555;")
+                    layout.addWidget(divider)
 
-            layout.addWidget(self._make_content_browser(content))
+            if has_content:
+                layout.addWidget(self._make_content_browser(content))
 
     @staticmethod
     def _make_content_browser(content: str, align_right: bool = False) -> _ContentBrowser:
@@ -346,6 +350,9 @@ class ChatWidget(QWidget):
             if role == "user":
                 self.add_user_message(content)
             elif role in ("assistant", "tool"):
+                # content도 tool_calls도 없는 빈 AI 메시지는 건너뜀 (공백 블록 방지)
+                if not (content and content.strip()) and not tool_calls:
+                    continue
                 self.add_ai_block(content, tool_calls)
         self._scroll_to_bottom()
 
@@ -356,6 +363,16 @@ class ChatWidget(QWidget):
                 item.widget().deleteLater()
         self._thinking_block = None
         self._last_ai_block = None
+
+    def scroll_to_message(self, index: int) -> None:
+        """N번째 메시지 블록으로 스크롤 이동. (로그 타임라인용)"""
+        count = self._container_layout.count()
+        # count-1 = stretch 아이템 (마지막)
+        if index < 0 or index >= count - 1:
+            return
+        item = self._container_layout.itemAt(index)
+        if item and item.widget():
+            self._scroll_area.ensureWidgetVisible(item.widget())
 
     # --- 내부 헬퍼 ---
 
