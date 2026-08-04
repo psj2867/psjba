@@ -43,3 +43,18 @@ class CronJob:
     next_run_at: Optional[datetime] = None
     created_at: datetime = field(default_factory=datetime.now)
     updated_at: datetime = field(default_factory=datetime.now)
+
+
+@dataclass
+class ScheduledJob:
+    """1회성 예약 job — 지정된 시간에 한 번만 실행된다."""
+
+    id: str = field(default_factory=lambda: str(uuid4()))
+    name: str = ""
+    scheduled_at: datetime = field(default_factory=datetime.now)
+    prompt: str = ""
+    status: str = "pending"  # pending | running | done | cancelled | error
+    session_id: Optional[str] = None
+    error_message: Optional[str] = None
+    created_at: datetime = field(default_factory=datetime.now)
+    updated_at: datetime = field(default_factory=datetime.now)

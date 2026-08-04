@@ -119,9 +119,9 @@ def _make_tooltip_icon(text: str) -> QLabel:
     lbl.setFixedSize(18, 18)
     lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
     lbl.setStyleSheet(
-        "QLabel { background-color: #2a2a4a; color: #4FC3F7; border-radius: 9px; "
+        "QLabel { background-color: #dce1e8; color: #4f46e5; border-radius: 9px; "
         "font-size: 10px; font-weight: bold; }"
-        "QLabel:hover { background-color: #3a3a5a; }"
+        "QLabel:hover { background-color: #e8ecf0; }"
     )
     lbl.setCursor(Qt.CursorShape.WhatsThisCursor)
     lbl.setToolTip(text)
@@ -162,34 +162,34 @@ class SettingsDialog(QDialog):
         self._tabs.addTab(self._build_log_tab(), "로그")
 
     def _apply_theme(self) -> None:
-        """단일 고정 다크 테마 적용."""
+        """단일 고정 라이트 테마 적용."""
         self.setStyleSheet("""
             QDialog {
-                background-color: #1a1a2e;
-                color: #e0e0e0;
+                background-color: #f0f2f5;
+                color: #1e293b;
             }
             QToolTip {
-                background-color: #16213e;
-                color: #e0e0e0;
-                border: 1px solid #0f3460;
+                background-color: #ffffff;
+                color: #1e293b;
+                border: 1px solid #dce1e8;
                 border-radius: 6px;
                 padding: 6px 10px;
                 font-size: 12px;
             }
             QFrame {
-                background-color: #1e1e3a;
-                border: 1px solid #2a2a4a;
+                background-color: #ffffff;
+                border: 1px solid #dce1e8;
                 border-radius: 10px;
                 padding: 14px;
             }
             QTabWidget::pane {
-                background-color: #1a1a2e;
+                background-color: #f0f2f5;
                 border: none;
-                border-top: 1px solid #2a2a4a;
+                border-top: 1px solid #dce1e8;
             }
             QTabBar::tab {
-                background-color: #1e1e3a;
-                color: #888;
+                background-color: #e8ecf0;
+                color: #64748b;
                 padding: 8px 20px;
                 border: none;
                 border-top-left-radius: 8px;
@@ -198,40 +198,40 @@ class SettingsDialog(QDialog):
                 font-size: 12px;
             }
             QTabBar::tab:selected {
-                background-color: #1a1a2e;
-                color: #4FC3F7;
-                border-bottom: 2px solid #4FC3F7;
+                background-color: #f0f2f5;
+                color: #4f46e5;
+                border-bottom: 2px solid #4f46e5;
             }
             QTabBar::tab:hover:!selected {
-                background-color: #252545;
-                color: #aaa;
+                background-color: #dde3ea;
+                color: #475569;
             }
             QLabel {
-                color: #e0e0e0;
+                color: #1e293b;
                 background-color: transparent;
             }
             QLineEdit {
-                background-color: #16213e;
-                color: #e0e0e0;
-                border: 1px solid #2a2a4a;
+                background-color: #ffffff;
+                color: #1e293b;
+                border: 1px solid #dce1e8;
                 border-radius: 6px;
                 padding: 6px 10px;
                 font-size: 13px;
-                selection-background-color: #0f3460;
+                selection-background-color: #e0e7ff;
             }
             QLineEdit:focus {
-                border: 1px solid #4FC3F7;
+                border: 1px solid #4f46e5;
             }
             QComboBox {
-                background-color: #16213e;
-                color: #e0e0e0;
-                border: 1px solid #2a2a4a;
+                background-color: #ffffff;
+                color: #1e293b;
+                border: 1px solid #dce1e8;
                 border-radius: 6px;
                 padding: 6px 10px;
                 font-size: 13px;
             }
             QComboBox:focus {
-                border: 1px solid #4FC3F7;
+                border: 1px solid #4f46e5;
             }
             QComboBox::drop-down {
                 border: none;
@@ -242,41 +242,41 @@ class SettingsDialog(QDialog):
                 width: 0;
             }
             QComboBox QAbstractItemView {
-                background-color: #16213e;
-                color: #e0e0e0;
-                border: 1px solid #2a2a4a;
+                background-color: #ffffff;
+                color: #1e293b;
+                border: 1px solid #dce1e8;
                 border-radius: 6px;
-                selection-background-color: #0f3460;
+                selection-background-color: #e0e7ff;
                 padding: 4px;
             }
             QSpinBox, QDoubleSpinBox {
-                background-color: #16213e;
-                color: #e0e0e0;
-                border: 1px solid #2a2a4a;
+                background-color: #ffffff;
+                color: #1e293b;
+                border: 1px solid #dce1e8;
                 border-radius: 6px;
                 padding: 4px 8px;
                 font-size: 13px;
             }
             QSpinBox:focus, QDoubleSpinBox:focus {
-                border: 1px solid #4FC3F7;
+                border: 1px solid #4f46e5;
             }
             QPushButton {
-                background-color: #16213e;
-                color: #e0e0e0;
-                border: 1px solid #2a2a4a;
+                background-color: #ffffff;
+                color: #1e293b;
+                border: 1px solid #dce1e8;
                 border-radius: 6px;
                 padding: 6px 14px;
                 font-size: 13px;
             }
             QPushButton:hover {
-                background-color: #1e2d50;
-                border: 1px solid #4FC3F7;
+                background-color: #f0f2f5;
+                border: 1px solid #4f46e5;
             }
             QPushButton:pressed {
-                background-color: #0f3460;
+                background-color: #e0e7ff;
             }
             QCheckBox {
-                color: #e0e0e0;
+                color: #1e293b;
                 background-color: transparent;
                 spacing: 6px;
             }
@@ -284,12 +284,12 @@ class SettingsDialog(QDialog):
                 width: 18px;
                 height: 18px;
                 border-radius: 4px;
-                border: 1px solid #2a2a4a;
-                background-color: #16213e;
+                border: 1px solid #dce1e8;
+                background-color: #ffffff;
             }
             QCheckBox::indicator:checked {
-                background-color: #4FC3F7;
-                border: 1px solid #4FC3F7;
+                background-color: #4f46e5;
+                border: 1px solid #4f46e5;
             }
             QScrollArea {
                 background-color: transparent;
@@ -301,58 +301,58 @@ class SettingsDialog(QDialog):
                 margin: 0;
             }
             QScrollBar::handle:vertical {
-                background-color: #2a2a4a;
+                background-color: #cbd5e1;
                 border-radius: 4px;
                 min-height: 30px;
             }
             QScrollBar::handle:vertical:hover {
-                background-color: #3a3a5a;
+                background-color: #94a3b8;
             }
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
                 height: 0;
             }
             QTableWidget {
-                background-color: #1a1a2e;
-                color: #e0e0e0;
-                border: 1px solid #2a2a4a;
+                background-color: #ffffff;
+                color: #1e293b;
+                border: 1px solid #dce1e8;
                 border-radius: 8px;
-                gridline-color: #2a2a4a;
+                gridline-color: #e8ecf0;
             }
             QTableWidget::item {
                 padding: 6px 10px;
             }
             QTableWidget::item:selected {
-                background-color: #0f3460;
-                color: #4FC3F7;
+                background-color: #e0e7ff;
+                color: #4f46e5;
             }
             QHeaderView::section {
-                background-color: #1e1e3a;
-                color: #e0e0e0;
+                background-color: #e8ecf0;
+                color: #1e293b;
                 border: none;
-                border-bottom: 1px solid #2a2a4a;
+                border-bottom: 1px solid #dce1e8;
                 padding: 8px 10px;
                 font-weight: bold;
             }
             QMessageBox {
-                background-color: #1a1a2e;
-                color: #e0e0e0;
+                background-color: #f0f2f5;
+                color: #1e293b;
             }
             QMessageBox QLabel {
-                color: #e0e0e0;
+                color: #1e293b;
                 background-color: transparent;
             }
             QMessageBox QPushButton {
-                background-color: #16213e;
-                color: #e0e0e0;
-                border: 1px solid #2a2a4a;
+                background-color: #ffffff;
+                color: #1e293b;
+                border: 1px solid #dce1e8;
                 border-radius: 6px;
                 padding: 6px 20px;
                 min-width: 70px;
                 font-size: 13px;
             }
             QMessageBox QPushButton:hover {
-                background-color: #1e2d50;
-                border: 1px solid #4FC3F7;
+                background-color: #f0f2f5;
+                border: 1px solid #4f46e5;
             }
         """)
 
@@ -485,17 +485,17 @@ class SettingsDialog(QDialog):
         outer_layout.addWidget(scroll)
 
         hint = QLabel("API 키는 MAC 주소 기반으로 암호화되어 저장됩니다")
-        hint.setStyleSheet("color: #666; font-size: 11px; padding: 4px 0;")
+        hint.setStyleSheet("color: #64748b; font-size: 11px; padding: 4px 0;")
         outer_layout.addWidget(hint)
 
         save_row = QHBoxLayout()
         save_row.addStretch()
         save_btn = QPushButton("💾 저장")
         save_btn.setStyleSheet(
-            "QPushButton { background-color: #0f3460; color: white; "
-            "border: 1px solid #4FC3F7; border-radius: 8px; "
+            "QPushButton { background-color: #4f46e5; color: white; "
+            "border: 1px solid #4f46e5; border-radius: 8px; "
             "padding: 8px 24px; font-weight: bold; font-size: 13px; }"
-            "QPushButton:hover { background-color: #1e2d50; }"
+            "QPushButton:hover { background-color: #4338ca; }"
         )
         save_btn.clicked.connect(self._save)
         save_row.addWidget(save_btn)
@@ -644,7 +644,7 @@ class SettingsDialog(QDialog):
                 empty_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 empty_lbl.setWordWrap(True)
                 empty_lbl.setStyleSheet(
-                    "color: #666; border: none; font-size: 13px; padding: 40px;"
+                    "color: #64748b; border: none; font-size: 13px; padding: 40px;"
                 )
                 count = self._cron_card_layout.count()
                 self._cron_card_layout.insertWidget(count - 1, empty_lbl)
@@ -660,9 +660,9 @@ class SettingsDialog(QDialog):
         frame = QFrame()
         frame.setFrameShape(QFrame.Shape.StyledPanel)
         frame.setStyleSheet(
-            "QFrame { border: 1px solid #2a2a4a; border-radius: 8px; padding: 10px; "
-            "background-color: #1e1e3a; }"
-            "QFrame:hover { background-color: #252545; }"
+            "QFrame { border: 1px solid #dce1e8; border-radius: 8px; padding: 10px; "
+            "background-color: #ffffff; }"
+            "QFrame:hover { background-color: #e8ecf0; }"
         )
         layout = QVBoxLayout(frame)
 
@@ -671,7 +671,7 @@ class SettingsDialog(QDialog):
         icon.setStyleSheet("border: none; font-size: 14px;")
         top.addWidget(icon)
         name_lbl = QLabel(job.name)
-        name_lbl.setStyleSheet("font-weight: bold; border: none; color: #e0e0e0;")
+        name_lbl.setStyleSheet("font-weight: bold; border: none; color: #1e293b;")
         top.addWidget(name_lbl)
         top.addStretch()
 
@@ -685,9 +685,9 @@ class SettingsDialog(QDialog):
 
         log_btn = QPushButton("📋 로그")
         log_btn.setStyleSheet(
-            "QPushButton { border: 1px solid #2a2a4a; border-radius: 4px; padding: 2px 8px; "
-            "background-color: #16213e; }"
-            "QPushButton:hover { border: 1px solid #4FC3F7; background-color: #1e2d50; }"
+            "QPushButton { border: 1px solid #dce1e8; border-radius: 4px; padding: 2px 8px; "
+            "background-color: #ffffff; }"
+            "QPushButton:hover { border: 1px solid #4f46e5; background-color: #f0f2f5; }"
         )
         log_btn.clicked.connect(lambda: self._on_cron_log_click(job.id, job.name))
         top.addWidget(log_btn)
@@ -695,7 +695,7 @@ class SettingsDialog(QDialog):
 
         sched_row = QHBoxLayout()
         sched_lbl = QLabel(f"주기: {job.schedule}")
-        sched_lbl.setStyleSheet("color: #aaa; font-size: 11px; border: none;")
+        sched_lbl.setStyleSheet("color: #94a3b8; font-size: 11px; border: none;")
         sched_row.addWidget(sched_lbl)
         sched_row.addStretch()
         layout.addLayout(sched_row)
@@ -704,15 +704,15 @@ class SettingsDialog(QDialog):
         next_txt = job.next_run_at.strftime("%Y-%m-%d %H:%M") if job.next_run_at else "(비활성)"
         last_txt = job.last_run_at.strftime("%m-%d %H:%M") if job.last_run_at else "(없음)"
         info_lbl = QLabel(f"다음 실행: {next_txt}  │  마지막: {last_txt}")
-        info_lbl.setStyleSheet("color: #666; font-size: 10px; border: none;")
+        info_lbl.setStyleSheet("color: #64748b; font-size: 10px; border: none;")
         info_row.addWidget(info_lbl)
         info_row.addStretch()
         del_btn = QPushButton("🗑️")
         del_btn.setFixedSize(28, 28)
         del_btn.setStyleSheet(
-            "QPushButton { border: 1px solid #2a2a4a; border-radius: 4px; "
-            "background-color: #16213e; }"
-            "QPushButton:hover { border: 1px solid #ff6b6b; background-color: #2a1a1a; }"
+            "QPushButton { border: 1px solid #dce1e8; border-radius: 4px; "
+            "background-color: #ffffff; }"
+            "QPushButton:hover { border: 1px solid #ef4444; background-color: #fef2f2; }"
         )
         del_btn.clicked.connect(lambda: self._on_delete_cron(job.id))
         info_row.addWidget(del_btn)
@@ -724,15 +724,15 @@ class SettingsDialog(QDialog):
         if enabled:
             btn.setText("🔛 활성")
             btn.setStyleSheet(
-                "QPushButton { background-color: #0a2a1a; color: #66BB6A; "
-                "border: 1px solid #66BB6A; border-radius: 4px; padding: 2px 4px; }"
-                "QPushButton:hover { background-color: #0d3a22; }"
+                "QPushButton { background-color: #f0fdf4; color: #10b981; "
+                "border: 1px solid #10b981; border-radius: 4px; padding: 2px 4px; }"
+                "QPushButton:hover { background-color: #dcfce7; }"
             )
         else:
             btn.setText("🔴 비활성")
             btn.setStyleSheet(
-                "QPushButton { background-color: #16213e; color: #888; "
-                "border: 1px solid #2a2a4a; border-radius: 4px; padding: 2px 4px; }"
+                "QPushButton { background-color: #ffffff; color: #64748b; "
+                "border: 1px solid #dce1e8; border-radius: 4px; padding: 2px 4px; }"
             )
         logger.debug("Cron job toggle: enabled=%s", enabled)
 
@@ -776,7 +776,7 @@ class SettingsDialog(QDialog):
 
             if not sessions:
                 lbl = QLabel("실행 기록이 없습니다")
-                lbl.setStyleSheet("color: #888; border: none;")
+                lbl.setStyleSheet("color: #64748b; border: none;")
                 lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 count = self._cron_session_layout.count()
                 self._cron_session_layout.insertWidget(count - 1, lbl)
@@ -806,9 +806,9 @@ class SettingsDialog(QDialog):
         frame = QFrame()
         frame.setFrameShape(QFrame.Shape.StyledPanel)
         frame.setStyleSheet(
-            "QFrame { border: 1px solid #2a2a4a; border-radius: 6px; padding: 8px; "
-            "background-color: #1e1e3a; }"
-            "QFrame:hover { background-color: #252545; border: 1px solid #4FC3F7; }"
+            "QFrame { border: 1px solid #dce1e8; border-radius: 6px; padding: 8px; "
+            "background-color: #ffffff; }"
+            "QFrame:hover { background-color: #e8ecf0; border: 1px solid #4f46e5; }"
         )
         frame.setCursor(Qt.CursorShape.PointingHandCursor)
         layout = QHBoxLayout(frame)
@@ -820,19 +820,19 @@ class SettingsDialog(QDialog):
             time_txt = str(created)[:16]
         time_lbl = QLabel(time_txt)
         time_lbl.setFixedWidth(100)
-        time_lbl.setStyleSheet("border: none; color: #888;")
+        time_lbl.setStyleSheet("border: none; color: #64748b;")
         layout.addWidget(time_lbl)
 
         sid = session.get("id", "")[:8]
         sid_lbl = QLabel(f"{sid}...")
         sid_lbl.setFixedWidth(80)
-        sid_lbl.setStyleSheet("border: none; color: #666; font-size: 11px;")
+        sid_lbl.setStyleSheet("border: none; color: #64748b; font-size: 11px;")
         layout.addWidget(sid_lbl)
 
         resp = session.get("last_response", "") or ""
         resp_short = resp[:20] + ("..." if len(resp) > 20 else "")
         resp_lbl = QLabel(resp_short)
-        resp_lbl.setStyleSheet("border: none; color: #ccc;")
+        resp_lbl.setStyleSheet("border: none; color: #cbd5e1;")
         layout.addWidget(resp_lbl)
 
         frame.mousePressEvent = lambda e, sid=session.get("id"): self._on_l3_session_click(sid)
@@ -860,10 +860,10 @@ class SettingsDialog(QDialog):
 
                 btn = QPushButton(f"{time_str} [{m.role}]")
                 btn.setStyleSheet(
-                    "QPushButton { text-align: left; border: 1px solid #2a2a4a; "
+                    "QPushButton { text-align: left; border: 1px solid #dce1e8; "
                     "border-radius: 4px; padding: 4px; font-size: 11px; "
-                    "background-color: #16213e; }"
-                    "QPushButton:hover { background-color: #1e2d50; border: 1px solid #4FC3F7; }"
+                    "background-color: #ffffff; }"
+                    "QPushButton:hover { background-color: #f0f2f5; border: 1px solid #4f46e5; }"
                 )
                 btn.clicked.connect(lambda checked, i=visible_idx: self._scroll_cron_l3_to(i))
                 visible_idx += 1
@@ -1010,7 +1010,7 @@ class SettingsDialog(QDialog):
 
         if not sessions:
             lbl = QLabel("세션이 없습니다")
-            lbl.setStyleSheet("color: #888; border: none;")
+            lbl.setStyleSheet("color: #64748b; border: none;")
             lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             count = self._log_session_layout.count()
             self._log_session_layout.insertWidget(count - 1, lbl)
@@ -1025,9 +1025,9 @@ class SettingsDialog(QDialog):
         frame = QFrame()
         frame.setFrameShape(QFrame.Shape.StyledPanel)
         frame.setStyleSheet(
-            "QFrame { border: 1px solid #2a2a4a; border-radius: 6px; padding: 8px; "
-            "background-color: #1e1e3a; }"
-            "QFrame:hover { background-color: #252545; border: 1px solid #4FC3F7; }"
+            "QFrame { border: 1px solid #dce1e8; border-radius: 6px; padding: 8px; "
+            "background-color: #ffffff; }"
+            "QFrame:hover { background-color: #e8ecf0; border: 1px solid #4f46e5; }"
         )
         frame.setCursor(Qt.CursorShape.PointingHandCursor)
         layout = QHBoxLayout(frame)
@@ -1036,7 +1036,7 @@ class SettingsDialog(QDialog):
         type_icon = "💬 채팅" if stype == "chat" else "⏰ 크론"
         type_lbl = QLabel(type_icon)
         type_lbl.setFixedWidth(70)
-        type_lbl.setStyleSheet("border: none; color: #888;")
+        type_lbl.setStyleSheet("border: none; color: #64748b;")
         layout.addWidget(type_lbl)
 
         created = session.get("created_at", "")
@@ -1046,13 +1046,13 @@ class SettingsDialog(QDialog):
             time_txt = str(created)[:16]
         time_lbl = QLabel(time_txt)
         time_lbl.setFixedWidth(100)
-        time_lbl.setStyleSheet("border: none; color: #888;")
+        time_lbl.setStyleSheet("border: none; color: #64748b;")
         layout.addWidget(time_lbl)
 
         sid = session.get("id", "")[:8]
         sid_lbl = QLabel(f"{sid}...")
         sid_lbl.setFixedWidth(80)
-        sid_lbl.setStyleSheet("border: none; color: #666; font-size: 11px;")
+        sid_lbl.setStyleSheet("border: none; color: #64748b; font-size: 11px;")
         layout.addWidget(sid_lbl)
 
         prompt = session.get("first_prompt", "") or ""
@@ -1060,7 +1060,7 @@ class SettingsDialog(QDialog):
         if not prompt_short:
             prompt_short = "(내용 없음)"
         prompt_lbl = QLabel(prompt_short)
-        prompt_lbl.setStyleSheet("border: none; color: #ccc;")
+        prompt_lbl.setStyleSheet("border: none; color: #cbd5e1;")
         layout.addWidget(prompt_lbl)
 
         frame.mousePressEvent = lambda e, sid=session.get("id"): self._on_log_l2_click(sid)
@@ -1105,10 +1105,10 @@ class SettingsDialog(QDialog):
 
             btn = QPushButton(f"{time_str} [{m.role}]")
             btn.setStyleSheet(
-                "QPushButton { text-align: left; border: 1px solid #2a2a4a; "
+                "QPushButton { text-align: left; border: 1px solid #dce1e8; "
                 "border-radius: 4px; padding: 4px; font-size: 11px; "
-                "background-color: #16213e; }"
-                "QPushButton:hover { background-color: #1e2d50; border: 1px solid #4FC3F7; }"
+                "background-color: #ffffff; }"
+                "QPushButton:hover { background-color: #f0f2f5; border: 1px solid #4f46e5; }"
             )
             btn.clicked.connect(lambda checked, i=visible_idx: self._scroll_log_l2_to(i))
             visible_idx += 1
@@ -1221,7 +1221,7 @@ class SettingsDialog(QDialog):
         #   자식 위젯까지 올바르게 적용됨
         layout = QVBoxLayout(frame)
         lbl = QLabel(title)
-        lbl.setStyleSheet("font-weight: bold; font-size: 14px; border: none; color: #e0e0e0;")
+        lbl.setStyleSheet("font-weight: bold; font-size: 14px; border: none; color: #1e293b;")
         layout.addWidget(lbl)
         return frame
 
@@ -1232,8 +1232,8 @@ class SettingsDialog(QDialog):
         lbl = QLabel(label_text)
         lbl.setFixedWidth(150)
         lbl.setStyleSheet(
-            "border: none; color: #000000; font-size: 13px; "
-            "background-color: #FFFFFF; padding: 2px 6px; border-radius: 4px;"
+            "border: none; color: #1e293b; font-size: 13px; "
+            "background-color: #f0f2f5; padding: 2px 6px; border-radius: 4px;"
         )
         row.addWidget(lbl)
         if tooltip_key and tooltip_key in FIELD_TOOLTIPS:
@@ -1252,7 +1252,7 @@ class SettingsDialog(QDialog):
         prev_btn.clicked.connect(prev_fn)
         row.addWidget(prev_btn)
         page_lbl = QLabel("1 / 1")
-        page_lbl.setStyleSheet("border: none; color: #aaa;")
+        page_lbl.setStyleSheet("border: none; color: #94a3b8;")
         row.addWidget(page_lbl)
         next_btn = QPushButton("▶")
         next_btn.setFixedSize(30, 30)

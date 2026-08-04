@@ -24,18 +24,18 @@ from src.ui.settings_dialog import SettingsDialog
 logger = logging.getLogger("psjba.ui.main_window")
 
 CHROME_BTN_STYLE_DISCONNECTED = (
-    "QPushButton { background-color: #16213e; color: #e0e0e0; "
-    "border: 1px solid #2a2a4a; border-radius: 6px; padding: 4px 10px; }"
-    "QPushButton:hover { background-color: #1e2d50; border: 1px solid #4FC3F7; }"
+    "QPushButton { background-color: #ffffff; color: #64748b; "
+    "border: 1px solid #dce1e8; border-radius: 6px; padding: 4px 10px; }"
+    "QPushButton:hover { background-color: #f0f2f5; border: 1px solid #4f46e5; }"
 )
 CHROME_BTN_STYLE_CONNECTING = (
-    "QPushButton { background-color: #16213e; color: #888; "
-    "border: 1px dashed #2a2a4a; border-radius: 6px; padding: 4px 10px; }"
+    "QPushButton { background-color: #ffffff; color: #94a3b8; "
+    "border: 1px dashed #dce1e8; border-radius: 6px; padding: 4px 10px; }"
 )
 CHROME_BTN_STYLE_CONNECTED = (
-    "QPushButton { background-color: #0a2a1a; color: #66BB6A; "
-    "border: 1px solid #66BB6A; border-radius: 6px; padding: 4px 10px; }"
-    "QPushButton:hover { background-color: #0d3a22; }"
+    "QPushButton { background-color: #f0fdf4; color: #10b981; "
+    "border: 1px solid #10b981; border-radius: 6px; padding: 4px 10px; }"
+    "QPushButton:hover { background-color: #dcfce7; }"
 )
 
 STARTUP_CDP_TIMEOUT = 5.0
@@ -65,7 +65,7 @@ class MainWindow(QMainWindow):
         self.intervention_queue: list[str] = []  # 실행 중 사용자 입력 큐
         self._queue_processor_running: bool = False
         self._init_ui()
-        self._try_set_titlebar_color("#1a1a2e")
+        self._try_set_titlebar_color("#f0f2f5")
         self._startup_chrome_check()
 
     def closeEvent(self, event) -> None:
@@ -98,6 +98,11 @@ class MainWindow(QMainWindow):
 
         central = QWidget()
         self.setCentralWidget(central)
+        self.setStyleSheet(
+            "QMainWindow { background-color: #f0f2f5; }"
+            "QToolTip { background-color: #ffffff; color: #1e293b; "
+            "border: 1px solid #dce1e8; border-radius: 6px; padding: 6px 10px; }"
+        )
         layout = QVBoxLayout(central)
         layout.setContentsMargins(6, 6, 6, 6)
         layout.setSpacing(4)
@@ -107,9 +112,9 @@ class MainWindow(QMainWindow):
         self._settings_btn = QPushButton("⚙️")
         self._settings_btn.setFixedSize(36, 36)
         self._settings_btn.setStyleSheet(
-            "QPushButton { border: 1px solid #2a2a4a; border-radius: 8px; "
-            "background-color: #16213e; font-size: 18px; }"
-            "QPushButton:hover { background-color: #1e2d50; border: 1px solid #4FC3F7; }"
+            "QPushButton { border: 1px solid #dce1e8; border-radius: 8px; "
+            "background-color: #ffffff; font-size: 18px; }"
+            "QPushButton:hover { background-color: #f0f2f5; border: 1px solid #4f46e5; }"
         )
         self._settings_btn.clicked.connect(self._open_settings)
         top_bar.addWidget(self._settings_btn)

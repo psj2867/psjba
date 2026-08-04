@@ -1,10 +1,10 @@
-"""CronScheduler — aiocron 기반 크론 스케줄러 관리."""
+"""CronScheduler — AsyncIOScheduler + CronTrigger 기반 크론 관리."""
 
-import asyncio
 import logging
-from typing import Any, Callable, Coroutine, Optional
+from typing import Any, Optional
 
-import aiocron
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 
 from src.database import Database
 from src.models.schemas import CronJob
@@ -13,14 +13,14 @@ logger = logging.getLogger("psjba.cron.scheduler")
 
 
 class CronScheduler:
-    """aiocron crontab 등록/해제/목록 관리.
+    """AsyncIOScheduler + CronTrigger 로 크론 job을 관리한다.
 
-    시작 시 DB에서 enabled 크론을 읽어 aiocron에 등록하고,
+    시작 시 DB에서 enabled 크론을 읽어 APScheduler 에 등록하고,
     런타임에 동적으로 추가/제거/수정한다.
     """
 
     def __init__(self) -> None:
-        self._tabs: dict[str, Any] = {}
+        self._scheduler = AsyncIOScheduler()
         self._db: Optional[Database] = None
         self._executor: Any = None
 
@@ -36,77 +36,85 @@ class CronScheduler:
         for job in jobs:
             self._register(job)
 
+        self._scheduler.start()
         logger.info(f"CronScheduler started: {len(jobs)} jobs registered")
 
     def _register(self, job: CronJob) -> None:
-        if job.id in self._tabs:
-            self._unregister(job.id)
+        if self._scheduler.get_job(job.id):
+            self._scheduler.remove_job(job.id)
 
         if job.status != "enable":
             return
 
+        try:
+            trigger = CronTrigger.from_crontab(job.schedule)
+            self._scheduler.add_job(
+                self._execute_wrapper(job),
+                trigger=trigger,
+                id=job.id,
+                name=job.name,
+                replace_existing=True,
+            )
+            logger.debug(
+                "Cron registered: %s (%s)", job.name, job.schedule
+            )
+        except Exception as e:
+            logger.error(
+                "Failed to register cron '%s': %s", job.name, e
+            )
+
+    def _execute_wrapper(self, job: CronJob) -> Any:
         async def _run() -> None:
             if self._executor is None:
                 return
             try:
                 await self._executor.execute(job)
             except Exception as e:
-                logger.error(f"Cron job '{job.name}' ({job.id}) failed: {e}")
-
-        try:
-            tab = aiocron.crontab(job.schedule, func=_run)
-            tab.start()
-            self._tabs[job.id] = tab
-            logger.debug(f"Cron registered: {job.name} ({job.schedule})")
-        except Exception as e:
-            logger.error(f"Failed to register cron '{job.name}': {e}")
-
-    def _unregister(self, job_id: str) -> None:
-        tab = self._tabs.pop(job_id, None)
-        if tab is not None:
-            try:
-                tab.stop()
-            except Exception:
-                pass
-            logger.debug(f"Cron unregistered: {job_id}")
+                logger.error(
+                    "Cron job '%s' (%s) failed: %s",
+                    job.name, job.id, e,
+                )
+        return _run
 
     async def add_job(self, job: CronJob) -> None:
         self._register(job)
-        logger.info(f"Cron added: {job.name} ({job.id})")
+        logger.info("Cron added: %s (%s)", job.name, job.id)
 
     async def remove_job(self, job_id: str) -> None:
-        self._unregister(job_id)
-        logger.info(f"Cron removed: {job_id}")
+        if self._scheduler.get_job(job_id):
+            self._scheduler.remove_job(job_id)
+        logger.info("Cron removed: %s", job_id)
 
     async def update_job(self, job: CronJob) -> None:
-        self._unregister(job.id)
+        if self._scheduler.get_job(job.id):
+            self._scheduler.remove_job(job.id)
         if job.status == "enable":
             self._register(job)
-        logger.info(f"Cron updated: {job.name} ({job.id})")
+        logger.info("Cron updated: %s (%s)", job.name, job.id)
 
     async def toggle_job(self, job_id: str, enabled: bool) -> None:
         if self._db is None:
             return
-
         job = await self._db.get_cron_job(job_id)
         if not job:
             return
-
         if enabled:
             self._register(job)
         else:
-            self._unregister(job_id)
-
-        logger.info(f"Cron toggled: {job_id} -> {'enabled' if enabled else 'disabled'}")
+            if self._scheduler.get_job(job_id):
+                self._scheduler.remove_job(job_id)
+        logger.info(
+            "Cron toggled: %s -> %s", job_id,
+            "enabled" if enabled else "disabled",
+        )
 
     def stop_all(self) -> None:
-        for job_id in list(self._tabs.keys()):
-            self._unregister(job_id)
+        self._scheduler.shutdown(wait=False)
         logger.info("CronScheduler stopped: all jobs unregistered")
 
     @property
     def registered_count(self) -> int:
-        return len(self._tabs)
+        return len(self._scheduler.get_jobs())
 
     def is_registered(self, job_id: str) -> bool:
-        return job_id in self._tabs
+        return self._scheduler.get_job(job_id) is not None
