@@ -174,6 +174,18 @@ async def call_model(
     if injected_msgs:
         messages = messages + injected_msgs
 
+    # pending dialog 정보 주입 (intervention 다음, system 직전)
+    pending_dialog = state.get("pending_dialog")
+    if pending_dialog:
+        tidx = pending_dialog.get("tab_index", "?")
+        dtype = pending_dialog.get("type", "?")
+        msg_text = pending_dialog.get("message", "")
+        messages.append(HumanMessage(
+            content=f"⚠️ Dialog pending on tab [{tidx}]: {dtype} '{msg_text}'",
+            additional_kwargs={"role": "developer"},
+        ))
+        state["pending_dialog"] = None  # 소비
+
     a11y_tree = state.get("accessibility_tree", "(No page loaded)")
     system_prompt = build_system_prompt(a11y_tree)
 
@@ -261,6 +273,7 @@ async def call_model(
 async def execute_tool(
     state: AgentState,
     tools: dict[str, Any],
+    manager: Optional[Any] = None,
 ) -> dict[str, Any]:
     """LLM이 요청한 도구 호출을 실행한다.
 
@@ -321,10 +334,25 @@ async def execute_tool(
         if _is_tool_error(str(result)):
             any_error = True
 
+        # tool 실행 직후 dialog 체크 (override된 confirm/alert/prompt 기록)
+        dialog_hint = ""
+        if manager and hasattr(manager, "check_all_tabs_dialog"):
+            try:
+                dialogs = await manager.check_all_tabs_dialog()
+                if dialogs:
+                    d = dialogs[0]
+                    dialog_hint = (
+                        f" ⚠️Dialog: tab[{d['tab_index']}] "
+                        f"{d['type']} '{d.get('message','')}'"
+                    )
+                    state["pending_dialog"] = d
+            except Exception:
+                pass
+
         tool_msg_content = json.dumps(
             {
                 "tool": tool_name,
-                "result": str(result),
+                "result": str(result) + dialog_hint,
                 "duration_ms": duration_ms,
                 "status": "error" if any_error else "success",
             },

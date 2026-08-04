@@ -80,7 +80,7 @@ def create_agent_graph(
     )
     graph.add_node(
         "execute_tool",
-        partial(execute_tool, tools=tool_dict),
+        partial(execute_tool, tools=tool_dict, manager=manager),
     )
     graph.add_node(
         "assess_error",

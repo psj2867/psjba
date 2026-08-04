@@ -20,3 +20,4 @@ class AgentState(TypedDict, total=False):
     is_final: bool
     tool_call_count: int
     intervention_queue: list[str]  # 공유 참조 — 실행 중 사용자 입력
+    pending_dialog: Optional[dict]  # {tab_index, type, message, default} — override dialog

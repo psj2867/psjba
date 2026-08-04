@@ -132,6 +132,28 @@ def create_browser_tools(
         return await manager.browser_execute_script(script)
 
     @tool
+    async def browser_handle_dialog(
+        dialog_type: str,
+        action: str = "accept",
+        prompt_text: str = "",
+        tab_index: Optional[int] = None,
+    ) -> str:
+        """Handle a pending browser dialog (alert/confirm/prompt).
+
+        CDP suppresses native browser dialogs, so they are intercepted via
+        a JS override. Call this tool to set the result value for the next
+        retry of the action that triggered the dialog.
+
+        dialog_type: 'confirm' | 'alert' | 'prompt'
+        action: 'accept' (OK/Yes) or 'dismiss' (Cancel/No)
+        prompt_text: input value for prompt() dialogs (only when action='accept')
+        tab_index: target tab index (None = all tabs)
+        """
+        return await manager.browser_handle_dialog(
+            dialog_type, action=action, prompt_text=prompt_text, tab_index=tab_index,
+        )
+
+    @tool
     async def browser_click_by_ref(ref: int) -> str:
         """Click an element by its accessibility tree ref number. Use this after calling browser_snapshot() to see the [#N] ref numbers next to interactive elements. This is more reliable than guessing a CSS selector."""
         return await manager.browser_click_by_ref(ref)
@@ -171,6 +193,7 @@ def create_browser_tools(
         browser_snapshot,
         browser_get_dom,
         browser_execute_script,
+        browser_handle_dialog,
         browser_click_by_ref,
         workspace_write,
         current_datetime,

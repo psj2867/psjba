@@ -36,11 +36,31 @@ class _TabInfo:
         self.page = page
         self.url = url
         self.title: str = ""
+        self.dialog: Optional[dict] = None  # {type, message, default} — override dialog
 
     async def update_info(self) -> None:
         try:
             self.url = self.page.url
             self.title = await self.page.title()
+        except Exception:
+            pass
+
+    async def check_dialog(self) -> Optional[dict]:
+        """Override된 dialog 정보를 page에서 읽어온다."""
+        try:
+            d = await self.page.evaluate("window.__psjba_dialog")
+            if d and not d.get("_handled"):
+                await self.page.evaluate("window.__psjba_dialog._handled = true")
+                self.dialog = d
+                return d
+        except Exception:
+            pass
+        return None
+
+    async def clear_dialog(self) -> None:
+        self.dialog = None
+        try:
+            await self.page.evaluate("window.__psjba_dialog = null")
         except Exception:
             pass
 
@@ -119,6 +139,42 @@ class PlaywrightManager:
 
     # ─── 연결/해제 ──────────────────────────────────────────
 
+    async def _inject_dialog_override(self) -> None:
+        """모든 context/tab에 dialog override init script를 주입한다.
+        
+        CDP가 native alert/confirm을 supress하기 때문에, JS 레벨에서
+        window.confirm/window.alert/window.prompt를 오버라이드하여
+        호출 내용을 window.__psjba_dialog에 기록한다.
+        """
+        script = """
+        (function() {
+          if (window.__psjba_injected) return;
+          window.__psjba_injected = true;
+          window.__psjba_dialog = null;
+          window.__psjba_confirm_result = true;
+          window.__psjba_prompt_result = null;
+          window.alert = function(msg) {
+            window.__psjba_dialog = {type:'alert',message:String(msg)};
+          };
+          window.confirm = function(msg) {
+            window.__psjba_dialog = {type:'confirm',message:String(msg)};
+            return window.__psjba_confirm_result;
+          };
+          window.prompt = function(msg,defaultVal) {
+            var pv = window.__psjba_prompt_result;
+            window.__psjba_dialog = {type:'prompt',message:String(msg),default:String(defaultVal)};
+            return pv !== null ? pv : defaultVal;
+          };
+        })();
+        """
+        if self._context:
+            await self._context.add_init_script(script)
+        for tab in self._tabs:
+            try:
+                await tab.page.evaluate(script)
+            except Exception:
+                pass
+
     async def connect(self, launch_if_needed: bool = False) -> str:
         """CDP에 연결한다.
 
@@ -172,6 +228,9 @@ class PlaywrightManager:
                 page = await self._context.new_page()
                 self._tabs = [_TabInfo(page)]
                 self._focused_tab_index = 0
+
+            # 모든 페이지에 dialog override init script 주입
+            await self._inject_dialog_override()
 
             self._connected = True
             url = self.focused_page.url if self.focused_page else "about:blank"
@@ -230,6 +289,7 @@ class PlaywrightManager:
         self._ensure_connected()
         assert self._context is not None
         page = await self._context.new_page()
+        await self._inject_dialog_override()
         if url:
             await page.goto(url, wait_until="domcontentloaded")
         tab = _TabInfo(page, url or "about:blank")
@@ -374,9 +434,15 @@ class PlaywrightManager:
             await locator.click(timeout=5000)
             await self._tabs[self._focused_tab_index].update_info()
             tab = self._tabs[self._focused_tab_index]
-            return f"Clicked: {selector} [url={tab.url}, title={tab.title}]"
+            result = f"Clicked: {selector} [url={tab.url}, title={tab.title}]"
         except Exception as e:
-            return f"Click error: {e}"
+            result = f"Click error: {e}"
+
+        # dialog 체크
+        d = await tab.check_dialog()
+        if d:
+            result += f"\n⚠️ Dialog recorded: [{d['type']}] {d.get('message','')}"
+        return result
 
     async def browser_type(
         self,
@@ -396,9 +462,14 @@ class PlaywrightManager:
             if clear:
                 await locator.clear()
             await locator.fill(text)
-            return f"Typed into {selector}: {text[:50]}{'...' if len(text) > 50 else ''}"
+            result = f"Typed into {selector}: {text[:50]}{'...' if len(text) > 50 else ''}"
         except Exception as e:
-            return f"Type error: {e}"
+            result = f"Type error: {e}"
+
+        d = await self._tabs[self._focused_tab_index].check_dialog()
+        if d:
+            result += f"\n⚠️ Dialog recorded: [{d['type']}] {d.get('message','')}"
+        return result
 
     async def browser_select_option(
         self,
@@ -497,6 +568,71 @@ class PlaywrightManager:
         except Exception as e:
             return f"Wait error: {e}"
 
+    # ─── Dialog override 처리 ──────────────────────────────────
+
+    async def check_all_tabs_dialog(self) -> list[dict]:
+        """모든 탭의 override된 dialog 정보를 수집한다.
+
+        Returns:
+            [{tab_index, type, message, default}, ...]
+        """
+        results = []
+        for i, tab in enumerate(self._tabs):
+            d = await tab.check_dialog()
+            if d:
+                results.append({
+                    "tab_index": i,
+                    "tab_url": tab.url,
+                    "tab_title": tab.title,
+                    "type": d.get("type"),
+                    "message": d.get("message"),
+                    "default": d.get("default"),
+                })
+        return results
+
+    async def browser_handle_dialog(
+        self,
+        dialog_type: str,
+        action: str = "accept",
+        prompt_text: str = "",
+        tab_index: Optional[int] = None,
+    ) -> str:
+        """Override된 dialog의 결과값을 설정한다.
+
+        dialog_type: 'confirm' | 'alert' | 'prompt'
+        action: 'accept' | 'dismiss'
+        prompt_text: prompt() 입력값 (action='accept' + type='prompt' 일 때만)
+        tab_index: 대상 탭 인덱스 (None이면 모든 탭)
+
+        설정 후 retry 전략: 동일한 동작(click 등)을 재실행하면
+        오버라이드된 함수가 새 값으로 응답한다.
+        """
+        targets = [tab_index] if tab_index is not None else range(len(self._tabs))
+        handled = []
+
+        for idx in targets:
+            if idx < 0 or idx >= len(self._tabs):
+                handled.append(f"[{idx}] invalid index")
+                continue
+            tab = self._tabs[idx]
+            try:
+                if dialog_type == "confirm":
+                    accept = json.dumps(action == "accept")
+                    await tab.page.evaluate(
+                        f"window.__psjba_confirm_result = {accept};"
+                    )
+                elif dialog_type == "prompt":
+                    escaped = prompt_text.replace("'", "\\'")
+                    await tab.page.evaluate(
+                        f"window.__psjba_prompt_result = '{escaped}';"
+                    )
+                await tab.clear_dialog()
+                handled.append(f"[{idx}] {dialog_type} → {action}")
+            except Exception as e:
+                handled.append(f"[{idx}] error: {e}")
+
+        return "\n".join(handled) if handled else f"No tabs matched for {dialog_type}"
+
     # ─── 정보 조회 ──────────────────────────────────────────
 
     async def chrome_health(self) -> str:
@@ -555,6 +691,10 @@ class PlaywrightManager:
             await tab.update_info()
             marker = " ◀ FOCUSED" if i == self._focused_tab_index else ""
             parts.append(f"  Tab {i}: {tab.url}{' (' + tab.title + ')' if tab.title else ''}{marker}")
+            # pending dialog 정보도 표시
+            if tab.dialog:
+                d = tab.dialog
+                parts.append(f"       ⚠️ Dialog: [{d.get('type')}] {d.get('message', '')}")
         return "\n".join(parts)
 
     async def chrome_start(self) -> str:
@@ -610,8 +750,8 @@ class PlaywrightManager:
             await locator.first.click(timeout=5000)
             await self._tabs[self._focused_tab_index].update_info()
             tab = self._tabs[self._focused_tab_index]
-            return (f"Clicked ref #{ref} ({role} \"{name}\") "
-                    f"[url={tab.url}, title={tab.title}]")
+            result = (f"Clicked ref #{ref} ({role} \"{name}\") "
+                      f"[url={tab.url}, title={tab.title}]")
         except Exception as e:
             # fallback: self-healing 으로 name 기반 시도
             healing = SelfHealingSelector(page)
@@ -624,10 +764,15 @@ class PlaywrightManager:
                 await locator2.click(timeout=5000)
                 await self._tabs[self._focused_tab_index].update_info()
                 tab = self._tabs[self._focused_tab_index]
-                return (f"Clicked ref #{ref} ({role} \"{name}\") [fallback] "
-                        f"[url={tab.url}, title={tab.title}]")
+                result = (f"Clicked ref #{ref} ({role} \"{name}\") [fallback] "
+                          f"[url={tab.url}, title={tab.title}]")
             except Exception as e2:
                 return f"Click by ref #{ref} failed (both): {e2}"
+
+        d = await self._tabs[self._focused_tab_index].check_dialog()
+        if d:
+            result += f"\n⚠️ Dialog recorded: [{d['type']}] {d.get('message','')}"
+        return result
 
     async def browser_get_dom(self) -> str:
         logger.info("browser_get_dom called")
