@@ -22,7 +22,7 @@ TOOL_CALL_STYLE = (
     "background-color: #f8fafc; }"
 )
 MSG_STYLE = (
-    "QFrame { background-color: #4f46e5; border-radius: 8px; "
+    "QFrame { background-color: #818cf8; border-radius: 8px; "
     "padding: 6px 12px; margin: 3px 12px; }"
 )
 AI_MSG_STYLE = (
