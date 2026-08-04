@@ -5,6 +5,7 @@ import logging
 from typing import Any, Optional
 
 from PySide6.QtCore import QSize, Qt, QTimer
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QFrame,
     QLabel,
@@ -406,6 +407,14 @@ class ChatWidget(QWidget):
         item = self._container_layout.itemAt(index)
         if item and item.widget():
             self._scroll_area.ensureWidgetVisible(item.widget())
+
+    def set_font_size(self, size: int) -> None:
+        """기존 메시지 블록의 폰트 크기를 갱신한다."""
+        font = QFont()
+        font.setPointSize(size)
+        for browser in self.findChildren(QTextBrowser):
+            if browser.objectName() == "content":
+                browser.setFont(font)
 
     # --- 내부 헬퍼 ---
 

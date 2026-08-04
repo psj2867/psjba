@@ -65,6 +65,7 @@ class MainWindow(QMainWindow):
         self.intervention_queue: list[str] = []  # 실행 중 사용자 입력 큐
         self._queue_processor_running: bool = False
         self._init_ui()
+        self._apply_font_size()
         self._try_set_titlebar_color("#f0f2f5")
         self._startup_chrome_check()
 
@@ -136,6 +137,16 @@ class MainWindow(QMainWindow):
         self._prompt.stopped.connect(self._on_stop_agent)
         self._prompt.session_reset.connect(self._on_session_reset)
         layout.addWidget(self._prompt)
+
+    # ─── 폰트 크기 ──────────────────────────────────────────────
+
+    def _apply_font_size(self) -> None:
+        size = int(self._config.get("ui", "font_size", 14))
+        font = QFont()
+        font.setPointSize(size)
+        self.setFont(font)
+        self._prompt.set_font_size(size)
+        self._chat.set_font_size(size)
 
     # ─── Chrome 연결 ──────────────────────────────────────────
 
@@ -253,6 +264,8 @@ class MainWindow(QMainWindow):
         if not self._manager.is_connected:
             logger.debug("Config saved, retrying Chrome connection...")
             self._startup_chrome_check()
+        # 폰트 크기 재적용
+        self._apply_font_size()
 
     # ─── 프롬프트 처리 ────────────────────────────────────────
     def _on_prompt_submitted(self, text: str) -> None:

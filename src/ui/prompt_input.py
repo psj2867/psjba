@@ -108,6 +108,12 @@ class PromptInput(QWidget):
         self._text_edit.clear()
         self.submitted.emit(text)
 
+    def set_font_size(self, size: int) -> None:
+        """입력창 폰트 크기를 설정한다."""
+        font = QFont()
+        font.setPointSize(size)
+        self._text_edit.setFont(font)
+
     def _on_stop(self) -> None:
         logger.debug("Stop button clicked")
         self.stopped.emit()
