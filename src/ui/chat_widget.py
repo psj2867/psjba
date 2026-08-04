@@ -21,6 +21,11 @@ TOOL_CALL_STYLE = (
     "QFrame { border: 1px solid #dce1e8; border-radius: 6px; margin: 2px 0; "
     "background-color: #f8fafc; }"
 )
+CODE_BLOCK_STYLE = (
+    "QLabel { background-color: #f1f5f9; color: #334155; border: 1px solid #e2e8f0; "
+    "border-radius: 4px; padding: 6px 8px; font-family: Consolas, Menlo, monospace; "
+    "font-size: 11px; }"
+)
 MSG_STYLE = (
     "QFrame { background-color: #4f46e5; border-radius: 8px; "
     "padding: 6px 12px; margin: 3px 12px; }"
@@ -29,6 +34,27 @@ AI_MSG_STYLE = (
     "QFrame { background-color: #ffffff; border-radius: 8px; "
     "padding: 6px 12px; margin: 3px 12px; }"
 )
+
+
+def _looks_like_json(text: str) -> bool:
+    """JSON 형식(객체/배열)으로 시작하는지 검사한다."""
+    stripped = text.strip()
+    if not stripped:
+        return False
+    return stripped[0] in ("{", "[")
+
+
+def _format_json_result(text: str, limit: int = 3000) -> str:
+    """JSON 결과를 보기 좋게 들여쓰기된 코드블럭 텍스트로 포맷팅한다."""
+    stripped = text.strip()
+    try:
+        parsed = json.loads(stripped)
+        pretty = json.dumps(parsed, ensure_ascii=False, indent=2)
+    except (json.JSONDecodeError, ValueError):
+        pretty = stripped
+    if len(pretty) > limit:
+        pretty = pretty[:limit] + "\n... (truncated)"
+    return pretty
 
 
 class _ToolCallWidget(QFrame):
@@ -53,12 +79,19 @@ class _ToolCallWidget(QFrame):
         self._header.mousePressEvent = self._toggle
         layout.addWidget(self._header)
 
-        self._detail = QLabel()
+        # result가 JSON이면 코드블럭으로 포맷팅
+        if _looks_like_json(tool_result):
+            formatted = _format_json_result(tool_result)
+            self._detail = QLabel(
+                f"Input: {tool_input[:300]}\n\nResult:\n```json\n{formatted}\n```"
+            )
+            self._detail.setStyleSheet(CODE_BLOCK_STYLE)
+        else:
+            self._detail = QLabel(
+                f"Input: {tool_input[:300]}\n\nResult: {tool_result[:500]}"
+            )
+            self._detail.setStyleSheet("color: #64748b; font-size: 11px; border: none;")
         self._detail.setWordWrap(True)
-        self._detail.setStyleSheet("color: #64748b; font-size: 11px; border: none;")
-        self._detail.setText(
-            f"Input: {tool_input[:300]}\n\nResult: {tool_result[:500]}"
-        )
         self._detail.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse
         )

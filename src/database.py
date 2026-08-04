@@ -7,7 +7,7 @@ from uuid import uuid4
 
 import aiosqlite
 
-from src.models.schemas import CronJob, Message, Meta, Session
+from src.models.schemas import CronJob, Message, Meta, ScheduledJob, Session
 
 logger = logging.getLogger("psjba.database")
 
@@ -56,6 +56,21 @@ CREATE TABLE IF NOT EXISTS psjba_cron_job (
     next_run_at TEXT,
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL
+);
+"""
+
+CREATE_TABLE_SCHEDULED_JOB = """
+CREATE TABLE IF NOT EXISTS psjba_scheduled_job (
+    id            TEXT PRIMARY KEY NOT NULL,
+    name          TEXT NOT NULL,
+    scheduled_at  TEXT NOT NULL,
+    prompt        TEXT NOT NULL,
+    status        TEXT NOT NULL DEFAULT 'pending'
+                    CHECK(status IN ('pending', 'running', 'done', 'cancelled', 'error')),
+    session_id    TEXT,
+    error_message TEXT,
+    created_at    TEXT NOT NULL,
+    updated_at    TEXT NOT NULL
 );
 """
 
@@ -121,6 +136,7 @@ class Database:
     async def initialize(self) -> None:
         await self.conn.execute(CREATE_TABLE_META)
         await self.conn.execute(CREATE_TABLE_CRON_JOB)
+        await self.conn.execute(CREATE_TABLE_SCHEDULED_JOB)
         await self.conn.execute(CREATE_TABLE_SESSION)
         await self.conn.execute(CREATE_TABLE_MESSAGE)
         await self.conn.execute(CREATE_MESSAGE_INDEX)
@@ -482,3 +498,103 @@ class Database:
             created_at=datetime.fromisoformat(row["created_at"]),
             updated_at=datetime.fromisoformat(row["updated_at"]),
         )
+
+    def _row_to_scheduled_job(self, row: aiosqlite.Row) -> ScheduledJob:
+        return ScheduledJob(
+            id=row["id"],
+            name=row["name"],
+            scheduled_at=datetime.fromisoformat(row["scheduled_at"]),
+            prompt=row["prompt"],
+            status=row["status"],
+            session_id=row["session_id"],
+            error_message=row["error_message"],
+            created_at=datetime.fromisoformat(row["created_at"]),
+            updated_at=datetime.fromisoformat(row["updated_at"]),
+        )
+
+    # ─── 1회성 ScheduledJob ──────────────────────────────────────
+
+    async def create_scheduled_job(self, job: ScheduledJob) -> ScheduledJob:
+        await self.conn.execute(
+            """INSERT INTO psjba_scheduled_job
+               (id, name, scheduled_at, prompt, status, session_id, error_message, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                job.id,
+                job.name,
+                job.scheduled_at.isoformat(),
+                job.prompt,
+                job.status,
+                job.session_id,
+                job.error_message,
+                job.created_at.isoformat(),
+                job.updated_at.isoformat(),
+            ),
+        )
+        await self.conn.commit()
+        return job
+
+    async def get_scheduled_job(self, job_id: str) -> Optional[ScheduledJob]:
+        cursor = await self.conn.execute(
+            "SELECT * FROM psjba_scheduled_job WHERE id = ?", (job_id,)
+        )
+        row = await cursor.fetchone()
+        return self._row_to_scheduled_job(row) if row else None
+
+    async def update_scheduled_job(self, job: ScheduledJob) -> None:
+        await self.conn.execute(
+            """UPDATE psjba_scheduled_job
+               SET name=?, scheduled_at=?, prompt=?, status=?,
+                   session_id=?, error_message=?, updated_at=?
+               WHERE id=?""",
+            (
+                job.name,
+                job.scheduled_at.isoformat(),
+                job.prompt,
+                job.status,
+                job.session_id,
+                job.error_message,
+                datetime.now().isoformat(),
+                job.id,
+            ),
+        )
+        await self.conn.commit()
+
+    async def list_scheduled_jobs(
+        self,
+        statuses: Optional[list[str]] = None,
+        limit: int = 100,
+    ) -> list[ScheduledJob]:
+        """ScheduledJob 목록을 반환한다. statuses가 None이면 전부."""
+        if statuses:
+            placeholders = ",".join("?" for _ in statuses)
+            cursor = await self.conn.execute(
+                f"SELECT * FROM psjba_scheduled_job WHERE status IN ({placeholders}) "
+                "ORDER BY scheduled_at ASC LIMIT ?",
+                (*statuses, limit),
+            )
+        else:
+            cursor = await self.conn.execute(
+                "SELECT * FROM psjba_scheduled_job ORDER BY scheduled_at DESC LIMIT ?",
+                (limit,),
+            )
+        rows = await cursor.fetchall()
+        return [self._row_to_scheduled_job(r) for r in rows]
+
+    async def get_due_scheduled_jobs(self) -> list[ScheduledJob]:
+        """실행 시각이 지난 pending job 목록을 반환한다."""
+        cursor = await self.conn.execute(
+            "SELECT * FROM psjba_scheduled_job "
+            "WHERE status = 'pending' AND scheduled_at <= ? "
+            "ORDER BY scheduled_at ASC",
+            (datetime.now().isoformat(),),
+        )
+        rows = await cursor.fetchall()
+        return [self._row_to_scheduled_job(r) for r in rows]
+
+    async def delete_scheduled_job(self, job_id: str) -> None:
+        await self.conn.execute(
+            "UPDATE psjba_scheduled_job SET status = 'cancelled', updated_at = ? WHERE id = ?",
+            (datetime.now().isoformat(), job_id),
+        )
+        await self.conn.commit()
