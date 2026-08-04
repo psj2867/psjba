@@ -512,7 +512,7 @@ class SettingsDialog(QDialog):
             btn.setText("표시")
 
     def _browse_chrome_path(self) -> None:
-        logger.info("Chrome path browse")
+        logger.debug("Chrome path browse")
         path, _ = QFileDialog.getOpenFileName(self, "Chrome 실행 파일 선택")
         if path:
             self._chrome_path.setText(path)
@@ -734,7 +734,7 @@ class SettingsDialog(QDialog):
                 "QPushButton { background-color: #16213e; color: #888; "
                 "border: 1px solid #2a2a4a; border-radius: 4px; padding: 2px 4px; }"
             )
-        logger.info("Cron job toggle: enabled=%s", enabled)
+        logger.debug("Cron job toggle: enabled=%s", enabled)
 
     def _on_toggle_cron(self, job_id: str, btn: QPushButton) -> None:
         async def _toggle() -> None:
@@ -744,7 +744,7 @@ class SettingsDialog(QDialog):
         _run_async_task(_toggle(), task_store=self._async_tasks)
 
     def _on_delete_cron(self, job_id: str) -> None:
-        logger.info("Cron job delete: %s", job_id)
+        logger.debug("Cron job delete: %s", job_id)
         async def _delete() -> None:
             await self._db.delete_cron_job(job_id)
             self._load_cron_level1()
@@ -1148,7 +1148,7 @@ class SettingsDialog(QDialog):
         self._cron_l1_total_pages = 1
         self._log_l1_page = 1
         self._log_l1_total_pages = 1
-        logger.info("Settings save requested")
+        logger.debug("Settings save requested")
         self._load_cron_level1()
         self._load_log_level1()
 

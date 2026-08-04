@@ -70,7 +70,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         """창 닫힘 → closed 시그널 발생."""
-        logger.info("Window close event")
+        logger.debug("Window close event")
         self.closed.emit()
         super().closeEvent(event)
 
@@ -146,7 +146,7 @@ class MainWindow(QMainWindow):
         """
         api_key = self._config.api_key
         if not api_key:
-            logger.info("Skipping startup Chrome check: API key not configured yet")
+            logger.debug("Skipping startup Chrome check: API key not configured yet")
             self._set_chrome_status("disconnected")
             return
         self._set_chrome_status("connecting")
@@ -165,21 +165,21 @@ class MainWindow(QMainWindow):
             req = urllib.request.Request(url)
             with urllib.request.urlopen(req, timeout=1.0) as resp:
                 if resp.status == 200:
-                    logger.info("Chrome CDP detected on startup (%s:%s)", host, port)
+                    logger.debug("Chrome CDP detected on startup (%s:%s)", host, port)
                     # CDP 포트 확인됨 → Manager 실제 연결 (UI "connecting" 유지)
                     from PySide6.QtCore import QTimer
                     QTimer.singleShot(0, self._connect_chrome)
                     return
         except urllib.error.URLError as e:
-            logger.info("Chrome CDP not available on startup: %s", e.reason)
+            logger.debug("Chrome CDP not available on startup: %s", e.reason)
         except (TimeoutError, OSError) as e:
-            logger.info("Chrome CDP not available on startup: %s", e)
+            logger.debug("Chrome CDP not available on startup: %s", e)
         except Exception as e:
-            logger.info("Chrome CDP check error: %s", e)
+            logger.debug("Chrome CDP check error: %s", e)
         self._set_chrome_status("disconnected")
 
     def _on_chrome_btn_click(self) -> None:
-        logger.info("Chrome button clicked")
+        logger.debug("Chrome button clicked")
         if self._manager.is_connected:
             self._disconnect_chrome()
         else:
@@ -187,18 +187,18 @@ class MainWindow(QMainWindow):
 
     def _connect_chrome(self) -> None:
         self._set_chrome_status("connecting")
-        logger.info("Chrome connect requested, launching...")
+        logger.debug("Chrome connect requested, launching...")
 
         async def _do():
-            logger.info("Calling manager.connect(launch_if_needed=True)...")
+            logger.debug("Calling manager.connect(launch_if_needed=True)...")
             result = await self._manager.connect(launch_if_needed=True)
-            logger.info("manager.connect returned: %s", result)
+            logger.debug("manager.connect returned: %s", result)
             return "Chrome connected" in result or "Already" in result
 
         self._run_async_background(_do(), self._on_connect_done)
 
     def _on_connect_done(self, connected: bool) -> None:
-        logger.info("Chrome connect result: connected=%s", connected)
+        logger.debug("Chrome connect result: connected=%s", connected)
         if connected:
             self._set_chrome_status("connected")
         else:
@@ -229,13 +229,13 @@ class MainWindow(QMainWindow):
     # ─── 설정 창 ──────────────────────────────────────────────
 
     def _open_settings(self) -> None:
-        logger.info("Settings dialog opened")
+        logger.debug("Settings dialog opened")
         dlg = SettingsDialog(self._config, self._db, parent=self)
         dlg.config_saved.connect(self._on_config_saved)
         dlg.exec()
 
     def _on_config_saved(self) -> None:
-        logger.info("Config saved")
+        logger.debug("Config saved")
         self._manager.update_config(
             cdp_host=self._config.get("cdp", "host", "127.0.0.1"),
             cdp_port=self._config.get("cdp", "port", 9222),
@@ -246,12 +246,12 @@ class MainWindow(QMainWindow):
         )
         # 설정 저장 후 Chrome 연결 재시도 (API 키가 이제 설정됨)
         if not self._manager.is_connected:
-            logger.info("Config saved, retrying Chrome connection...")
+            logger.debug("Config saved, retrying Chrome connection...")
             self._startup_chrome_check()
 
     # ─── 프롬프트 처리 ────────────────────────────────────────
     def _on_prompt_submitted(self, text: str) -> None:
-        logger.info("Prompt submitted: %s", text[:80])
+        logger.debug("Prompt submitted: %s", text[:80])
         self._chat.add_user_message(text)
         # 모든 프롬프트는 큐 기반 처리
         self.intervention_queue.append(text)
@@ -263,17 +263,17 @@ class MainWindow(QMainWindow):
             self.prompt_submitted.emit(text)
 
     def _on_stop_agent(self) -> None:
-        logger.info("Agent stop requested")
+        logger.debug("Agent stop requested")
         self.stop_requested = True
         # 큐에 남은 항목을 DB에 로그로만 저장하고 비운다 (처리는 안 함)
         if self.intervention_queue:
             queued = list(self.intervention_queue)
             self.intervention_queue.clear()
-            logger.info("Draining %d queued item(s) to DB (no processing)", len(queued))
+            logger.debug("Draining %d queued item(s) to DB (no processing)", len(queued))
             self._run_async_background(self._save_queued_to_db(queued))
 
     def _on_session_reset(self) -> None:
-        logger.info("Session reset button clicked")
+        logger.debug("Session reset button clicked")
         self._chat.clear()
         self.session_reset_requested.emit()
 
@@ -288,7 +288,7 @@ class MainWindow(QMainWindow):
         for text in texts:
             msg = Message(session_id=session_id, role="user", content=text)
             await self._db.save_message(msg)
-        logger.info("Saved %d queued message(s) to session %s", len(texts), session_id)
+        logger.debug("Saved %d queued message(s) to session %s", len(texts), session_id)
 
     def show_ai_thinking(self, text: str = "🤖 응답 중...") -> None:
         """AI 응답 대기 스켈레톤을 채팅에 추가한다."""

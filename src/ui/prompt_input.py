@@ -101,7 +101,7 @@ class PromptInput(QWidget):
         return super().eventFilter(obj, event)
 
     def _on_send(self) -> None:
-        logger.info("Send button clicked")
+        logger.debug("Send button clicked")
         text = self._text_edit.toPlainText().strip()
         if not text:
             return
@@ -109,7 +109,7 @@ class PromptInput(QWidget):
         self.submitted.emit(text)
 
     def _on_stop(self) -> None:
-        logger.info("Stop button clicked")
+        logger.debug("Stop button clicked")
         self.stopped.emit()
 
     def set_running(self, running: bool) -> None:
