@@ -219,7 +219,7 @@ async def run(config: Config) -> None:
                     current_text = window.intervention_queue.pop(0)
                     window._prompt.set_running(True)
                     window.stop_requested = False
-                    await _handle_prompt(config, db, manager, window, current_text)
+                    await _handle_prompt(config, db, manager, window, current_text, job_scheduler)
                     await asyncio.sleep(0)
             finally:
                 window._queue_processor_running = False
@@ -328,6 +328,7 @@ async def _handle_prompt(
     manager: PlaywrightManager,
     window: MainWindow,
     text: str,
+    job_scheduler: Optional[Any] = None,
 ) -> None:
     logger.info("User prompt: %s", text[:80])
 
