@@ -36,11 +36,31 @@ class _TabInfo:
         self.page = page
         self.url = url
         self.title: str = ""
+        self.dialog: Optional[dict] = None  # {type, message, default} — override dialog
 
     async def update_info(self) -> None:
         try:
             self.url = self.page.url
             self.title = await self.page.title()
+        except Exception:
+            pass
+
+    async def check_dialog(self) -> Optional[dict]:
+        """Override된 dialog 정보를 page에서 읽어온다."""
+        try:
+            d = await self.page.evaluate("window.__psjba_dialog")
+            if d and not d.get("_handled"):
+                await self.page.evaluate("window.__psjba_dialog._handled = true")
+                self.dialog = d
+                return d
+        except Exception:
+            pass
+        return None
+
+    async def clear_dialog(self) -> None:
+        self.dialog = None
+        try:
+            await self.page.evaluate("window.__psjba_dialog = null")
         except Exception:
             pass
 
@@ -119,6 +139,51 @@ class PlaywrightManager:
 
     # ─── 연결/해제 ──────────────────────────────────────────
 
+    async def _inject_dialog_override(self) -> None:
+        """모든 context/tab에 dialog override init script를 주입한다.
+        
+        CDP가 native alert/confirm을 supress하기 때문에, JS 레벨에서
+        window.confirm/window.alert/window.prompt를 오버라이드하여
+        호출 내용을 window.__psjba_dialog에 기록한다.
+        """
+        script = """
+        (function() {
+          if (window.__psjba_injected) return;
+          window.__psjba_injected = true;
+          window.__psjba_dialog = null;
+          window.__psjba_confirm_result = null;   // null = use default (true)
+          window.__psjba_prompt_result = null;     // null = use default (defaultVal)
+          window.alert = function(msg) {
+            window.__psjba_dialog = {type:'alert',message:String(msg)};
+          };
+          window.confirm = function(msg) {
+            window.__psjba_dialog = {type:'confirm',message:String(msg)};
+            var r = window.__psjba_confirm_result;
+            if (r !== null) {
+              window.__psjba_confirm_result = null;
+              return r;
+            }
+            return true;
+          };
+          window.prompt = function(msg,defaultVal) {
+            window.__psjba_dialog = {type:'prompt',message:String(msg),default:String(defaultVal)};
+            var pv = window.__psjba_prompt_result;
+            if (pv !== null) {
+              window.__psjba_prompt_result = null;
+              return pv;
+            }
+            return defaultVal;
+          };
+        })();
+        """
+        if self._context:
+            await self._context.add_init_script(script)
+        for tab in self._tabs:
+            try:
+                await tab.page.evaluate(script)
+            except Exception:
+                pass
+
     async def connect(self, launch_if_needed: bool = False) -> str:
         """CDP에 연결한다.
 
@@ -173,6 +238,9 @@ class PlaywrightManager:
                 self._tabs = [_TabInfo(page)]
                 self._focused_tab_index = 0
 
+            # 모든 페이지에 dialog override init script 주입
+            await self._inject_dialog_override()
+
             self._connected = True
             url = self.focused_page.url if self.focused_page else "about:blank"
             logger.info("Chrome CDP connected (%d tabs, url=%s)", len(self._tabs), url)
@@ -215,12 +283,12 @@ class PlaywrightManager:
         if not self._connected:
             raise RuntimeError("Not connected to Chrome. Call connect() first.")
 
-    def _ensure_page(self) -> Page:
+    def _ensure_page(self, tab_index: Optional[int] = None) -> Page:
         self._ensure_connected()
-        page = self.focused_page
-        if page is None:
-            raise RuntimeError("No active page")
-        return page
+        idx = tab_index if tab_index is not None else self._focused_tab_index
+        if 0 <= idx < len(self._tabs):
+            return self._tabs[idx].page
+        raise RuntimeError(f"Invalid tab index: {idx} (focused: {self._focused_tab_index})")
 
     # ─── 탭 관리 ────────────────────────────────────────────
 
@@ -230,6 +298,7 @@ class PlaywrightManager:
         self._ensure_connected()
         assert self._context is not None
         page = await self._context.new_page()
+        await self._inject_dialog_override()
         if url:
             await page.goto(url, wait_until="domcontentloaded")
         tab = _TabInfo(page, url or "about:blank")
@@ -374,9 +443,15 @@ class PlaywrightManager:
             await locator.click(timeout=5000)
             await self._tabs[self._focused_tab_index].update_info()
             tab = self._tabs[self._focused_tab_index]
-            return f"Clicked: {selector} [url={tab.url}, title={tab.title}]"
+            result = f"Clicked: {selector} [url={tab.url}, title={tab.title}]"
         except Exception as e:
-            return f"Click error: {e}"
+            result = f"Click error: {e}"
+
+        # dialog 체크
+        d = await tab.check_dialog()
+        if d:
+            result += f"\n⚠️ Dialog recorded: [{d['type']}] {d.get('message','')}"
+        return result
 
     async def browser_type(
         self,
@@ -396,9 +471,14 @@ class PlaywrightManager:
             if clear:
                 await locator.clear()
             await locator.fill(text)
-            return f"Typed into {selector}: {text[:50]}{'...' if len(text) > 50 else ''}"
+            result = f"Typed into {selector}: {text[:50]}{'...' if len(text) > 50 else ''}"
         except Exception as e:
-            return f"Type error: {e}"
+            result = f"Type error: {e}"
+
+        d = await self._tabs[self._focused_tab_index].check_dialog()
+        if d:
+            result += f"\n⚠️ Dialog recorded: [{d['type']}] {d.get('message','')}"
+        return result
 
     async def browser_select_option(
         self,
@@ -497,6 +577,28 @@ class PlaywrightManager:
         except Exception as e:
             return f"Wait error: {e}"
 
+    # ─── Dialog override 처리 ──────────────────────────────────
+
+    async def check_all_tabs_dialog(self) -> list[dict]:
+        """모든 탭의 override된 dialog 정보를 수집한다.
+
+        Returns:
+            [{tab_index, type, message, default}, ...]
+        """
+        results = []
+        for i, tab in enumerate(self._tabs):
+            d = await tab.check_dialog()
+            if d:
+                results.append({
+                    "tab_index": i,
+                    "tab_url": tab.url,
+                    "tab_title": tab.title,
+                    "type": d.get("type"),
+                    "message": d.get("message"),
+                    "default": d.get("default"),
+                })
+        return results
+
     # ─── 정보 조회 ──────────────────────────────────────────
 
     async def chrome_health(self) -> str:
@@ -555,6 +657,10 @@ class PlaywrightManager:
             await tab.update_info()
             marker = " ◀ FOCUSED" if i == self._focused_tab_index else ""
             parts.append(f"  Tab {i}: {tab.url}{' (' + tab.title + ')' if tab.title else ''}{marker}")
+            # pending dialog 정보도 표시
+            if tab.dialog:
+                d = tab.dialog
+                parts.append(f"       ⚠️ Dialog: [{d.get('type')}] {d.get('message', '')}")
         return "\n".join(parts)
 
     async def chrome_start(self) -> str:
@@ -572,28 +678,34 @@ class PlaywrightManager:
         else:
             return f"Failed to start Chrome: {result}"
 
-    async def browser_snapshot(self) -> str:
+    async def browser_snapshot(self, tab_index: Optional[int] = None) -> str:
         logger.info("browser_snapshot called")
-        """현재 페이지의 접근성 트리를 반환하고 ref 매핑을 저장한다."""
-        page = self._ensure_page()
+        """특정 탭의 접근성 트리를 반환하고 ref 매핑을 저장한다.
+
+        Args:
+            tab_index: 대상 탭 인덱스 (None이면 포커스 탭)
+        """
+        page = self._ensure_page(tab_index)
         text, refs = await get_accessibility_tree_with_refs(page)
         self._a11y_refs = refs
         if refs:
             logger.info("a11y snapshot: %d interactive refs", len(refs))
         return text
 
-    async def browser_click_by_ref(self, ref: int) -> str:
+    async def browser_click_by_ref(self, ref: int, tab_index: Optional[int] = None) -> str:
         """접근성 트리 ref 번호로 요소를 찾아 클릭한다.
 
         Args:
             ref: browser_snapshot() 결과에 표시된 [#N] 번호
+            tab_index: 대상 탭 인덱스 (None이면 포커스 탭)
         """
         node = self._a11y_refs.get(ref)
         if node is None:
             return (f"Click by ref failed: ref #{ref} not found. "
                     "Call browser_snapshot() first to refresh the tree.")
 
-        page = self._ensure_page()
+        page = self._ensure_page(tab_index)
+        idx = tab_index if tab_index is not None else self._focused_tab_index
         role = node.get("role", "")
         name = node.get("name", "")
 
@@ -608,10 +720,10 @@ class PlaywrightManager:
 
         try:
             await locator.first.click(timeout=5000)
-            await self._tabs[self._focused_tab_index].update_info()
-            tab = self._tabs[self._focused_tab_index]
-            return (f"Clicked ref #{ref} ({role} \"{name}\") "
-                    f"[url={tab.url}, title={tab.title}]")
+            await self._tabs[idx].update_info()
+            tab = self._tabs[idx]
+            result = (f"Clicked ref #{ref} ({role} \"{name}\") "
+                      f"[url={tab.url}, title={tab.title}]")
         except Exception as e:
             # fallback: self-healing 으로 name 기반 시도
             healing = SelfHealingSelector(page)
@@ -622,17 +734,26 @@ class PlaywrightManager:
                 return f"Click by ref #{ref} failed: {e}"
             try:
                 await locator2.click(timeout=5000)
-                await self._tabs[self._focused_tab_index].update_info()
-                tab = self._tabs[self._focused_tab_index]
-                return (f"Clicked ref #{ref} ({role} \"{name}\") [fallback] "
-                        f"[url={tab.url}, title={tab.title}]")
+                await self._tabs[idx].update_info()
+                tab = self._tabs[idx]
+                result = (f"Clicked ref #{ref} ({role} \"{name}\") [fallback] "
+                          f"[url={tab.url}, title={tab.title}]")
             except Exception as e2:
                 return f"Click by ref #{ref} failed (both): {e2}"
 
-    async def browser_get_dom(self) -> str:
+        d = await self._tabs[idx].check_dialog()
+        if d:
+            result += f"\n⚠️ Dialog recorded: [{d['type']}] {d.get('message','')}"
+        return result
+
+    async def browser_get_dom(self, tab_index: Optional[int] = None) -> str:
         logger.info("browser_get_dom called")
-        """현재 페이지의 DOM HTML을 반환한다 (간략화)."""
-        page = self._ensure_page()
+        """특정 탭의 DOM HTML을 반환한다 (간략화).
+
+        Args:
+            tab_index: 대상 탭 인덱스 (None이면 포커스 탭)
+        """
+        page = self._ensure_page(tab_index)
         try:
             html = await page.content()
             if len(html) > 50000:
@@ -645,14 +766,20 @@ class PlaywrightManager:
         self,
         full_page: bool = False,
         filename: Optional[str] = None,
+        tab_index: Optional[int] = None,
     ) -> str:
         logger.info("browser_screenshot: full_page=%s, filename=%s", full_page, filename)
         """스크린샷을 워크스페이스 폴더에 PNG 파일로 저장한다.
 
         파일명: {yyyyMMdd-HHmmss}.png
         저장 경로: {workspace_dir}/screenshots/
+
+        Args:
+            full_page: 전체 페이지 스크린샷 여부
+            filename: 파일명 (None이면 타임스탬프)
+            tab_index: 대상 탭 인덱스 (None이면 포커스 탭)
         """
-        page = self._ensure_page()
+        page = self._ensure_page(tab_index)
 
         screenshots_dir = Path(self._workspace_dir) / "screenshots"
         screenshots_dir.mkdir(parents=True, exist_ok=True)
@@ -669,10 +796,15 @@ class PlaywrightManager:
 
     # ─── 스크립트 실행 ──────────────────────────────────────
 
-    async def browser_execute_script(self, script: str) -> str:
+    async def browser_execute_script(self, script: str, tab_index: Optional[int] = None) -> str:
         logger.info("browser_execute_script: script=%s", script[:80])
-        """JavaScript를 실행하고 결과를 반환한다."""
-        page = self._ensure_page()
+        """JavaScript를 실행하고 결과를 반환한다.
+
+        Args:
+            script: 실행할 JavaScript
+            tab_index: 대상 탭 인덱스 (None이면 포커스 탭)
+        """
+        page = self._ensure_page(tab_index)
         try:
             result = await page.evaluate(script)
             return f"Script returned: {result}" if result is not None else "Script returned: (no value)"

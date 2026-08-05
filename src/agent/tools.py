@@ -102,19 +102,32 @@ def create_browser_tools(
         return await manager.browser_get_focused_tab()
 
     @tool
-    async def browser_screenshot(full_page: bool = False) -> str:
-        """Take a screenshot and save it. Only use when the user explicitly requests a screenshot."""
-        return await manager.browser_screenshot(full_page=full_page)
+    async def browser_screenshot(full_page: bool = False, tab_index: Optional[int] = None) -> str:
+        """Take a screenshot and save it. Only use when the user explicitly requests a screenshot.
+
+        Args:
+            full_page: Capture full page if True
+            tab_index: Target tab index (default: focused tab)
+        """
+        return await manager.browser_screenshot(full_page=full_page, tab_index=tab_index)
 
     @tool
-    async def browser_snapshot() -> str:
-        """Get the accessibility tree of the current page. Use this to understand the page structure before taking actions."""
-        return await manager.browser_snapshot()
+    async def browser_snapshot(tab_index: Optional[int] = None) -> str:
+        """Get the accessibility tree of a page. Use this to understand the page structure before taking actions.
+
+        Args:
+            tab_index: Target tab index (default: focused tab)
+        """
+        return await manager.browser_snapshot(tab_index)
 
     @tool
-    async def browser_get_dom() -> str:
-        """Get the HTML content of the current page."""
-        return await manager.browser_get_dom()
+    async def browser_get_dom(tab_index: Optional[int] = None) -> str:
+        """Get the HTML content of a page.
+
+        Args:
+            tab_index: Target tab index (default: focused tab)
+        """
+        return await manager.browser_get_dom(tab_index)
 
     @tool
     async def chrome_health() -> str:
@@ -127,14 +140,24 @@ def create_browser_tools(
         return await manager.chrome_start()
 
     @tool
-    async def browser_execute_script(script: str) -> str:
-        """Execute JavaScript on the current page and return the result."""
-        return await manager.browser_execute_script(script)
+    async def browser_execute_script(script: str, tab_index: Optional[int] = None) -> str:
+        """Execute JavaScript on a page and return the result.
+
+        Args:
+            script: JavaScript code to execute
+            tab_index: Target tab index (default: focused tab)
+        """
+        return await manager.browser_execute_script(script, tab_index)
 
     @tool
-    async def browser_click_by_ref(ref: int) -> str:
-        """Click an element by its accessibility tree ref number. Use this after calling browser_snapshot() to see the [#N] ref numbers next to interactive elements. This is more reliable than guessing a CSS selector."""
-        return await manager.browser_click_by_ref(ref)
+    async def browser_click_by_ref(ref: int, tab_index: Optional[int] = None) -> str:
+        """Click an element by its accessibility tree ref number. Use this after calling browser_snapshot() to see the [#N] ref numbers next to interactive elements. This is more reliable than guessing a CSS selector.
+
+        Args:
+            ref: The [#N] ref number from the accessibility tree
+            tab_index: Target tab index (default: focused tab)
+        """
+        return await manager.browser_click_by_ref(ref, tab_index)
 
     @tool
     async def workspace_write(filename: str, content: str) -> str:
@@ -177,7 +200,7 @@ def create_browser_tools(
     ]
 
 
-def create_cron_tools(manager: PlaywrightManager, db: Any = None) -> list:
+def create_cron_tools(manager: PlaywrightManager, db: Any = None, job_scheduler: Any = None) -> list:
     """크론 + 1회성 job 도구 리스트를 생성한다."""
 
     @tool
@@ -219,8 +242,6 @@ def create_cron_tools(manager: PlaywrightManager, db: Any = None) -> list:
     @tool
     async def job_add(name: str, time_str: str, prompt: str) -> str:
         """Add a one-time scheduled job. time_str is a datetime in ISO format (e.g. '2026-07-30T15:30:00' or '2026-07-30 15:30:00')."""
-        if db is None:
-            return "job_add error: database not available"
         from datetime import datetime
         from src.models.schemas import ScheduledJob
         parsed = time_str.replace("T", " ").strip()
@@ -232,7 +253,12 @@ def create_cron_tools(manager: PlaywrightManager, db: Any = None) -> list:
             scheduled_at=dt,
             prompt=prompt,
         )
-        await db.create_scheduled_job(job)
+        if job_scheduler is not None:
+            await job_scheduler.add_job(job)
+        elif db is not None:
+            await db.create_scheduled_job(job)
+        else:
+            return "job_add error: no database or scheduler available"
         return (
             f"Scheduled one-time job '{name}' created: "
             f"will run at {dt.isoformat()[:19]} (ID: {job.id})"
@@ -274,6 +300,7 @@ def create_all_tools(
     manager: PlaywrightManager,
     db: Optional[Database] = None,
     session_id: str = "",
+    job_scheduler: Any = None,
 ) -> list:
     """모든 도구를 하나의 리스트로 생성한다.
 
@@ -281,13 +308,14 @@ def create_all_tools(
         manager: PlaywrightManager 인스턴스
         db: Database 인스턴스 (memory_search용, None이면 memory_search 제외)
         session_id: 현재 세션 ID
+        job_scheduler: JobScheduler 인스턴스 (job_add용)
 
     Returns:
         모든 LangChain tool 리스트
     """
     tools = create_browser_tools(manager)
 
-    tools.extend(create_cron_tools(manager, db=db))
+    tools.extend(create_cron_tools(manager, db=db, job_scheduler=job_scheduler))
     if db and session_id:
         tools.extend(create_memory_tools(db, session_id))
     return tools

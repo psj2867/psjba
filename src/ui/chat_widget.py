@@ -18,6 +18,12 @@ from PySide6.QtWidgets import (
 
 logger = logging.getLogger("psjba.ui.chat_widget")
 
+try:
+    from shiboken6 import isValid as _qt_is_valid
+except ImportError:
+    def _qt_is_valid(obj: object) -> bool:
+        return True
+
 TOOL_CALL_STYLE = (
     "QFrame { border: 1px solid #dce1e8; border-radius: 6px; margin: 2px 0; "
     "background-color: #f8fafc; }"
@@ -277,11 +283,16 @@ class ChatWidget(QWidget):
 
     def update_thinking(self, text: str) -> None:
         """현재 스켈론 텍스트를 갱신한다."""
-        if self._thinking_block:
-            for browser in self._thinking_block.findChildren(QTextBrowser):
-                if browser.objectName() == "content":
-                    browser.setMarkdown(text)
-                    break
+        block = self._thinking_block
+        if block is None:
+            return
+        if not _qt_is_valid(block) or not block.isWidgetType():
+            self._thinking_block = None
+            return
+        for browser in block.findChildren(QTextBrowser):
+            if browser.objectName() == "content" and _qt_is_valid(browser):
+                browser.setMarkdown(text)
+                break
 
     def _update_thinking(self, text: str) -> None:
         """내부용: 스켈론 텍스트 즉시 갱신."""
@@ -329,12 +340,14 @@ class ChatWidget(QWidget):
             self.replace_thinking_skeleton(content)
             return
 
-        if self._last_ai_block:
-            for browser in self._last_ai_block.findChildren(QTextBrowser):
-                if browser.objectName() == "content":
+        block = self._last_ai_block
+        if block is not None and _qt_is_valid(block) and block.isWidgetType():
+            for browser in block.findChildren(QTextBrowser):
+                if browser.objectName() == "content" and _qt_is_valid(browser):
                     browser.setMarkdown(content)
                     break
         else:
+            self._last_ai_block = None
             self.add_ai_block(content)
 
     def finalize_ai_response(
@@ -349,13 +362,17 @@ class ChatWidget(QWidget):
         """
         if self._thinking_block:
             self.replace_thinking_skeleton(content, tool_calls)
-        elif self._last_ai_block:
-            for browser in self._last_ai_block.findChildren(QTextBrowser):
-                if browser.objectName() == "content":
+            return
+
+        block = self._last_ai_block
+        if block is not None and _qt_is_valid(block) and block.isWidgetType():
+            for browser in block.findChildren(QTextBrowser):
+                if browser.objectName() == "content" and _qt_is_valid(browser):
                     browser.setMarkdown(content)
                     break
             self._scroll_to_bottom()
         else:
+            self._last_ai_block = None
             self.add_ai_block(content, tool_calls)
 
     # --- AI 응답 블록 ---

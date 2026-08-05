@@ -159,7 +159,7 @@ async def run(config: Config) -> None:
     logger.info("Step 1/10: Config loaded (path=%s)", CONFIG_PATH)
 
     # DB
-    db_path = config.get("sqlite", "path", "./browser_agent.data")
+    db_path = config.get("sqlite", "path", "./browser_agent.db")
     db = Database(db_path)
     await db.connect()
     await db.initialize()
@@ -374,8 +374,9 @@ async def _handle_prompt(
             db=db,
             session_id=session_id,
             llm=llm_client.llm,
-            max_context_messages=config.get("agent", "sliding_window_size", 10),
-            max_tool_calls=config.get("agent", "max_tool_calls", 30),
+            max_context_messages=int(config.get("agent", "sliding_window_size", 10)),
+            max_tool_calls=int(config.get("agent", "max_tool_calls", 30)),
+            job_scheduler=job_scheduler,
         )
 
         # 브라우저 현재 상태 수집 (연결/탭/포커스) -> developer 메시지로 추가

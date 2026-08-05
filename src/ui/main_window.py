@@ -246,7 +246,7 @@ class MainWindow(QMainWindow):
 
     def _open_settings(self) -> None:
         logger.debug("Settings dialog opened")
-        dlg = SettingsDialog(self._config, self._db, parent=self)
+        dlg = SettingsDialog(self._config, self._db, parent=self, manager=self._manager)
         dlg.config_saved.connect(self._on_config_saved)
         dlg.exec()
 

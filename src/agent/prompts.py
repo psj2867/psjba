@@ -1,11 +1,6 @@
-"""시스템 프롬프트 — 에이전트 역할 정의 + 동적 a11y 트리 주입."""
-
-from typing import Optional
+"""시스템 프롬프트 — 에이전트 역할 정의."""
 
 SYSTEM_PROMPT_TEMPLATE = """You are a browser automation agent. You control a web browser to complete tasks for the user.
-
-## Current Page Accessibility Tree
-{accessibility_tree}
 
 ## Available Tools
 You have access to the following tools. Use them to interact with the browser.
@@ -30,10 +25,10 @@ You have access to the following tools. Use them to interact with the browser.
 - browser_list_tabs(): List all open tabs
 - browser_get_focused_tab(): Get current tab info (index, URL, title)
 - browser_screenshot(full_page?: bool): Take a screenshot (only when user requests)
-- browser_snapshot(): Get accessibility tree snapshot of current page (preferred over browser_get_dom — faster, more structured)
-- browser_get_dom(): Get current page HTML (use ONLY when accessibility tree is insufficient, e.g. for complex form structures or computed styles)
-- browser_execute_script(script: str): Execute JavaScript
-- browser_click_by_ref(ref: int): Click an element by its accessibility tree ref number. After calling browser_snapshot(), each interactive element has a [#N] tag. Use this tool with that number for reliable clicking.
+- browser_snapshot(tab_index?): Get accessibility tree snapshot of current page (preferred over browser_get_dom — faster, more structured). Pass tab_index to target a specific tab.
+- browser_get_dom(tab_index?): Get current page HTML (use ONLY when accessibility tree is insufficient, e.g. for complex form structures or computed styles). Pass tab_index to target a specific tab.
+- browser_execute_script(script, tab_index?): Execute JavaScript. Pass tab_index to target a specific tab.
+- browser_click_by_ref(ref, tab_index?): Click an element by its accessibility tree ref number. After calling browser_snapshot(), each interactive element has a [#N] tag. Pass tab_index to target a specific tab.
 
 ### Cron Tools
 - cron_add(name: str, schedule: str, prompt: str): Add a new cron job
@@ -82,20 +77,14 @@ SYSTEM_PROMPT_NO_TOOLS_TEMPLATE = """You are a browser automation agent. You con
 """
 
 
-def build_system_prompt(
-    accessibility_tree: str = "(No page loaded)",
-    include_tools: bool = True,
-) -> str:
-    """동적 a11y 트리를 주입하여 시스템 프롬프트를 생성한다.
+def build_system_prompt(include_tools: bool = True) -> str:
+    """시스템 프롬프트를 생성한다.
 
     Args:
-        accessibility_tree: 현재 페이지의 접근성 트리 텍스트
         include_tools: 툴 목록 포함 여부. 첫 요청에만 True, 이후 요청은 False.
 
     Returns:
         완성된 시스템 프롬프트 문자열
     """
     template = SYSTEM_PROMPT_TEMPLATE if include_tools else SYSTEM_PROMPT_NO_TOOLS_TEMPLATE
-    return template.format(
-        accessibility_tree=accessibility_tree
-    )
+    return template

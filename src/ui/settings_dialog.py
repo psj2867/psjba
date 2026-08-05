@@ -133,10 +133,17 @@ class SettingsDialog(QDialog):
 
     config_saved = Signal()
 
-    def __init__(self, config: Config, db: Database, parent: Optional[QWidget] = None) -> None:
+    def __init__(
+        self,
+        config: Config,
+        db: Database,
+        parent: Optional[QWidget] = None,
+        manager: Any = None,
+    ) -> None:
         super().__init__(parent)
         self._config = config
         self._db = db
+        self._manager = manager
         self._cron_l2_page: int = 1
         self._cron_l2_total_pages: int = 1
         self._cron_l2_cron_job_id: Optional[str] = None
@@ -543,6 +550,25 @@ class SettingsDialog(QDialog):
         w = QWidget()
         layout = QVBoxLayout(w)
 
+        # 상단 헤더: 아카이브(삭제된) 크론/잡 표시 토글
+        header = QHBoxLayout()
+        hint_lbl = QLabel("예약 작업")
+        hint_lbl.setStyleSheet("font-weight: bold; font-size: 13px; border: none;")
+        header.addWidget(hint_lbl)
+        header.addStretch()
+        self._cron_show_archived = False
+        self._cron_archive_btn = QPushButton("🗂️ 아카이브 보기")
+        self._cron_archive_btn.setCheckable(True)
+        self._cron_archive_btn.setChecked(False)
+        self._cron_archive_btn.setStyleSheet(
+            "QPushButton { background-color: #ffffff; color: #64748b; "
+            "border: 1px solid #dce1e8; border-radius: 4px; padding: 2px 8px; font-size: 11px; }"
+            "QPushButton:hover { border: 1px solid #4f46e5; }"
+        )
+        self._cron_archive_btn.clicked.connect(self._on_toggle_archived)
+        header.addWidget(self._cron_archive_btn)
+        layout.addLayout(header)
+
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         self._cron_card_container = QWidget()
@@ -554,6 +580,22 @@ class SettingsDialog(QDialog):
         layout.addWidget(scroll)
 
         return w
+
+    def _on_toggle_archived(self) -> None:
+        self._cron_show_archived = self._cron_archive_btn.isChecked()
+        if self._cron_show_archived:
+            self._cron_archive_btn.setText("🗂️ 아카이브 숨기기")
+            self._cron_archive_btn.setStyleSheet(
+                "QPushButton { background-color: #eef2ff; color: #4f46e5; "
+                "border: 1px solid #4f46e5; border-radius: 4px; padding: 2px 8px; font-size: 11px; }"
+            )
+        else:
+            self._cron_archive_btn.setText("🗂️ 아카이브 보기")
+            self._cron_archive_btn.setStyleSheet(
+                "QPushButton { background-color: #ffffff; color: #64748b; "
+                "border: 1px solid #dce1e8; border-radius: 4px; padding: 2px 8px; font-size: 11px; }"
+            )
+        self._load_cron_level1()
 
     def _build_cron_level2(self) -> QWidget:
         w = QWidget()
@@ -632,14 +674,24 @@ class SettingsDialog(QDialog):
         self._clear_layout(self._cron_card_layout)
 
         async def _fetch_and_render() -> None:
-            jobs = await self._db.list_cron_jobs()
+            show_archived = self._cron_show_archived
+            jobs = await self._db.list_cron_jobs(include_deleted=show_archived)
+            # 1회성 예약 job도 함께 표시 (아카이브 토글 시 완료/취소/오류 포함)
+            if show_archived:
+                scheduled = await self._db.list_scheduled_jobs(limit=200)
+            else:
+                scheduled = await self._db.list_scheduled_jobs(
+                    statuses=["pending", "running"], limit=200,
+                )
             self._clear_layout(self._cron_card_layout)
-            if not jobs:
+
+            if not jobs and not scheduled:
                 # 빈 상태 메시지
                 empty_lbl = QLabel(
-                    '크론 작업이 없습니다.\n\n'
+                    '예약 작업이 없습니다.\n\n'
                     '에이전트에게 "매일 오전 9시에 뉴스 확인해줘" 같은 '
-                    '프롬프트를 입력하면 자동으로 추가됩니다.'
+                    '프롬프트를 입력하면 반복 크론이 추가되고, '
+                    '"내일 오후 3시에 알려줘"는 1회성 예약이 추가됩니다.'
                 )
                 empty_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 empty_lbl.setWordWrap(True)
@@ -649,6 +701,14 @@ class SettingsDialog(QDialog):
                 count = self._cron_card_layout.count()
                 self._cron_card_layout.insertWidget(count - 1, empty_lbl)
                 return
+
+            # 1회성 예약 job 먼저 표시 (예정 시간 오름차순)
+            for job in scheduled:
+                card = self._make_scheduled_job_card(job)
+                count = self._cron_card_layout.count()
+                self._cron_card_layout.insertWidget(count - 1, card)
+
+            # 반복 크론 표시
             for job in jobs:
                 card = self._make_cron_card(job)
                 count = self._cron_card_layout.count()
@@ -720,6 +780,70 @@ class SettingsDialog(QDialog):
 
         return frame
 
+    def _make_scheduled_job_card(self, job: Any) -> QWidget:
+        frame = QFrame()
+        frame.setFrameShape(QFrame.Shape.StyledPanel)
+        frame.setStyleSheet(
+            "QFrame { border: 1px solid #dce1e8; border-radius: 8px; padding: 10px; "
+            "background-color: #fffbeb; }"
+            "QFrame:hover { background-color: #fef3c7; }"
+        )
+        layout = QVBoxLayout(frame)
+
+        top = QHBoxLayout()
+        icon = QLabel("⏰")
+        icon.setStyleSheet("border: none; font-size: 14px;")
+        top.addWidget(icon)
+        name_lbl = QLabel(job.name)
+        name_lbl.setStyleSheet("font-weight: bold; border: none; color: #1e293b;")
+        top.addWidget(name_lbl)
+        top.addStretch()
+
+        status_icons = {
+            "pending": "⏳",
+            "running": "🔄",
+            "done": "✅",
+            "cancelled": "❌",
+            "error": "⚠️",
+        }
+        status_icon = status_icons.get(job.status, "❓")
+        status_lbl = QLabel(f"{status_icon} {job.status}")
+        status_lbl.setStyleSheet(
+            "border: none; font-size: 11px; color: #64748b;"
+        )
+        top.addWidget(status_lbl)
+
+        del_btn = QPushButton("🗑️")
+        del_btn.setFixedSize(28, 28)
+        del_btn.setStyleSheet(
+            "QPushButton { border: 1px solid #dce1e8; border-radius: 4px; "
+            "background-color: #ffffff; }"
+            "QPushButton:hover { border: 1px solid #ef4444; background-color: #fef2f2; }"
+        )
+        del_btn.clicked.connect(lambda: self._on_delete_scheduled_job(job.id))
+        top.addWidget(del_btn)
+        layout.addLayout(top)
+
+        info_row = QHBoxLayout()
+        sched_str = job.scheduled_at.strftime("%Y-%m-%d %H:%M")
+        info_lbl = QLabel(
+            f"예약: {sched_str}  │  {job.prompt[:60]}{'…' if len(job.prompt) > 60 else ''}"
+        )
+        info_lbl.setStyleSheet("color: #64748b; font-size: 10px; border: none;")
+        info_row.addWidget(info_lbl)
+        info_row.addStretch()
+        layout.addLayout(info_row)
+
+        return frame
+
+    def _on_delete_scheduled_job(self, job_id: str) -> None:
+        logger.debug("Scheduled job delete: %s", job_id)
+        async def _delete() -> None:
+            await self._db.delete_scheduled_job(job_id)
+            self._load_cron_level1()
+
+        _run_async_task(_delete(), task_store=self._async_tasks)
+
     def _style_toggle(self, btn: QPushButton, enabled: bool) -> None:
         if enabled:
             btn.setText("🔛 활성")
@@ -739,6 +863,9 @@ class SettingsDialog(QDialog):
     def _on_toggle_cron(self, job_id: str, btn: QPushButton) -> None:
         async def _toggle() -> None:
             result = await self._db.toggle_cron_job(job_id)
+            # 스케줄러에도 반영
+            if self._manager and hasattr(self._manager, '_cron_scheduler') and self._manager._cron_scheduler:
+                await self._manager._cron_scheduler.toggle_job(job_id, result)
             self._style_toggle(btn, result)
 
         _run_async_task(_toggle(), task_store=self._async_tasks)
@@ -747,6 +874,9 @@ class SettingsDialog(QDialog):
         logger.debug("Cron job delete: %s", job_id)
         async def _delete() -> None:
             await self._db.delete_cron_job(job_id)
+            # 스케줄러에서도 제거
+            if self._manager and hasattr(self._manager, '_cron_scheduler') and self._manager._cron_scheduler:
+                await self._manager._cron_scheduler.remove_job(job_id)
             self._load_cron_level1()
 
         _run_async_task(_delete(), task_store=self._async_tasks)
