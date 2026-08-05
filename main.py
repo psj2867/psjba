@@ -417,25 +417,25 @@ async def _handle_prompt(
         # 응답 시작 전에 skeleton 표시
         window.show_ai_thinking("🤖 응답 대기 중...")
 
+        # 입력 메시지 개수를 미리 저장 (스트리밍 중 이전 응답을 걸러내기 위함)
+        input_msg_count = len(state["messages"])
+
         try:
             # astream 사용: 각 노드 실행 사이에 이벤트 루프에 yield 하여
             # Qt UI 이벤트가 처리될 기회를 준다 (UI 멈춤 방지)
             # 매 이벤트마다 AI content를 확인하여 실시간 표시한다.
             final_state = None
-            last_ai_msg_id: str | None = None
             async for event in graph.astream(state, stream_mode="values"):
                 final_state = event
                 # 실시간 AI content 표시 (툴 콜 없이 알려주는 텍스트)
                 try:
                     event_msgs = event.get("messages", [])
-                    if event_msgs:
-                        for m in reversed(event_msgs):
+                    if event_msgs and len(event_msgs) > input_msg_count:
+                        # 이번 입력 이후에 추가된 메시지만 고려
+                        new_msgs = event_msgs[input_msg_count:]
+                        for m in reversed(new_msgs):
                             if m.type != "ai":
                                 continue
-                            msg_id = getattr(m, "id", None)
-                            if msg_id is not None and msg_id == last_ai_msg_id:
-                                break
-                            last_ai_msg_id = msg_id
                             content = str(m.content or "").strip()
                             if content:
                                 window._chat.update_ai_content(content)
