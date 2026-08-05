@@ -150,6 +150,16 @@ def create_browser_tools(
         return await manager.browser_execute_script(script, tab_index)
 
     @tool
+    async def browser_snapshot_detail(ref: int, tab_index: Optional[int] = None) -> str:
+        """Get a detailed subtree view for a specific ref from the accessibility tree. Use this when you need more detail about a particular interactive element — it shows the element's children up to 3 levels deep with full tag/attribute info (id, class, type, placeholder), without token truncation. Call browser_snapshot() first to get ref numbers.
+
+        Args:
+            ref: The [#N] ref number from the accessibility tree
+            tab_index: Target tab index (default: focused tab)
+        """
+        return await manager.browser_snapshot_detail(ref, tab_index)
+
+    @tool
     async def browser_click_by_ref(ref: int, tab_index: Optional[int] = None) -> str:
         """Click an element by its accessibility tree ref number. Use this after calling browser_snapshot() to see the [#N] ref numbers next to interactive elements. This is more reliable than guessing a CSS selector.
 
@@ -192,6 +202,7 @@ def create_browser_tools(
         browser_get_focused_tab,
         browser_screenshot,
         browser_snapshot,
+        browser_snapshot_detail,
         browser_get_dom,
         browser_execute_script,
         browser_click_by_ref,

@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
 
 
 class NoWheelMixin:
-    """QSpinBox / QDoubleSpinBox 용 믹스인: 휠 이벤트 무시."""
+    """QSpinBox / QDoubleSpinBox / QComboBox 용 믹스인: 휠 이벤트 무시."""
 
     def wheelEvent(self, event) -> None:
         event.ignore()
@@ -40,6 +40,10 @@ class NoWheelSpinBox(NoWheelMixin, QSpinBox):
 
 
 class NoWheelDoubleSpinBox(NoWheelMixin, QDoubleSpinBox):
+    pass
+
+
+class NoWheelComboBox(NoWheelMixin, QComboBox):
     pass
 
 
@@ -504,7 +508,7 @@ class SettingsDialog(QDialog):
 
         log_box = self._make_section("Logging", parent=page)
         log_layout = log_box.layout()
-        self._log_level_combo = QComboBox()
+        self._log_level_combo = NoWheelComboBox()
         for k, v in LOG_LEVELS.items():
             self._log_level_combo.addItem(v, k)
         self._log_path = QLineEdit()
