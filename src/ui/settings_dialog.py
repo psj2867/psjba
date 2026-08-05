@@ -169,6 +169,12 @@ class SettingsDialog(QDialog):
         self._init_ui()
         self._load_settings()
 
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        # 다이얼로그가 열릴 때마다 CRON 탭 데이터를 DB에서 다시 읽음
+        # (외부에서 agent가 변경한 사항 반영)
+        self._load_cron_level1()
+
     def _init_ui(self) -> None:
         self.setWindowTitle("설정")
         self.setMinimumSize(600, 500)
