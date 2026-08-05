@@ -98,20 +98,36 @@ def _run_async_task(coro: Any, callback: Optional[Callable[[Any], None]] = None,
                     task_store: Optional[list] = None) -> None:
     """실행 중인 이벤트 루프에 코루틴을 태스크로 예약한다.
 
+    Python 3.12+ 에서는 asyncio.ensure_future() 를 동기 콜백에서 직접
+    호출할 수 없으므로, loop.call_soon() 으로 다음 이터레이션에 생성한다.
+
     callback이 있으면 완료 시 호출된다 (task.result() 전달).
     task_store가 있으면 태스크 참조를 저장하여 GC를 방지한다.
     """
     try:
         loop = asyncio.get_event_loop()
-        if loop.is_running():
-            task = asyncio.ensure_future(coro)
-            if task_store is not None:
-                task_store.append(task)
-                task.add_done_callback(task_store.remove)
-            if callback:
-                task.add_done_callback(lambda t: callback(t.result() if not t.exception() else None))
     except RuntimeError:
-        pass
+        return
+
+    if not loop.is_running():
+        return
+
+    def _schedule() -> None:
+        """루프의 다음 이터레이션에서 실제 Task 를 생성한다."""
+        try:
+            task = asyncio.ensure_future(coro)
+        except (RuntimeError, ValueError):
+            # 이미 루프가 종료 중이거나 다른 Task 가 실행 중인 경우
+            return
+        if task_store is not None:
+            task_store.append(task)
+            task.add_done_callback(lambda t: task_store.remove(t) if t in task_store else None)
+        if callback:
+            task.add_done_callback(
+                lambda t: callback(t.result() if not t.exception() else None)
+            )
+
+    loop.call_soon(_schedule)
 
 
 def _make_tooltip_icon(text: str) -> QLabel:
@@ -923,8 +939,7 @@ class SettingsDialog(QDialog):
         try:
             loop = asyncio.get_event_loop()
             if loop.is_running():
-                task = asyncio.ensure_future(_fetch())
-                task.add_done_callback(lambda t: _on_loaded(t.result() if not t.exception() else None))
+                _run_async_task(_fetch(), callback=_on_loaded)
                 return
         except RuntimeError:
             pass
@@ -1008,8 +1023,7 @@ class SettingsDialog(QDialog):
         try:
             loop = asyncio.get_event_loop()
             if loop.is_running():
-                task = asyncio.ensure_future(_fetch())
-                task.add_done_callback(lambda t: _on_loaded(t.result() if not t.exception() else None))
+                _run_async_task(_fetch(), callback=_on_loaded)
                 return
         except RuntimeError:
             pass
@@ -1118,10 +1132,7 @@ class SettingsDialog(QDialog):
         try:
             loop = asyncio.get_event_loop()
             if loop.is_running():
-                task = asyncio.ensure_future(_fetch())
-                task.add_done_callback(lambda t: self._on_log_l1_loaded(
-                    t.result() if not t.exception() else None
-                ))
+                _run_async_task(_fetch(), callback=self._on_log_l1_loaded)
                 return
         except RuntimeError:
             pass
@@ -1203,10 +1214,7 @@ class SettingsDialog(QDialog):
         try:
             loop = asyncio.get_event_loop()
             if loop.is_running():
-                task = asyncio.ensure_future(_fetch())
-                task.add_done_callback(lambda t: self._on_log_l2_loaded(
-                    t.result() if not t.exception() else None
-                ))
+                _run_async_task(_fetch(), callback=self._on_log_l2_loaded)
                 return
         except RuntimeError:
             pass
