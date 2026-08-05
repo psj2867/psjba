@@ -333,6 +333,7 @@ async def execute_tool(
 
     tool_messages: list[BaseMessage] = []
     any_error = False
+    all_pending_dialogs: list[dict] = []
 
     for tc in last_ai.tool_calls:
         tool_name = tc["name"]
@@ -367,10 +368,8 @@ async def execute_tool(
             try:
                 dialogs = await manager.check_all_tabs_dialog()
                 if dialogs:
-                    # 여러 탭 dialog를 큐로 관리
-                    pending_dialogs = state.setdefault("pending_dialogs", [])
                     for d in dialogs:
-                        pending_dialogs.append(d)
+                        all_pending_dialogs.append(d)
                     dialog_hint = (
                         f" ⚠️Dialog: tab[{dialogs[0]['tab_index']}] "
                         f"{dialogs[0]['type']} '{dialogs[0].get('message','')}'"
@@ -404,6 +403,7 @@ async def execute_tool(
     updates: dict[str, Any] = {
         "messages": tool_messages,
         "tool_call_count": tool_call_count,
+        "pending_dialogs": all_pending_dialogs,
     }
 
     if any_error:

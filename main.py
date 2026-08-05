@@ -421,9 +421,17 @@ async def _handle_prompt(
             # astream 사용: 각 노드 실행 사이에 이벤트 루프에 yield 하여
             # Qt UI 이벤트가 처리될 기회를 준다 (UI 멈춤 방지)
             # 매 이벤트마다 AI content를 확인하여 실시간 표시한다.
+            # 각 이벤트 대기를 asyncio.wait_for 로 감싸 도구/LLM hang 시
+            # 무기한 대기하지 않고 타임아웃으로 복구한다.
             final_state = None
             last_ai_msg_id: str | None = None
-            async for event in graph.astream(state, stream_mode="values"):
+            graph_timeout = int(config.get("agent", "graph_timeout", 300))
+            stream = graph.astream(state, stream_mode="values")
+            while True:
+                try:
+                    event = await asyncio.wait_for(stream.__anext__(), timeout=graph_timeout)
+                except StopAsyncIteration:
+                    break
                 final_state = event
                 # 실시간 AI content 표시 (툴 콜 없이 알려주는 텍스트)
                 try:
@@ -449,6 +457,11 @@ async def _handle_prompt(
                     break
             input_count = len(state["messages"])
             final_messages = final_state.get("messages", []) if final_state else []
+        except asyncio.TimeoutError:
+            logger.error("Agent graph execution timed out after %ss", graph_timeout)
+            window._chat.update_thinking("⚠️ 에이전트 실행 시간 초과 (도구/LLM 응답 지연)")
+            window._prompt.set_running(False)
+            return
         except asyncio.CancelledError:
             logger.warning("Agent execution cancelled (graph astream)")
             _finish_prompt_cancelled(window)

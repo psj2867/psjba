@@ -45,12 +45,26 @@ class _TabInfo:
         except Exception:
             pass
 
-    async def check_dialog(self) -> Optional[dict]:
-        """Override된 dialog 정보를 page에서 읽어온다."""
+    async def check_dialog(self, timeout: float = 2.0) -> Optional[dict]:
+        """Override된 dialog 정보를 page에서 읽어온다.
+
+        page.evaluate 는 페이지 상태가 좋지 않으면 무기한 대기할 수 있어
+        짧은 타임아웃을 적용한다 (agent 실행이 멈추는 것 방지).
+
+        Args:
+            timeout: evaluate 최대 대기 시간 (초)
+
+        Returns:
+            대화상자 정보 dict, 또는 None
+        """
         try:
-            d = await self.page.evaluate("window.__psjba_dialog")
+            d = await self.page.evaluate(
+                "window.__psjba_dialog", timeout=timeout
+            )
             if d and not d.get("_handled"):
-                await self.page.evaluate("window.__psjba_dialog._handled = true")
+                await self.page.evaluate(
+                    "window.__psjba_dialog._handled = true", timeout=timeout
+                )
                 self.dialog = d
                 return d
         except Exception:
