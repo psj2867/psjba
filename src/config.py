@@ -59,7 +59,7 @@ DEFAULTS: dict[str, dict[str, Any]] = {
         "headless": False,
     },
     "sqlite": {
-        "path": "./browser_agent.data",
+        "path": "./browser_agent.db",
     },
     "agent": {
         "sliding_window_size": 10,
@@ -72,7 +72,6 @@ DEFAULTS: dict[str, dict[str, Any]] = {
     "ui": {
         "font_size": 14,
         "max_chat_lines": 1000,
-        "language": "ko",
     },
     "logging": {
         "level": "disabled",
@@ -88,7 +87,6 @@ TYPE_MAP: dict[str, type] = {
     "path": str,
     "user_data_dir": str,
     "workspace_dir": str,
-    "language": str,
     "level": str,
     "port": int,
     "max_tokens": int,

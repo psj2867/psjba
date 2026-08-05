@@ -112,7 +112,7 @@ FTS5_TRIGGERS = [
 
 
 class Database:
-    def __init__(self, db_path: str = "./browser_agent.data"):
+    def __init__(self, db_path: str = "./browser_agent.db"):
         self._db_path = str(Path(db_path).resolve())
         self._conn: Optional[aiosqlite.Connection] = None
 
@@ -124,6 +124,11 @@ class Database:
 
     async def close(self) -> None:
         if self._conn:
+            try:
+                await self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+                await self._conn.commit()
+            except Exception:
+                pass
             await self._conn.close()
             self._conn = None
 
