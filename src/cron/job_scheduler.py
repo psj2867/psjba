@@ -40,16 +40,9 @@ class JobScheduler:
         return [jid for jid, t in self._running.items() if not t.done()]
 
     async def start(self) -> None:
-        # DB에서 pending job 로드 후 APScheduler 등록
-        pending = await self._db.list_scheduled_jobs(
-            statuses=["pending"], limit=500
-        )
-        for job in pending:
-            self._schedule_one(job)
+        # DB에서 pending job 로드 안 함 — 모두 비활성화 상태로 관리
         self._scheduler.start()
-        logger.info(
-            "JobScheduler started: %d pending job(s) loaded", len(pending)
-        )
+        logger.info("JobScheduler started (no pending jobs loaded, all disabled)")
 
     async def stop(self) -> None:
         self._scheduler.shutdown(wait=False)

@@ -786,22 +786,6 @@ class PlaywrightManager:
             result += f"\n⚠️ Dialog recorded: [{d['type']}] {d.get('message','')}"
         return result
 
-    async def browser_get_dom(self, tab_index: Optional[int] = None) -> str:
-        logger.info("browser_get_dom called")
-        """특정 탭의 DOM HTML을 반환한다 (간략화).
-
-        Args:
-            tab_index: 대상 탭 인덱스 (None이면 포커스 탭)
-        """
-        page = self._ensure_page(tab_index)
-        try:
-            html = await page.content()
-            if len(html) > 50000:
-                html = html[:50000] + "\n... (truncated)"
-            return html
-        except Exception as e:
-            return f"DOM error: {e}"
-
     async def browser_screenshot(
         self,
         full_page: bool = False,

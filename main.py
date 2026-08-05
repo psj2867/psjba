@@ -201,6 +201,18 @@ async def run(config: Config) -> None:
     await job_scheduler.start()
     logger.info("Step 5a/10: JobScheduler started")
 
+    # 모든 크론/예약 job 비활성화 (설정 UI에서 수동 활성화 필요)
+    await db.conn.execute(
+        "UPDATE psjba_cron_job SET status = 'disable', updated_at = datetime('now') "
+        "WHERE status = 'enable'"
+    )
+    await db.conn.execute(
+        "UPDATE psjba_scheduled_job SET status = 'cancelled' "
+        "WHERE status = 'pending'"
+    )
+    await db.conn.commit()
+    logger.info("Step 5c/10: All cron/scheduled jobs disabled at startup")
+
     # manager에 크론 의존성 주입
     manager.set_cron_dependencies(db=db, cron_scheduler=cron_scheduler)
     logger.info("Step 5b/10: Cron dependencies injected into manager")

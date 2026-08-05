@@ -215,14 +215,46 @@ def _format_tree(
 
 
 def _prune_tree(snapshot: dict[str, Any]) -> Optional[dict[str, Any]]:
-    """불필요한 노드(빈 StaticText, invisible 등)를 제거한다."""
+    """불필요한 노드(빈 StaticText, 불필요한 구조 래퍼)를 제거한다.
+
+    Single-child "generic"/"none"/"presentation"/"paragraph"/"group" 노드는
+    interactive한 자식이나 name/description/value가 있는 경우가 아니면
+    자신을 생략하고 자식을 바로 부모에 붙인다.
+    """
     role = snapshot.get("role", "")
     name = snapshot.get("name", "")
+    value = snapshot.get("value", "")
+    description = snapshot.get("description", "")
     children = snapshot.get("children", [])
 
+    # 내용 없는 노드 제거
     if role == "StaticText" and not name.strip():
         return None
-    if role in ("None", "presentation", "generic") and not name and not children:
+
+    # 자식도 없고 이름도 없는 쓸모없는 컨테이너 제거
+    wrapper_roles = {"None", "presentation", "generic", "paragraph", "group",
+                     "Region", "region", "Section", "section",
+                     "Div", "div", "Span", "span"}
+    if role in wrapper_roles and not name and not value and not description:
+        if not children:
+            return None
+
+    # 단일 자식만 가진 구조 래퍼는 펼치기 (interactive 노드면 보존)
+    has_interactive_child = any(
+        _is_interactive(c.get("role", ""))
+        for c in children
+    )
+
+    if (
+        role in wrapper_roles
+        and not name and not value and not description
+        and len(children) == 1
+        and not has_interactive_child
+    ):
+        child = children[0]
+        child_pruned = _prune_tree(child)
+        if child_pruned is not None:
+            return child_pruned
         return None
 
     pruned_children: list[dict[str, Any]] = []

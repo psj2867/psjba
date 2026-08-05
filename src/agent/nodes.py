@@ -93,7 +93,7 @@ def _apply_sliding_window(
 _TOOL_NAME_PATTERN = re.compile(
     r"^(browser_(?:navigate|click|type|select_option|hover|scroll|focus|"
     r"press_key|wait|new_tab|close_tab|switch_tab|list_tabs|"
-    r"get_focused_tab|screenshot|snapshot|snapshot_detail|get_dom|"
+    r"get_focused_tab|screenshot|snapshot|snapshot_detail|"
     r"execute_script|click_by_ref)"
     r"|chrome_(?:health|start)"
     r"|cron_(?:add|list|edit|toggle|remove|to_session)"

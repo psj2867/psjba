@@ -121,15 +121,6 @@ def create_browser_tools(
         return await manager.browser_snapshot(tab_index)
 
     @tool
-    async def browser_get_dom(tab_index: Optional[int] = None) -> str:
-        """Get the HTML content of a page.
-
-        Args:
-            tab_index: Target tab index (default: focused tab)
-        """
-        return await manager.browser_get_dom(tab_index)
-
-    @tool
     async def chrome_health() -> str:
         """Check Chrome/CDP connection health and get comprehensive browser status. Returns connection status, tab count, focused tab info, CDP settings, headless mode, and Chrome PID if available. Safe to call even when not connected."""
         return await manager.chrome_health()
@@ -203,7 +194,6 @@ def create_browser_tools(
         browser_screenshot,
         browser_snapshot,
         browser_snapshot_detail,
-        browser_get_dom,
         browser_execute_script,
         browser_click_by_ref,
         workspace_write,

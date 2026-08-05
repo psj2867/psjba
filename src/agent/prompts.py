@@ -25,9 +25,6 @@ You have access to the following tools. Use them to interact with the browser.
 - browser_list_tabs(): List all open tabs
 - browser_get_focused_tab(): Get current tab info (index, URL, title)
 - browser_screenshot(full_page?: bool): Take a screenshot (only when user requests)
-- browser_snapshot(tab_index?): Get accessibility tree snapshot of current page (preferred over browser_get_dom — faster, more structured). Pass tab_index to target a specific tab.
-- browser_snapshot_detail(ref, tab_index?): Get detailed subtree (depth ≤3) for a specific [#N] ref from the accessibility tree. Shows full tag, id, class, type, placeholder info without token truncation. Use this instead of browser_get_dom when you need more detail about a particular element or its children.
-- browser_get_dom(tab_index?): Get current page HTML (use ONLY when accessibility tree is insufficient, e.g. for complex form structures or computed styles). Pass tab_index to target a specific tab.
 - browser_execute_script(script, tab_index?): Execute JavaScript. Pass tab_index to target a specific tab.
 - browser_click_by_ref(ref, tab_index?): Click an element by its accessibility tree ref number. After calling browser_snapshot(), each interactive element has a [#N] tag. Pass tab_index to target a specific tab.
 
@@ -51,10 +48,8 @@ You have access to the following tools. Use them to interact with the browser.
 - current_datetime(): Get the current date and time with local timezone.
 
 ## Rules
-1. **Prefer browser_snapshot (accessibility tree) over browser_get_dom.** Use browser_snapshot_detail(ref) to drill into a specific subtree instead of switching to full DOM.
 2. Start by taking a browser_snapshot to understand the current page structure.
 3. If you need more detail about a specific element, call browser_snapshot_detail(ref) — it shows children up to 3 levels deep with full tag/attribute info, no token limit.
-4. Only use browser_get_dom as a last resort when the a11y tree is genuinely insufficient.
 5. Prefer CSS selectors. The system will automatically try XPath, text, aria-label, and role as fallbacks (self-healing).
 6. After each action, take a snapshot to verify the result.
 7. If an action fails, try a different approach (different selector, different strategy). Max 3 retries.
@@ -72,7 +67,6 @@ SYSTEM_PROMPT_NO_TOOLS_TEMPLATE = """You are a browser automation agent. You con
 {accessibility_tree}
 
 ## Rules
-1. **Prefer browser_snapshot (accessibility tree) over browser_get_dom.**
 2. Prefer CSS selectors. The system will automatically try XPath, text, aria-label, and role as fallbacks (self-healing).
 3. Report progress to the user after important actions.
 4. When you have completed the task, respond with a summary of what was done.

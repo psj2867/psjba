@@ -29,15 +29,9 @@ class CronScheduler:
         self._executor = executor
 
     async def start(self) -> None:
-        if self._db is None:
-            return
-
-        jobs = await self._db.get_enabled_cron_jobs()
-        for job in jobs:
-            self._register(job)
-
+        # 시작 시 DB에서 job 로드 안 함 — 모두 비활성화 상태로 관리
         self._scheduler.start()
-        logger.info(f"CronScheduler started: {len(jobs)} jobs registered")
+        logger.info("CronScheduler started (no jobs loaded, all disabled)")
 
     def _register(self, job: CronJob) -> None:
         if self._scheduler.get_job(job.id):
