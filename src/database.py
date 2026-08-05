@@ -11,7 +11,7 @@ from src.models.schemas import CronJob, Message, Meta, ScheduledJob, Session
 
 logger = logging.getLogger("psjba.database")
 
-SCHEMA_VERSION = "1"
+SCHEMA_VERSION = "2"
 APP_VERSION = "0.1.0"
 
 CREATE_TABLE_META = """
@@ -52,6 +52,7 @@ CREATE TABLE IF NOT EXISTS psjba_cron_job (
     schedule    TEXT NOT NULL,
     prompt      TEXT NOT NULL,
     status      TEXT NOT NULL DEFAULT 'enable' CHECK(status IN ('enable', 'disable', 'deleted')),
+    notes       TEXT NOT NULL DEFAULT '',
     last_run_at TEXT,
     next_run_at TEXT,
     created_at  TEXT NOT NULL,
@@ -155,9 +156,25 @@ class Database:
             await self._set_meta("schema_version", SCHEMA_VERSION)
             await self._set_meta("app_version", APP_VERSION)
         elif stored_version != SCHEMA_VERSION:
-            raise RuntimeError(
-                f"Schema version mismatch: DB={stored_version}, code={SCHEMA_VERSION}"
+            if stored_version == "1" and SCHEMA_VERSION == "2":
+                # v1 → v2: psjba_cron_job 에 notes 컬럼 추가
+                await self._migrate_v1_to_v2()
+                await self._set_meta("schema_version", SCHEMA_VERSION)
+            else:
+                raise RuntimeError(
+                    f"Schema version mismatch: DB={stored_version}, code={SCHEMA_VERSION}"
+                )
+
+    async def _migrate_v1_to_v2(self) -> None:
+        """v1 → v2: psjba_cron_job.notes 컬럼 추가 (기존 row는 빈 문자열)."""
+        columns = await self.conn.execute_fetchall("PRAGMA table_info(psjba_cron_job)")
+        col_names = {c["name"] for c in columns}
+        if "notes" not in col_names:
+            await self.conn.execute(
+                "ALTER TABLE psjba_cron_job ADD COLUMN notes TEXT NOT NULL DEFAULT ''"
             )
+        await self.conn.commit()
+        logger.info("DB migrated v1 → v2 (cron_job.notes added)")
 
     async def _get_meta(self, key: str) -> Optional[str]:
         cursor = await self.conn.execute(
@@ -354,14 +371,15 @@ class Database:
 
     async def create_cron_job(self, job: CronJob) -> CronJob:
         await self.conn.execute(
-            """INSERT INTO psjba_cron_job(id, name, schedule, prompt, status, last_run_at, next_run_at, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            """INSERT INTO psjba_cron_job(id, name, schedule, prompt, status, notes, last_run_at, next_run_at, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 job.id,
                 job.name,
                 job.schedule,
                 job.prompt,
                 job.status,
+                job.notes,
                 job.last_run_at.isoformat() if job.last_run_at else None,
                 job.next_run_at.isoformat() if job.next_run_at else None,
                 job.created_at.isoformat(),
@@ -381,7 +399,7 @@ class Database:
     async def update_cron_job(self, job: CronJob) -> None:
         await self.conn.execute(
             """UPDATE psjba_cron_job 
-               SET name=?, schedule=?, prompt=?, status=?, 
+               SET name=?, schedule=?, prompt=?, status=?, notes=?,
                    last_run_at=?, next_run_at=?, updated_at=?
                WHERE id=?""",
             (
@@ -389,6 +407,7 @@ class Database:
                 job.schedule,
                 job.prompt,
                 job.status,
+                job.notes,
                 job.last_run_at.isoformat() if job.last_run_at else None,
                 job.next_run_at.isoformat() if job.next_run_at else None,
                 datetime.now().isoformat(),
@@ -437,6 +456,22 @@ class Database:
         )
         await self.conn.commit()
         return new_status == "enable"
+
+    async def update_cron_notes(self, job_id: str, notes: str) -> None:
+        """크론 job 의 notes 필드를 갱신한다 (크론 메시지 전달용)."""
+        await self.conn.execute(
+            "UPDATE psjba_cron_job SET notes = ?, updated_at = ? WHERE id = ?",
+            (notes, datetime.now().isoformat(), job_id),
+        )
+        await self.conn.commit()
+
+    async def get_cron_notes(self, job_id: str) -> str:
+        """크론 job 의 notes 필드를 읽는다. (없으면 빈 문자열)"""
+        cursor = await self.conn.execute(
+            "SELECT notes FROM psjba_cron_job WHERE id = ?", (job_id,)
+        )
+        row = await cursor.fetchone()
+        return row["notes"] if row else ""
 
     async def get_cron_session_logs(
         self,
@@ -494,6 +529,7 @@ class Database:
             schedule=row["schedule"],
             prompt=row["prompt"],
             status=row["status"],
+            notes=row["notes"] if "notes" in row.keys() else "",
             last_run_at=datetime.fromisoformat(row["last_run_at"])
             if row["last_run_at"]
             else None,

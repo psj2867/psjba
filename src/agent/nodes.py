@@ -202,6 +202,17 @@ async def call_model(
         }
     messages = list(state.get("messages", []))
 
+    # ── 툴콜 한도 경고: max_tool_calls - 5 이하 남았을 때 system role 로 안내 ──
+    remaining = max_tool_calls - current_count
+    if 0 < remaining <= 5:
+        warning = (
+            f"[시스템 경고] 이번 작업의 tool call 가능 횟수가 {remaining}회 남았습니다. "
+            f"최대 {max_tool_calls}회 제한 내에서 작업을 마무리해야 합니다. "
+            f"남은 횟수 안에서 목표를 달성할 수 있도록 계획을 줄이고 행동을 최소화하세요."
+        )
+        logger.warning("Tool call warning: %s remaining", remaining)
+        messages = [SystemMessage(content=warning)] + messages
+
     messages = _apply_sliding_window(messages, max_context_messages)
 
     # 주입된 intervention 메시지를 LLM 컨텍스트에 추가

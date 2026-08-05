@@ -75,7 +75,18 @@ class CronExecutor:
                 session.id, "user", job.prompt
             )
 
-            graph = self._create_graph(session.id)
+            # 크론 notes → system 메시지로 추가
+            notes = job.notes.strip()
+            if notes:
+                await self._save_message(
+                    session.id, "system",
+                    f"[크론 메모 - 이전 실행에서 저장한 내용]\n{notes}",
+                )
+                # notes 소비 (빈 문자열로 초기화)
+                job.notes = ""
+                await self._db.update_cron_job(job)
+
+            graph = self._create_graph(session.id, job.id)
             state: dict[str, Any] = {
                 "messages": [],
                 "session_id": session.id,
@@ -149,7 +160,7 @@ class CronExecutor:
         finally:
             self._running.pop(job.id, None)
 
-    def _create_graph(self, session_id: str) -> Any:
+    def _create_graph(self, session_id: str, cron_job_id: str = "") -> Any:
         from src.agent.graph import create_agent_graph
 
         return create_agent_graph(
@@ -160,6 +171,7 @@ class CronExecutor:
             max_context_messages=self._config.get(
                 "agent", "sliding_window_size", 30
             ),
+            cron_job_id=cron_job_id,
         )
 
     async def _save_message(

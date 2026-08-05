@@ -583,6 +583,7 @@ class SettingsDialog(QDialog):
         self._cron_stacked.addWidget(self._build_cron_level1())
         self._cron_stacked.addWidget(self._build_cron_level2())
         self._cron_stacked.addWidget(self._build_cron_level3())
+        self._cron_stacked.addWidget(self._build_cron_level4())
 
         self._cron_stacked.setCurrentIndex(0)
         return page
@@ -701,6 +702,134 @@ class SettingsDialog(QDialog):
         layout.addLayout(split)
         return w
 
+    # ─── Level 4: 크론 상세 정보 (읽기 전용) ────────────────────────
+
+    def _build_cron_level4(self) -> QWidget:
+        w = QWidget()
+        layout = QVBoxLayout(w)
+
+        header = QHBoxLayout()
+        back_btn = QPushButton("◀ 크론 목록으로")
+        back_btn.clicked.connect(lambda: self._cron_stacked.setCurrentIndex(0))
+        header.addWidget(back_btn)
+        header.addStretch()
+        layout.addLayout(header)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        self._cron_detail_container = QWidget()
+        self._cron_detail_layout = QVBoxLayout(self._cron_detail_container)
+        self._cron_detail_layout.setContentsMargins(12, 12, 12, 12)
+        self._cron_detail_layout.setSpacing(8)
+        scroll.setWidget(self._cron_detail_container)
+        layout.addWidget(scroll)
+
+        return w
+
+    def _on_cron_card_click(self, job_id: str) -> None:
+        """크론 카드 클릭 시 상세 정보 화면으로 이동."""
+        self._render_cron_detail(job_id)
+        self._cron_stacked.setCurrentIndex(3)
+
+    def _render_cron_detail(self, job_id: str) -> None:
+        self._clear_layout(self._cron_detail_layout)
+
+        async def _fetch() -> None:
+            job = await self._db.get_cron_job(job_id)
+            if not job:
+                lbl = QLabel("작업을 찾을 수 없습니다.")
+                lbl.setStyleSheet("color: #64748b; border: none;")
+                self._cron_detail_layout.addWidget(lbl)
+                return
+
+            self._clear_layout(self._cron_detail_layout)
+
+            # 제목
+            title = QLabel(f"📋 {job.name}")
+            title.setStyleSheet("font-weight: bold; font-size: 15px; border: none; color: #1e293b;")
+            self._cron_detail_layout.addWidget(title)
+
+            # 상태 표시줄
+            status_row = QHBoxLayout()
+            status_txt = "🔛 활성" if job.status == "enable" else "🔴 비활성"
+            status_lbl = QLabel(status_txt)
+            status_lbl.setStyleSheet(
+                "border: none; font-size: 11px; color: #10b981;" if job.status == "enable"
+                else "border: none; font-size: 11px; color: #64748b;"
+            )
+            status_row.addWidget(status_lbl)
+            status_row.addStretch()
+
+            log_btn = QPushButton("📋 로그")
+            log_btn.setStyleSheet(
+                "QPushButton { border: 1px solid #dce1e8; border-radius: 4px; padding: 4px 12px; "
+                "background-color: #ffffff; }"
+                "QPushButton:hover { border: 1px solid #4f46e5; background-color: #f0f2f5; }"
+            )
+            log_btn.clicked.connect(lambda: self._on_cron_log_click(job.id, job.name))
+            status_row.addWidget(log_btn)
+            self._cron_detail_layout.addLayout(status_row)
+
+            # 구분선
+            sep = QFrame()
+            sep.setFrameShape(QFrame.Shape.HLine)
+            sep.setStyleSheet("color: #dce1e8;")
+            self._cron_detail_layout.addWidget(sep)
+
+            # 주기
+            self._cron_detail_layout.addWidget(self._detail_row("📅 주기", job.schedule))
+
+            # 프롬프트 전문
+            prompt_lbl = QLabel("📝 프롬프트")
+            prompt_lbl.setStyleSheet("font-weight: bold; border: none; color: #475569; font-size: 12px;")
+            self._cron_detail_layout.addWidget(prompt_lbl)
+            prompt_content = QLabel(job.prompt)
+            prompt_content.setWordWrap(True)
+            prompt_content.setStyleSheet(
+                "color: #1e293b; border: 1px solid #dce1e8; border-radius: 4px; "
+                "padding: 8px; background-color: #f8fafc; font-size: 12px;"
+            )
+            self._cron_detail_layout.addWidget(prompt_content)
+
+            # 실행 시간
+            next_txt = job.next_run_at.strftime("%Y-%m-%d %H:%M") if job.next_run_at else "(비활성)"
+            last_txt = job.last_run_at.strftime("%m-%d %H:%M") if job.last_run_at else "(없음)"
+            self._cron_detail_layout.addWidget(self._detail_row("⏭ 다음 실행", next_txt))
+            self._cron_detail_layout.addWidget(self._detail_row("⏮ 마지막 실행", last_txt))
+
+            # 메모 (notes)
+            if job.notes:
+                notes_lbl = QLabel("📌 저장된 메모")
+                notes_lbl.setStyleSheet("font-weight: bold; border: none; color: #475569; font-size: 12px;")
+                self._cron_detail_layout.addWidget(notes_lbl)
+                notes_content = QLabel(job.notes)
+                notes_content.setWordWrap(True)
+                notes_content.setStyleSheet(
+                    "color: #1e293b; border: 1px solid #fde68a; border-radius: 4px; "
+                    "padding: 8px; background-color: #fffbeb; font-size: 11px;"
+                )
+                self._cron_detail_layout.addWidget(notes_content)
+
+            self._cron_detail_layout.addStretch()
+
+        _run_async_task(_fetch(), task_store=self._async_tasks)
+
+    @staticmethod
+    def _detail_row(label: str, value: str) -> QWidget:
+        row = QWidget()
+        row.setStyleSheet("border: none;")
+        rl = QHBoxLayout(row)
+        rl.setContentsMargins(0, 2, 0, 2)
+        lbl = QLabel(label)
+        lbl.setStyleSheet("font-weight: bold; border: none; color: #475569; font-size: 12px;")
+        lbl.setFixedWidth(110)
+        rl.addWidget(lbl)
+        val = QLabel(value)
+        val.setStyleSheet("border: none; color: #1e293b; font-size: 12px;")
+        rl.addWidget(val)
+        rl.addStretch()
+        return row
+
     def _on_cron_l2_prev(self) -> None:
         if self._cron_l2_page > 1:
             self._cron_l2_page -= 1
@@ -765,6 +894,8 @@ class SettingsDialog(QDialog):
             "background-color: #ffffff; }"
             "QFrame:hover { background-color: #e8ecf0; }"
         )
+        # 카드 클릭 → 상세 보기
+        frame.mousePressEvent = lambda e: self._on_cron_card_click(job.id)  # type: ignore[method-assign]
         layout = QVBoxLayout(frame)
 
         top = QHBoxLayout()

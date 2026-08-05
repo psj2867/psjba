@@ -39,6 +39,7 @@ class CronJob:
     schedule: str = ""
     prompt: str = ""
     status: str = "enable"
+    notes: str = ""
     last_run_at: Optional[datetime] = None
     next_run_at: Optional[datetime] = None
     created_at: datetime = field(default_factory=datetime.now)

@@ -2,6 +2,7 @@
 
 import json
 import logging
+from datetime import datetime
 from typing import Any, Optional
 
 from PySide6.QtCore import QSize, Qt, QTimer
@@ -167,6 +168,7 @@ class _MessageBlock(QFrame):
         role: str,
         content: str,
         tool_calls: Optional[list[dict[str, Any]]] = None,
+        timestamp: str = "",
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -202,6 +204,15 @@ class _MessageBlock(QFrame):
 
             if has_content:
                 layout.addWidget(self._make_content_browser(content))
+
+        # 타임스탬프 (우측 하단, 작게)
+        if timestamp:
+            ts_lbl = QLabel(timestamp)
+            ts_lbl.setStyleSheet(
+                "color: #94a3b8; font-size: 9px; border: none; margin: 0px; padding: 0px;"
+            )
+            ts_lbl.setAlignment(Qt.AlignmentFlag.AlignRight)
+            layout.addWidget(ts_lbl)
 
     @staticmethod
     def _make_content_browser(content: str, align_right: bool = False, text_color: str = "#1e293b") -> _ContentBrowser:
@@ -273,8 +284,8 @@ class ChatWidget(QWidget):
 
     # --- 사용자 메시지 ---
 
-    def add_user_message(self, text: str) -> None:
-        block = _MessageBlock("user", text)
+    def add_user_message(self, text: str, timestamp: str = "") -> None:
+        block = _MessageBlock("user", text, timestamp=timestamp)
         self._insert_block(block)
         self._scroll_to_bottom()
 
@@ -437,8 +448,9 @@ class ChatWidget(QWidget):
         self,
         content: str,
         tool_calls: Optional[list[dict[str, Any]]] = None,
+        timestamp: str = "",
     ) -> None:
-        block = _MessageBlock("assistant", content, tool_calls)
+        block = _MessageBlock("assistant", content, tool_calls, timestamp=timestamp)
         self._insert_block(block)
         self._last_ai_block = block
         self._scroll_to_bottom()
@@ -463,9 +475,21 @@ class ChatWidget(QWidget):
                 continue
 
             content = msg.get("content", "")
+            ts = msg.get("created_at", "")
+            # ISO → HH:MM 변환
+            timestamp = ""
+            if ts:
+                try:
+                    if isinstance(ts, str):
+                        dt = datetime.fromisoformat(ts.replace("Z", "+00:00").replace("T", " "))
+                    else:
+                        dt = ts  # datetime 객체
+                    timestamp = dt.strftime("%m-%d %H:%M")
+                except (ValueError, AttributeError):
+                    timestamp = str(ts)[:5]
 
             if role == "user":
-                self.add_user_message(content)
+                self.add_user_message(content, timestamp=timestamp)
                 i += 1
                 continue
 
@@ -475,32 +499,28 @@ class ChatWidget(QWidget):
                 j = i + 1
                 while j < len(messages) and messages[j].get("role") == "tool":
                     tc_content = messages[j].get("content", "")
-                    # "tool_name: args\nresult" 형식 파싱 시도
                     name = "tool"
                     result = tc_content
                     if ":" in tc_content:
                         parts = tc_content.split(":", 1)
                         name = parts[0].strip()
                         rest = parts[1].strip() if len(parts) > 1 else ""
-                        # args 부분 (tool_call_id 등)과 실제 result 분리
                         if "\n" in rest:
                             result = rest.split("\n", 1)[1].strip()
                     tool_calls.append({"name": name, "args": {}, "result": result})
                     j += 1
 
-                # content도 없고 tool_calls도 없는 빈 assistant는 건너뜀
                 has_content = bool(content and content.strip())
                 if not has_content and not tool_calls:
                     i = j
                     continue
 
-                self.add_ai_block(content, tool_calls if tool_calls else None)
+                self.add_ai_block(content, tool_calls if tool_calls else None, timestamp=timestamp)
                 i = j
                 continue
 
             if role == "tool":
-                # 앞에 assistant 없이 단독 tool 메시지 → 간단한 블록으로
-                self.add_ai_block(f"🛠 {content}")
+                self.add_ai_block(f"🛠 {content}", timestamp=timestamp)
                 i += 1
                 continue
 
