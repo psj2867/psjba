@@ -46,7 +46,6 @@ class NoWheelDoubleSpinBox(NoWheelMixin, QDoubleSpinBox):
 from src.config import Config
 from src.database import Database
 
-LANGUAGES = {"ko": "한국어", "en": "English"}
 LOG_LEVELS = {"disabled": "비활성화", "info": "Info", "debug": "Debug"}
 
 FIELD_TOOLTIPS: dict[str, str] = {
@@ -66,7 +65,6 @@ FIELD_TOOLTIPS: dict[str, str] = {
     "workspace_dir": "프로그램이 읽고 쓸 수 있는 작업 폴더",
     "sliding_window_size": "슬라이딩 윈도우 크기 (user 메시지 기준)",
     "cron_timeout": "크론 작업별 최대 실행 시간 (초)",
-    "language": "UI 표시 언어",
     "font_size": "폰트 크기",
     "max_chat_lines": "대화 로그 최대 줄 수",
     "logging_level": "로그 레벨 (disabled=파일 로깅 비활성화)",
@@ -457,16 +455,25 @@ class SettingsDialog(QDialog):
 
         sqlite_box = self._make_section("SQLite", parent=page)
         sqlite_layout = sqlite_box.layout()
+        sqlite_row = QHBoxLayout()
         self._sqlite_path = QLineEdit()
         self._sqlite_path.setReadOnly(True)
-        sqlite_layout.addLayout(self._row("sqlite_path:", self._sqlite_path, "sqlite_path"))
+        sqlite_row.addWidget(self._sqlite_path)
+        sqlite_browse_btn = QPushButton("찾아보기")
+        sqlite_browse_btn.clicked.connect(self._browse_sqlite_path)
+        sqlite_row.addWidget(sqlite_browse_btn)
+        sqlite_layout.addLayout(self._row("sqlite_path:", sqlite_row, "sqlite_path"))
         main_layout.addWidget(sqlite_box)
 
         ws_box = self._make_section("Workspace", parent=page)
         ws_layout = ws_box.layout()
+        ws_row = QHBoxLayout()
         self._ws_dir = QLineEdit()
-        self._ws_dir.setReadOnly(True)
-        ws_layout.addLayout(self._row("workspace_dir:", self._ws_dir, "workspace_dir"))
+        ws_row.addWidget(self._ws_dir)
+        ws_browse_btn = QPushButton("찾아보기")
+        ws_browse_btn.clicked.connect(self._browse_workspace_dir)
+        ws_row.addWidget(ws_browse_btn)
+        ws_layout.addLayout(self._row("workspace_dir:", ws_row, "workspace_dir"))
         main_layout.addWidget(ws_box)
 
         agent_box = self._make_section("Agent", parent=page)
@@ -481,14 +488,10 @@ class SettingsDialog(QDialog):
 
         ui_box = self._make_section("UI", parent=page)
         ui_layout = ui_box.layout()
-        self._ui_lang = QComboBox()
-        for k, v in LANGUAGES.items():
-            self._ui_lang.addItem(v, k)
         self._ui_font_size = NoWheelSpinBox()
         self._ui_font_size.setRange(8, 32)
         self._ui_max_chat = NoWheelSpinBox()
         self._ui_max_chat.setRange(100, 10000)
-        ui_layout.addLayout(self._row("language:", self._ui_lang, "language"))
         ui_layout.addLayout(self._row("font_size:", self._ui_font_size, "font_size"))
         ui_layout.addLayout(self._row("max_chat_lines:", self._ui_max_chat, "max_chat_lines"))
         main_layout.addWidget(ui_box)
@@ -544,6 +547,18 @@ class SettingsDialog(QDialog):
         path = QFileDialog.getExistingDirectory(self, "User Data 폴더 선택")
         if path:
             self._chrome_user_data.setText(path)
+
+    def _browse_sqlite_path(self) -> None:
+        path, _ = QFileDialog.getSaveFileName(self, "SQLite DB 파일 선택",
+                                              self._sqlite_path.text() or "./browser_agent.db",
+                                              "DB 파일 (*.db)")
+        if path:
+            self._sqlite_path.setText(path)
+
+    def _browse_workspace_dir(self) -> None:
+        path = QFileDialog.getExistingDirectory(self, "작업 폴더 선택")
+        if path:
+            self._ws_dir.setText(path)
 
     # ─── CRON 탭 (3단계 드릴다운) ────────────────────────────────
 
@@ -1283,9 +1298,6 @@ class SettingsDialog(QDialog):
         self._agent_window.setValue(c.get("agent", "sliding_window_size", 30))
         self._agent_cron_timeout.setValue(c.get("agent", "cron_timeout", 300))
 
-        lang_idx = self._ui_lang.findData(c.get("ui", "language", "ko"))
-        if lang_idx >= 0:
-            self._ui_lang.setCurrentIndex(lang_idx)
         self._ui_font_size.setValue(c.get("ui", "font_size", 14))
         self._ui_max_chat.setValue(c.get("ui", "max_chat_lines", 1000))
 
@@ -1333,7 +1345,6 @@ class SettingsDialog(QDialog):
         c.set("agent", "sliding_window_size", self._agent_window.value())
         c.set("agent", "cron_timeout", self._agent_cron_timeout.value())
 
-        c.set("ui", "language", self._ui_lang.currentData())
         c.set("ui", "font_size", self._ui_font_size.value())
         c.set("ui", "max_chat_lines", self._ui_max_chat.value())
 
