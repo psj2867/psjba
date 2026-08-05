@@ -1,6 +1,6 @@
 """AgentState — LangGraph 에이전트 상태 정의."""
 
-from typing import Annotated, Any, Optional
+from typing import Annotated, Any
 
 from langchain_core.messages import BaseMessage
 from langgraph.graph import add_messages
@@ -20,4 +20,4 @@ class AgentState(TypedDict, total=False):
     is_final: bool
     tool_call_count: int
     intervention_queue: list[str]  # 공유 참조 — 실행 중 사용자 입력
-    pending_dialog: Optional[dict]  # {tab_index, type, message, default} — override dialog
+    pending_dialogs: list[dict]  # {tab_index, type, message, default} — override dialog, 탭별 여러 개

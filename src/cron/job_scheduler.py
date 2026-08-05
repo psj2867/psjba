@@ -221,8 +221,8 @@ class JobScheduler:
             manager=self._manager,
             db=self._db,
             session_id=session_id,
-            max_context_messages=self._config.get(
-                "agent", "sliding_window_size", 30
+            max_context_messages=int(
+                self._config.get("agent", "sliding_window_size", 30)
             ),
         )
 

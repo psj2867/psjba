@@ -39,6 +39,7 @@ def create_agent_graph(
     max_context_messages: int = 10,
     max_retries: int = 3,
     max_tool_calls: int = 30,
+    job_scheduler: Any = None,
 ) -> StateGraph:
     """LangGraph 에이전트 그래프를 생성하고 컴파일한다.
 
@@ -59,7 +60,7 @@ def create_agent_graph(
     if llm is None:
         llm = create_llm(config)
 
-    tools = create_all_tools(manager, db=db, session_id=session_id)
+    tools = create_all_tools(manager, db=db, session_id=session_id, job_scheduler=job_scheduler)
 
     tool_dict: dict[str, Any] = {}
     for t in tools:

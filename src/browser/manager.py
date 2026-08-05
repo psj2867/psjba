@@ -151,19 +151,28 @@ class PlaywrightManager:
           if (window.__psjba_injected) return;
           window.__psjba_injected = true;
           window.__psjba_dialog = null;
-          window.__psjba_confirm_result = true;
-          window.__psjba_prompt_result = null;
+          window.__psjba_confirm_result = null;   // null = use default (true)
+          window.__psjba_prompt_result = null;     // null = use default (defaultVal)
           window.alert = function(msg) {
             window.__psjba_dialog = {type:'alert',message:String(msg)};
           };
           window.confirm = function(msg) {
             window.__psjba_dialog = {type:'confirm',message:String(msg)};
-            return window.__psjba_confirm_result;
+            var r = window.__psjba_confirm_result;
+            if (r !== null) {
+              window.__psjba_confirm_result = null;
+              return r;
+            }
+            return true;
           };
           window.prompt = function(msg,defaultVal) {
-            var pv = window.__psjba_prompt_result;
             window.__psjba_dialog = {type:'prompt',message:String(msg),default:String(defaultVal)};
-            return pv !== null ? pv : defaultVal;
+            var pv = window.__psjba_prompt_result;
+            if (pv !== null) {
+              window.__psjba_prompt_result = null;
+              return pv;
+            }
+            return defaultVal;
           };
         })();
         """
@@ -274,12 +283,12 @@ class PlaywrightManager:
         if not self._connected:
             raise RuntimeError("Not connected to Chrome. Call connect() first.")
 
-    def _ensure_page(self) -> Page:
+    def _ensure_page(self, tab_index: Optional[int] = None) -> Page:
         self._ensure_connected()
-        page = self.focused_page
-        if page is None:
-            raise RuntimeError("No active page")
-        return page
+        idx = tab_index if tab_index is not None else self._focused_tab_index
+        if 0 <= idx < len(self._tabs):
+            return self._tabs[idx].page
+        raise RuntimeError(f"Invalid tab index: {idx} (focused: {self._focused_tab_index})")
 
     # ─── 탭 관리 ────────────────────────────────────────────
 
@@ -590,49 +599,6 @@ class PlaywrightManager:
                 })
         return results
 
-    async def browser_handle_dialog(
-        self,
-        dialog_type: str,
-        action: str = "accept",
-        prompt_text: str = "",
-        tab_index: Optional[int] = None,
-    ) -> str:
-        """Override된 dialog의 결과값을 설정한다.
-
-        dialog_type: 'confirm' | 'alert' | 'prompt'
-        action: 'accept' | 'dismiss'
-        prompt_text: prompt() 입력값 (action='accept' + type='prompt' 일 때만)
-        tab_index: 대상 탭 인덱스 (None이면 모든 탭)
-
-        설정 후 retry 전략: 동일한 동작(click 등)을 재실행하면
-        오버라이드된 함수가 새 값으로 응답한다.
-        """
-        targets = [tab_index] if tab_index is not None else range(len(self._tabs))
-        handled = []
-
-        for idx in targets:
-            if idx < 0 or idx >= len(self._tabs):
-                handled.append(f"[{idx}] invalid index")
-                continue
-            tab = self._tabs[idx]
-            try:
-                if dialog_type == "confirm":
-                    accept = json.dumps(action == "accept")
-                    await tab.page.evaluate(
-                        f"window.__psjba_confirm_result = {accept};"
-                    )
-                elif dialog_type == "prompt":
-                    escaped = prompt_text.replace("'", "\\'")
-                    await tab.page.evaluate(
-                        f"window.__psjba_prompt_result = '{escaped}';"
-                    )
-                await tab.clear_dialog()
-                handled.append(f"[{idx}] {dialog_type} → {action}")
-            except Exception as e:
-                handled.append(f"[{idx}] error: {e}")
-
-        return "\n".join(handled) if handled else f"No tabs matched for {dialog_type}"
-
     # ─── 정보 조회 ──────────────────────────────────────────
 
     async def chrome_health(self) -> str:
@@ -712,28 +678,34 @@ class PlaywrightManager:
         else:
             return f"Failed to start Chrome: {result}"
 
-    async def browser_snapshot(self) -> str:
+    async def browser_snapshot(self, tab_index: Optional[int] = None) -> str:
         logger.info("browser_snapshot called")
-        """현재 페이지의 접근성 트리를 반환하고 ref 매핑을 저장한다."""
-        page = self._ensure_page()
+        """특정 탭의 접근성 트리를 반환하고 ref 매핑을 저장한다.
+
+        Args:
+            tab_index: 대상 탭 인덱스 (None이면 포커스 탭)
+        """
+        page = self._ensure_page(tab_index)
         text, refs = await get_accessibility_tree_with_refs(page)
         self._a11y_refs = refs
         if refs:
             logger.info("a11y snapshot: %d interactive refs", len(refs))
         return text
 
-    async def browser_click_by_ref(self, ref: int) -> str:
+    async def browser_click_by_ref(self, ref: int, tab_index: Optional[int] = None) -> str:
         """접근성 트리 ref 번호로 요소를 찾아 클릭한다.
 
         Args:
             ref: browser_snapshot() 결과에 표시된 [#N] 번호
+            tab_index: 대상 탭 인덱스 (None이면 포커스 탭)
         """
         node = self._a11y_refs.get(ref)
         if node is None:
             return (f"Click by ref failed: ref #{ref} not found. "
                     "Call browser_snapshot() first to refresh the tree.")
 
-        page = self._ensure_page()
+        page = self._ensure_page(tab_index)
+        idx = tab_index if tab_index is not None else self._focused_tab_index
         role = node.get("role", "")
         name = node.get("name", "")
 
@@ -748,8 +720,8 @@ class PlaywrightManager:
 
         try:
             await locator.first.click(timeout=5000)
-            await self._tabs[self._focused_tab_index].update_info()
-            tab = self._tabs[self._focused_tab_index]
+            await self._tabs[idx].update_info()
+            tab = self._tabs[idx]
             result = (f"Clicked ref #{ref} ({role} \"{name}\") "
                       f"[url={tab.url}, title={tab.title}]")
         except Exception as e:
@@ -762,22 +734,26 @@ class PlaywrightManager:
                 return f"Click by ref #{ref} failed: {e}"
             try:
                 await locator2.click(timeout=5000)
-                await self._tabs[self._focused_tab_index].update_info()
-                tab = self._tabs[self._focused_tab_index]
+                await self._tabs[idx].update_info()
+                tab = self._tabs[idx]
                 result = (f"Clicked ref #{ref} ({role} \"{name}\") [fallback] "
                           f"[url={tab.url}, title={tab.title}]")
             except Exception as e2:
                 return f"Click by ref #{ref} failed (both): {e2}"
 
-        d = await self._tabs[self._focused_tab_index].check_dialog()
+        d = await self._tabs[idx].check_dialog()
         if d:
             result += f"\n⚠️ Dialog recorded: [{d['type']}] {d.get('message','')}"
         return result
 
-    async def browser_get_dom(self) -> str:
+    async def browser_get_dom(self, tab_index: Optional[int] = None) -> str:
         logger.info("browser_get_dom called")
-        """현재 페이지의 DOM HTML을 반환한다 (간략화)."""
-        page = self._ensure_page()
+        """특정 탭의 DOM HTML을 반환한다 (간략화).
+
+        Args:
+            tab_index: 대상 탭 인덱스 (None이면 포커스 탭)
+        """
+        page = self._ensure_page(tab_index)
         try:
             html = await page.content()
             if len(html) > 50000:
@@ -790,14 +766,20 @@ class PlaywrightManager:
         self,
         full_page: bool = False,
         filename: Optional[str] = None,
+        tab_index: Optional[int] = None,
     ) -> str:
         logger.info("browser_screenshot: full_page=%s, filename=%s", full_page, filename)
         """스크린샷을 워크스페이스 폴더에 PNG 파일로 저장한다.
 
         파일명: {yyyyMMdd-HHmmss}.png
         저장 경로: {workspace_dir}/screenshots/
+
+        Args:
+            full_page: 전체 페이지 스크린샷 여부
+            filename: 파일명 (None이면 타임스탬프)
+            tab_index: 대상 탭 인덱스 (None이면 포커스 탭)
         """
-        page = self._ensure_page()
+        page = self._ensure_page(tab_index)
 
         screenshots_dir = Path(self._workspace_dir) / "screenshots"
         screenshots_dir.mkdir(parents=True, exist_ok=True)
@@ -814,10 +796,15 @@ class PlaywrightManager:
 
     # ─── 스크립트 실행 ──────────────────────────────────────
 
-    async def browser_execute_script(self, script: str) -> str:
+    async def browser_execute_script(self, script: str, tab_index: Optional[int] = None) -> str:
         logger.info("browser_execute_script: script=%s", script[:80])
-        """JavaScript를 실행하고 결과를 반환한다."""
-        page = self._ensure_page()
+        """JavaScript를 실행하고 결과를 반환한다.
+
+        Args:
+            script: 실행할 JavaScript
+            tab_index: 대상 탭 인덱스 (None이면 포커스 탭)
+        """
+        page = self._ensure_page(tab_index)
         try:
             result = await page.evaluate(script)
             return f"Script returned: {result}" if result is not None else "Script returned: (no value)"

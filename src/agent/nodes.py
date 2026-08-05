@@ -46,6 +46,12 @@ def _apply_sliding_window(
     Returns:
         정리된 메시지 리스트
     """
+    try:
+        max_context = int(max_context)
+        min_keep = int(min_keep)
+    except (TypeError, ValueError):
+        max_context = 30
+        min_keep = 10
     if max_context <= 0:
         return messages
 
@@ -157,8 +163,27 @@ async def call_model(
             logger.info("Injecting intervention: %s", text[:80])
             injected_msgs.append(HumanMessage(content=text))
 
+    # ── pending dialog 큐 확인 (execute_tool이 검출한 dialog override 정보) ──
+    pending_dialogs: list[dict] = state.get("pending_dialogs", [])
+    dialog_msgs: list[HumanMessage] = []
+    if pending_dialogs:
+        for d in pending_dialogs:
+            tidx = d.get("tab_index", "?")
+            dtype = d.get("type", "?")
+            msg_text = d.get("message", "")
+            dialog_msgs.append(HumanMessage(
+                content=f"⚠️ Dialog pending on tab [{tidx}]: {dtype} '{msg_text}'",
+                additional_kwargs={"role": "developer"},
+            ))
+        state["pending_dialogs"] = []  # 소비
+
     # 최대 tool call 횟수 초과 시 즉시 종료
     current_count = state.get("tool_call_count", 0)
+    try:
+        current_count = int(current_count)
+        max_tool_calls = int(max_tool_calls)
+    except (TypeError, ValueError):
+        max_tool_calls = 30
     if current_count >= max_tool_calls:
         logger.warning(
             f"Tool call limit reached: {current_count}/{max_tool_calls}, ending"
@@ -182,25 +207,14 @@ async def call_model(
     # 주입된 intervention 메시지를 LLM 컨텍스트에 추가
     if injected_msgs:
         messages = messages + injected_msgs
+    if dialog_msgs:
+        messages = messages + dialog_msgs
 
-    # pending dialog 정보 주입 (intervention 다음, system 직전)
-    pending_dialog = state.get("pending_dialog")
-    if pending_dialog:
-        tidx = pending_dialog.get("tab_index", "?")
-        dtype = pending_dialog.get("type", "?")
-        msg_text = pending_dialog.get("message", "")
-        messages.append(HumanMessage(
-            content=f"⚠️ Dialog pending on tab [{tidx}]: {dtype} '{msg_text}'",
-            additional_kwargs={"role": "developer"},
-        ))
-        state["pending_dialog"] = None  # 소비
-
-    a11y_tree = state.get("accessibility_tree", "(No page loaded)")
     # 첫 요청(call_model)에만 툴 목록 포함.
     # messages에 ToolMessage가 있으면 tool loop 안 → 툴 설명이 이미 컨텍스트에 있음
     has_tool_msgs = any(isinstance(m, ToolMessage) for m in messages)
     include_tools = not has_tool_msgs
-    system_prompt = build_system_prompt(a11y_tree, include_tools=include_tools)
+    system_prompt = build_system_prompt(include_tools=include_tools)
 
     final_messages = [SystemMessage(content=system_prompt)] + messages
 
@@ -353,12 +367,14 @@ async def execute_tool(
             try:
                 dialogs = await manager.check_all_tabs_dialog()
                 if dialogs:
-                    d = dialogs[0]
+                    # 여러 탭 dialog를 큐로 관리
+                    pending_dialogs = state.setdefault("pending_dialogs", [])
+                    for d in dialogs:
+                        pending_dialogs.append(d)
                     dialog_hint = (
-                        f" ⚠️Dialog: tab[{d['tab_index']}] "
-                        f"{d['type']} '{d.get('message','')}'"
+                        f" ⚠️Dialog: tab[{dialogs[0]['tab_index']}] "
+                        f"{dialogs[0]['type']} '{dialogs[0].get('message','')}'"
                     )
-                    state["pending_dialog"] = d
             except Exception:
                 pass
 
