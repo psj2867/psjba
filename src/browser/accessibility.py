@@ -239,6 +239,31 @@ def _prune_tree(snapshot: dict[str, Any]) -> Optional[dict[str, Any]]:
         if not children:
             return None
 
+    # 순수 레이아웃 div/span 컨테이너는 자식들을 한 단계 끌어올림
+    # 조건: role=none/generic, tag=div/span, 이름/값/설명/id/class 없음, 자식 있음
+    is_pure_container = (
+        role in ("none", "None", "generic", "Generic")
+        and not name and not value and not description
+        and not snapshot.get("_id")
+        and not snapshot.get("_class")
+        and snapshot.get("tag", "") in ("div", "span")
+        and bool(children)
+    )
+    if is_pure_container:
+        # 자식들을 먼저 정리한 뒤, 컨테이너 자체는 생략하고 자식들만 반환
+        pruned_all = []
+        for child in children:
+            pruned = _prune_tree(child)
+            if pruned is not None:
+                pruned_all.append(pruned)
+        if len(pruned_all) == 1:
+            return pruned_all[0]
+        if pruned_all:
+            # 자식이 여러 개면 synthetic none 노드로 감싸서 반환
+            merged = {"role": "none", "children": pruned_all}
+            return merged
+        return None
+
     # 단일 자식만 가진 구조 래퍼는 펼치기 (interactive 노드면 보존)
     has_interactive_child = any(
         _is_interactive(c.get("role", ""))

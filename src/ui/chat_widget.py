@@ -259,6 +259,18 @@ class ChatWidget(QWidget):
         if sb:
             sb.setValue(sb.maximum())
 
+    def _is_near_bottom(self, threshold: int = 50) -> bool:
+        """스크롤이 하단에 가까우면 True (사용자가 의도적으로 올리지 않은 상태)."""
+        sb = self._scroll_area.verticalScrollBar()
+        if sb is None:
+            return True
+        return sb.maximum() - sb.value() <= threshold
+
+    def _auto_scroll_if_needed(self) -> None:
+        """스크롤이 하단 근처이면 최하단으로 내린다."""
+        if self._is_near_bottom():
+            self._scroll_to_bottom()
+
     # --- 사용자 메시지 ---
 
     def add_user_message(self, text: str) -> None:
@@ -375,6 +387,8 @@ class ChatWidget(QWidget):
         _thinking_block이 있으면 skeleton을 실제 AI 블록으로 교체하고,
         _last_ai_block이 있으면 해당 블록의 content만 갱신한다.
         둘 다 없으면 새 블록을 추가한다.
+
+        content 갱신 후 스크롤이 하단 근처이면 자동으로 최하단으로 이동한다.
         """
         if self._thinking_block:
             # 응답 대기중 skeleton → 첫 AI content로 교체
@@ -386,6 +400,7 @@ class ChatWidget(QWidget):
             for browser in block.findChildren(QTextBrowser):
                 if browser.objectName() == "content" and _qt_is_valid(browser):
                     browser.setMarkdown(content)
+                    self._auto_scroll_if_needed()
                     break
         else:
             self._last_ai_block = None
@@ -431,21 +446,66 @@ class ChatWidget(QWidget):
     # --- 세션 로드 / 초기화 ---
 
     def load_messages(self, messages: list[dict[str, Any]]) -> None:
-        """DB에서 로드한 메시지 리스트를 화면에 렌더링."""
+        """DB에서 로드한 메시지 리스트를 실행중 UI 형태로 렌더링.
+
+        DB에는 role='tool' 메시지가 별도 row로 저장되어 있지만,
+        UI에서는 _ToolCallWidget으로 접어서 assistant 블록 안에 표시한다.
+        """
         self.clear()
-        for msg in messages:
+        # tool 메시지를 assistant와 그룹핑
+        # messages는 created_at ASC 정렬
+        i = 0
+        while i < len(messages):
+            msg = messages[i]
             role = msg.get("role", "")
             if role == "developer":
-                continue  # developer 메시지는 표시하지 않음
+                i += 1
+                continue
+
             content = msg.get("content", "")
-            tool_calls = msg.get("tool_calls")
+
             if role == "user":
                 self.add_user_message(content)
-            elif role in ("assistant", "tool"):
-                # content도 tool_calls도 없는 빈 AI 메시지는 건너뜀 (공백 블록 방지)
-                if not (content and content.strip()) and not tool_calls:
+                i += 1
+                continue
+
+            if role == "assistant":
+                # 뒤따르는 tool 메시지들을 수집
+                tool_calls: list[dict[str, Any]] = []
+                j = i + 1
+                while j < len(messages) and messages[j].get("role") == "tool":
+                    tc_content = messages[j].get("content", "")
+                    # "tool_name: args\nresult" 형식 파싱 시도
+                    name = "tool"
+                    result = tc_content
+                    if ":" in tc_content:
+                        parts = tc_content.split(":", 1)
+                        name = parts[0].strip()
+                        rest = parts[1].strip() if len(parts) > 1 else ""
+                        # args 부분 (tool_call_id 등)과 실제 result 분리
+                        if "\n" in rest:
+                            result = rest.split("\n", 1)[1].strip()
+                    tool_calls.append({"name": name, "args": {}, "result": result})
+                    j += 1
+
+                # content도 없고 tool_calls도 없는 빈 assistant는 건너뜀
+                has_content = bool(content and content.strip())
+                if not has_content and not tool_calls:
+                    i = j
                     continue
-                self.add_ai_block(content, tool_calls)
+
+                self.add_ai_block(content, tool_calls if tool_calls else None)
+                i = j
+                continue
+
+            if role == "tool":
+                # 앞에 assistant 없이 단독 tool 메시지 → 간단한 블록으로
+                self.add_ai_block(f"🛠 {content}")
+                i += 1
+                continue
+
+            i += 1
+
         self._scroll_to_bottom()
 
     def clear(self) -> None:
