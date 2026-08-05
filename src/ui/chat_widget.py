@@ -303,27 +303,68 @@ class ChatWidget(QWidget):
         content: str,
         tool_calls: Optional[list[dict[str, Any]]] = None,
     ) -> None:
-        """스켈론 블록을 최종 AI 응답 블록으로 교체한다."""
-        if not self._thinking_block:
+        """스켈론 블록을 재사용하여 내용만 교체 (위젯 교체 없음 → 깜빡임 방지)."""
+        block = self._thinking_block
+        if block is None:
             self.add_ai_block(content, tool_calls)
             return
 
-        old_block = self._thinking_block
-        self._thinking_block = None
+        # 기존 블록의 content browser 찾아서 텍스트 갱신
+        content_browser: Optional[QTextBrowser] = None
+        for browser in block.findChildren(QTextBrowser):
+            if browser.objectName() == "content" and _qt_is_valid(browser):
+                content_browser = browser
+                break
 
-        # 새로운 블록을 생성해서 old_block 위치에 삽입
-        new_block = _MessageBlock("assistant", content, tool_calls)
+        # tool_calls 위젯을 담을 레이아웃 (기존에 있으면 재사용, 없으면 생성)
+        layout = block.layout()
+        if not layout:
+            return
+        if content_browser is None:
+            # 컨텐츠 브라우저가 없으면 새로 추가
+            content_browser = _MessageBlock._make_content_browser(content)
+            layout.addWidget(content_browser)
 
-        idx = self._container_layout.indexOf(old_block)
-        if idx >= 0:
-            self._container_layout.insertWidget(idx, new_block)
-            self._container_layout.removeWidget(old_block)
+        # tool_calls 위젯 정리
+        existing_tc = [
+            layout.itemAt(i).widget()
+            for i in range(layout.count())
+            if layout.itemAt(i).widget()
+            and isinstance(layout.itemAt(i).widget(), _ToolCallWidget)
+        ]
+        for tc_w in existing_tc:
+            tc_w.deleteLater()
+            layout.removeWidget(tc_w)
+
+        if tool_calls:
+            for tc in tool_calls:
+                name = tc.get("name", "unknown")
+                args_str = json.dumps(tc.get("args", {}), ensure_ascii=False)
+                result = tc.get("result", "")
+                tc_widget = _ToolCallWidget(name, args_str, result)
+                layout.insertWidget(layout.indexOf(content_browser), tc_widget)
+
+        has_content = content and content.strip()
+        if has_content:
+            content_browser.setMarkdown(content)
+            content_browser.setVisible(True)
+            # divider가 없으면 추가
+            has_divider = any(
+                isinstance(layout.itemAt(i).widget(), QFrame)
+                and layout.itemAt(i).widget().frameShape() == QFrame.Shape.HLine
+                for i in range(layout.count())
+                if layout.itemAt(i).widget()
+            )
+            if tool_calls and not has_divider:
+                divider = QFrame()
+                divider.setFrameShape(QFrame.Shape.HLine)
+                divider.setStyleSheet("color: #dce1e8;")
+                layout.insertWidget(layout.indexOf(content_browser), divider)
         else:
-            # fallback: 그냥 끝에 추가
-            self._insert_block(new_block)
+            content_browser.setVisible(False)
 
-        old_block.deleteLater()
-        self._last_ai_block = new_block  # 실시간 갱신 대상 등록
+        self._thinking_block = None
+        self._last_ai_block = block
         self._scroll_to_bottom()
 
     # --- 실시간 AI content 갱신 ---
