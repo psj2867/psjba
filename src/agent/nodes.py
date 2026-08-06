@@ -96,7 +96,7 @@ _TOOL_NAME_PATTERN = re.compile(
     r"get_focused_tab|screenshot|snapshot|snapshot_detail|"
     r"execute_script|click_by_ref)"
     r"|chrome_(?:health|start)"
-    r"|cron_(?:add|list|edit|toggle|remove|to_session)"
+    r"|cron_(?:add|list|edit|remove|to_session)"
     r"|job_add"
     r"|memory_search|workspace_write|current_datetime)\(\)?$"
 )

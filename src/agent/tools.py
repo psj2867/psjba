@@ -237,11 +237,6 @@ def create_cron_tools(
         return await manager.cron_edit(job_id, name=name, schedule=schedule, prompt=prompt)
 
     @tool
-    async def cron_toggle(job_id: str) -> str:
-        """Toggle a cron job between enabled and disabled."""
-        return await manager.cron_toggle(job_id)
-
-    @tool
     async def cron_remove(job_id: str) -> str:
         """Remove (soft-delete) a cron job."""
         return await manager.cron_remove(job_id)
@@ -292,7 +287,7 @@ def create_cron_tools(
         logger.info("Cron note saved for %s: %s", cron_job_id, note[:80])
         return f"메모가 저장되었습니다 (길이: {len(note)}자). 다음 크론 실행 시 system 메시지로 자동 추가됩니다."
 
-    return [cron_add, cron_list, cron_edit, cron_toggle, cron_remove, cron_to_session, job_add, cron_save_note]
+    return [cron_add, cron_list, cron_edit, cron_remove, cron_to_session, job_add, cron_save_note]
 
 
 def create_memory_tools(db: Database, session_id: str) -> list:

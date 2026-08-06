@@ -955,25 +955,6 @@ class PlaywrightManager:
 
         return f"cron_edit: job '{job.name}' (id={job_id}) updated"
 
-    async def cron_toggle(self, job_id: str) -> str:
-        """크론 작업 활성/비활성을 전환한다."""
-        if self._db is None:
-            return "cron_toggle error: database not initialized"
-
-        job = await self._db.get_cron_job(job_id)
-        if not job:
-            return f"cron_toggle error: job '{job_id}' not found"
-
-        new_status = await self._db.toggle_cron_job(job_id)
-        if new_status is None:
-            return f"cron_toggle error: failed to toggle job '{job_id}'"
-
-        if self._cron_scheduler:
-            await self._cron_scheduler.toggle_job(job_id, new_status)
-
-        status_text = "enabled" if new_status else "disabled"
-        return f"cron_toggle: job '{job.name}' (id={job_id}) is now {status_text}"
-
     async def cron_remove(self, job_id: str) -> str:
         """크론 작업을 삭제한다."""
         if self._db is None:
