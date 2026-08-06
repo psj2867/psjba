@@ -405,15 +405,20 @@ class PlaywrightManager:
 
         # refresh_focus: 모든 페이지 병렬로 document.hasFocus() 체크
         if refresh_focus and self._tabs:
+            async def _check_focus(tab: _TabInfo) -> bool:
+                try:
+                    return bool(await asyncio.wait_for(
+                        tab.page.evaluate("document.hasFocus()"),
+                        timeout=1.0,
+                    ))
+                except Exception:
+                    return False
+
             results = await asyncio.gather(
-                *(
-                    tab.page.evaluate("document.hasFocus()", timeout=1.0)
-                    for tab in self._tabs
-                ),
-                return_exceptions=True,
+                *(_check_focus(tab) for tab in self._tabs),
             )
-            for i, res in enumerate(results):
-                if res is True:
+            for i, focused in enumerate(results):
+                if focused:
                     self._focused_tab_index = i
                     break
 
