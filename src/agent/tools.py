@@ -97,11 +97,6 @@ def create_browser_tools(
         return await manager.browser_list_tabs()
 
     @tool
-    async def browser_get_focused_tab() -> str:
-        """Get info about the currently active tab (index, URL, title)."""
-        return await manager.browser_get_focused_tab()
-
-    @tool
     async def browser_screenshot(full_page: bool = False, tab_index: Optional[int] = None) -> str:
         """Take a screenshot and save it. Only use when the user explicitly requests a screenshot.
 
@@ -185,7 +180,6 @@ def create_browser_tools(
         browser_close_tab,
         browser_switch_tab,
         browser_list_tabs,
-        browser_get_focused_tab,
         browser_screenshot,
         browser_snapshot,
         browser_execute_script,
