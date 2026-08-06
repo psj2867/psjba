@@ -403,22 +403,24 @@ class PlaywrightManager:
         if self._focused_tab_index >= len(self._tabs):
             self._focused_tab_index = max(0, len(self._tabs) - 1)
 
-        # refresh_focus: 모든 페이지 병렬로 document.hasFocus() 체크
+        # refresh_focus: 모든 페이지 병렬로 visibility 체크
         if refresh_focus and self._tabs:
-            async def _check_focus(tab: _TabInfo) -> bool:
+            async def _check_visible(tab: _TabInfo) -> bool:
                 try:
                     return bool(await asyncio.wait_for(
-                        tab.page.evaluate("document.hasFocus()"),
+                        tab.page.evaluate(
+                            "document.visibilityState === 'visible'"
+                        ),
                         timeout=1.0,
                     ))
                 except Exception:
                     return False
 
             results = await asyncio.gather(
-                *(_check_focus(tab) for tab in self._tabs),
+                *(_check_visible(tab) for tab in self._tabs),
             )
-            for i, focused in enumerate(results):
-                if focused:
+            for i, visible in enumerate(results):
+                if visible:
                     self._focused_tab_index = i
                     break
 
