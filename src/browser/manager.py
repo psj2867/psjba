@@ -19,7 +19,6 @@ from playwright.async_api import (
 
 from src.browser.accessibility import (
     get_accessibility_tree_with_refs,
-    format_accessibility_tree_with_refs,
     get_subtree_detail,
 )
 from src.browser.self_healing import SelfHealingSelector

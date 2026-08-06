@@ -1,5 +1,6 @@
 """접근성 트리 포맷팅 — Playwright accessibility snapshot → 계층 텍스트 (고도화)."""
 
+import asyncio
 import logging
 from typing import Any, Optional
 
@@ -192,7 +193,7 @@ def _format_node(
     return f"{prefix}{label}"
 
 
-def _format_tree(
+async def _format_tree(
     snapshot: dict[str, Any],
     depth: int = 0,
     lines: Optional[list[str]] = None,
@@ -214,13 +215,15 @@ def _format_tree(
         lines.append(formatted)
 
     children = snapshot.get("children", [])
-    for child in children:
-        _format_tree(child, depth + 1, lines, indent, refs=refs, detail=detail, max_depth=max_depth)
+    for i, child in enumerate(children):
+        if depth > 0 and depth % 4 == 0 and i % 5 == 0:
+            await asyncio.sleep(0)
+        await _format_tree(child, depth + 1, lines, indent, refs=refs, detail=detail, max_depth=max_depth)
 
     return lines
 
 
-def _prune_tree(snapshot: dict[str, Any]) -> Optional[dict[str, Any]]:
+async def _prune_tree(snapshot: dict[str, Any]) -> Optional[dict[str, Any]]:
     """불필요한 노드(빈 StaticText, 불필요한 구조 래퍼)를 제거한다.
 
     Single-child "generic"/"none"/"presentation"/"paragraph"/"group" 노드는
@@ -259,7 +262,7 @@ def _prune_tree(snapshot: dict[str, Any]) -> Optional[dict[str, Any]]:
         # 자식들을 먼저 정리한 뒤, 컨테이너 자체는 생략하고 자식들만 반환
         pruned_all = []
         for child in children:
-            pruned = _prune_tree(child)
+            pruned = await _prune_tree(child)
             if pruned is not None:
                 pruned_all.append(pruned)
         if len(pruned_all) == 1:
@@ -283,14 +286,16 @@ def _prune_tree(snapshot: dict[str, Any]) -> Optional[dict[str, Any]]:
         and not has_interactive_child
     ):
         child = children[0]
-        child_pruned = _prune_tree(child)
+        child_pruned = await _prune_tree(child)
         if child_pruned is not None:
             return child_pruned
         return None
 
     pruned_children: list[dict[str, Any]] = []
-    for child in children:
-        pruned = _prune_tree(child)
+    for i, child in enumerate(children):
+        if i % 10 == 0:
+            await asyncio.sleep(0)
+        pruned = await _prune_tree(child)
         if pruned is not None:
             pruned_children.append(pruned)
 
@@ -318,7 +323,7 @@ def _count_descendants(node: dict[str, Any]) -> int:
     return total
 
 
-def _collapse_tree(
+async def _collapse_tree(
     tree: dict[str, Any],
     max_tokens: int = MAX_TOKEN_ESTIMATE,
     refs: Optional[dict[int, dict[str, Any]]] = None,
@@ -329,8 +334,9 @@ def _collapse_tree(
     interactive 요소가 전혀 없는 큰 서브트리를 찾아
     '[role] "name" → N children collapsed' 형태로 치환한다.
     """
-    for _ in range(20):
-        text = "\n".join(_format_tree(tree, refs=refs))
+    for iteration in range(20):
+        await asyncio.sleep(0)
+        text = "\n".join(await _format_tree(tree, refs=refs))
         if _estimate_tokens(text) <= max_tokens:
             return tree
 
@@ -375,7 +381,7 @@ def _collapse_tree(
     return tree
 
 
-def _token_prune(
+async def _token_prune(
     snapshot: dict[str, Any],
     max_tokens: int = MAX_TOKEN_ESTIMATE,
     refs: Optional[dict[int, dict[str, Any]]] = None,
@@ -384,27 +390,29 @@ def _token_prune(
     상호작용 가능한 노드는 최대한 보존한다."""
     tree = snapshot
     for _ in range(8):
-        text = "\n".join(_format_tree(tree, refs=refs))
+        await asyncio.sleep(0)
+        text = "\n".join(await _format_tree(tree, refs=refs))
         if _estimate_tokens(text) <= max_tokens:
             return tree
-        pruned = _prune_tree(tree) or {"role": "Root", "children": []}
+        pruned = await _prune_tree(tree) or {"role": "Root", "children": []}
         if pruned is tree:  # 더 이상 _prune_tree가 줄일 게 없으면 collapse 진입
-            tree = _collapse_tree(tree, max_tokens, refs=refs)
+            tree = await _collapse_tree(tree, max_tokens, refs=refs)
             break
         tree = pruned
     # collapse 후에도 오버일 수 있으니 최종 체크
-    text = "\n".join(_format_tree(tree, refs=refs))
+    text = "\n".join(await _format_tree(tree, refs=refs))
     if _estimate_tokens(text) <= max_tokens:
         return tree
     for _ in range(10):
-        text = "\n".join(_format_tree(tree, refs=refs))
+        await asyncio.sleep(0)
+        text = "\n".join(await _format_tree(tree, refs=refs))
         if _estimate_tokens(text) <= max_tokens:
             return tree
-        tree = _collapse_tree(tree, max_tokens, refs=refs) or tree
+        tree = await _collapse_tree(tree, max_tokens, refs=refs) or tree
     return tree
 
 
-def format_accessibility_tree(
+async def format_accessibility_tree(
     snapshot: Optional[dict[str, Any]],
     max_tokens: int = MAX_TOKEN_ESTIMATE,
     *,  # refs는 키워드 전용
@@ -424,10 +432,10 @@ def format_accessibility_tree(
         return "(No accessibility tree available)"
 
     _reset_ref_counter()
-    tree = _prune_tree(snapshot) or {"role": "Root", "children": []}
-    tree = _token_prune(tree, max_tokens, refs=refs)
+    tree = await _prune_tree(snapshot) or {"role": "Root", "children": []}
+    tree = await _token_prune(tree, max_tokens, refs=refs)
 
-    lines = _format_tree(tree, refs=refs)
+    lines = await _format_tree(tree, refs=refs)
     text = "\n".join(lines)
 
     token_count = _estimate_tokens(text)
@@ -441,7 +449,7 @@ def format_accessibility_tree(
     return text
 
 
-def format_accessibility_tree_with_refs(
+async def format_accessibility_tree_with_refs(
     snapshot: Optional[dict[str, Any]],
     max_tokens: int = MAX_TOKEN_ESTIMATE,
 ) -> tuple[str, dict[int, dict[str, Any]]]:
@@ -451,7 +459,7 @@ def format_accessibility_tree_with_refs(
         (포맷된 텍스트, {ref: {role, name, value, description, tag, ...}})
     """
     refs: dict[int, dict[str, Any]] = {}
-    text = format_accessibility_tree(snapshot, max_tokens, refs=refs)
+    text = await format_accessibility_tree(snapshot, max_tokens, refs=refs)
     return text, refs
 
 
@@ -554,7 +562,7 @@ async def get_accessibility_tree_with_refs(
             text = await _fallback_via_evaluate(page)
             return text, {}
 
-    text, refs = format_accessibility_tree_with_refs(snapshot)
+    text, refs = await format_accessibility_tree_with_refs(snapshot)
     await enrich_with_dom_info(page, refs)
     return text, refs
 
@@ -602,9 +610,9 @@ async def get_subtree_detail(page: Page, ref: int, refs: dict[int, dict[str, Any
 
     # 동일한 포맷 파이프라인 적용
     _reset_ref_counter()
-    pruned = _prune_tree(subtree) or subtree
-    result = _token_prune(pruned, max_tokens=MAX_TOKEN_ESTIMATE, refs=refs)
-    lines = _format_tree(result, refs=refs)
+    pruned = (await _prune_tree(subtree)) or subtree
+    result = await _token_prune(pruned, max_tokens=MAX_TOKEN_ESTIMATE, refs=refs)
+    lines = await _format_tree(result, refs=refs)
     text = "\n".join(lines)
     text = (f"--- Detail for ref #{ref} ({target_role} \"{target_name}\") ---\n{text}")
 
@@ -770,7 +778,7 @@ async def _get_accessibility_via_cdp_with_refs(
     except Exception as e:
         logger.debug("CDP DOM enrichment failed: %s", e)
 
-    return format_accessibility_tree_with_refs(snapshot)
+    return await format_accessibility_tree_with_refs(snapshot)
 
 
 def _cdp_nodes_to_snapshot(nodes: list[dict]) -> dict[str, Any]:
