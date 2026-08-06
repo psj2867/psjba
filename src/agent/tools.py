@@ -121,15 +121,6 @@ def create_browser_tools(
         return await manager.browser_snapshot(tab_index)
 
     @tool
-    async def browser_get_dom(tab_index: Optional[int] = None) -> str:
-        """Get the HTML content of a page.
-
-        Args:
-            tab_index: Target tab index (default: focused tab)
-        """
-        return await manager.browser_get_dom(tab_index)
-
-    @tool
     async def chrome_health() -> str:
         """Check Chrome/CDP connection health and get comprehensive browser status. Returns connection status, tab count, focused tab info, CDP settings, headless mode, and Chrome PID if available. Safe to call even when not connected."""
         return await manager.chrome_health()
@@ -148,6 +139,16 @@ def create_browser_tools(
             tab_index: Target tab index (default: focused tab)
         """
         return await manager.browser_execute_script(script, tab_index)
+
+    @tool
+    async def browser_snapshot_detail(ref: int, tab_index: Optional[int] = None) -> str:
+        """Get a detailed subtree view for a specific ref from the accessibility tree. Use this when you need more detail about a particular interactive element — it shows the element's children up to 3 levels deep with full tag/attribute info (id, class, type, placeholder), without token truncation. Call browser_snapshot() first to get ref numbers.
+
+        Args:
+            ref: The [#N] ref number from the accessibility tree
+            tab_index: Target tab index (default: focused tab)
+        """
+        return await manager.browser_snapshot_detail(ref, tab_index)
 
     @tool
     async def browser_click_by_ref(ref: int, tab_index: Optional[int] = None) -> str:
@@ -192,7 +193,7 @@ def create_browser_tools(
         browser_get_focused_tab,
         browser_screenshot,
         browser_snapshot,
-        browser_get_dom,
+        browser_snapshot_detail,
         browser_execute_script,
         browser_click_by_ref,
         workspace_write,
@@ -200,8 +201,20 @@ def create_browser_tools(
     ]
 
 
-def create_cron_tools(manager: PlaywrightManager, db: Any = None, job_scheduler: Any = None) -> list:
-    """크론 + 1회성 job 도구 리스트를 생성한다."""
+def create_cron_tools(
+    manager: PlaywrightManager,
+    db: Any = None,
+    job_scheduler: Any = None,
+    cron_job_id: str = "",
+) -> list:
+    """크론 + 1회성 job 도구 리스트를 생성한다.
+
+    Args:
+        manager: PlaywrightManager 인스턴스
+        db: Database 인스턴스 (cron_save_note용)
+        job_scheduler: JobScheduler 인스턴스 (job_add용)
+        cron_job_id: 현재 실행 중인 크론 job ID (크론 전용 도구용, 비어있으면 비크론 컨텍스트)
+    """
 
     @tool
     async def cron_add(name: str, schedule: str, prompt: str) -> str:
@@ -264,7 +277,22 @@ def create_cron_tools(manager: PlaywrightManager, db: Any = None, job_scheduler:
             f"will run at {dt.isoformat()[:19]} (ID: {job.id})"
         )
 
-    return [cron_add, cron_list, cron_edit, cron_toggle, cron_remove, cron_to_session, job_add]
+    @tool
+    async def cron_save_note(note: str) -> str:
+        """Save a note for the next cron execution. This note is stored in the cron job's notes field and will be automatically added as a system message when this cron job runs next time. Use this to pass information between cron runs, e.g. error context, counters, or state.
+
+        This tool only works when called from a cron job context.
+        """
+        if not cron_job_id or not db:
+            return (
+                "cron_save_note: 이 도구는 크론 작업에서만 사용할 수 있습니다. "
+                "일반 채팅에서는 사용할 수 없습니다."
+            )
+        await db.update_cron_notes(cron_job_id, note)
+        logger.info("Cron note saved for %s: %s", cron_job_id, note[:80])
+        return f"메모가 저장되었습니다 (길이: {len(note)}자). 다음 크론 실행 시 system 메시지로 자동 추가됩니다."
+
+    return [cron_add, cron_list, cron_edit, cron_toggle, cron_remove, cron_to_session, job_add, cron_save_note]
 
 
 def create_memory_tools(db: Database, session_id: str) -> list:
@@ -301,6 +329,7 @@ def create_all_tools(
     db: Optional[Database] = None,
     session_id: str = "",
     job_scheduler: Any = None,
+    cron_job_id: str = "",
 ) -> list:
     """모든 도구를 하나의 리스트로 생성한다.
 
@@ -309,13 +338,14 @@ def create_all_tools(
         db: Database 인스턴스 (memory_search용, None이면 memory_search 제외)
         session_id: 현재 세션 ID
         job_scheduler: JobScheduler 인스턴스 (job_add용)
+        cron_job_id: 크론 job ID (크론 전용 도구용, 비어있으면 비크론)
 
     Returns:
         모든 LangChain tool 리스트
     """
     tools = create_browser_tools(manager)
 
-    tools.extend(create_cron_tools(manager, db=db, job_scheduler=job_scheduler))
+    tools.extend(create_cron_tools(manager, db=db, job_scheduler=job_scheduler, cron_job_id=cron_job_id))
     if db and session_id:
         tools.extend(create_memory_tools(db, session_id))
     return tools

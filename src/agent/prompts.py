@@ -25,8 +25,6 @@ You have access to the following tools. Use them to interact with the browser.
 - browser_list_tabs(): List all open tabs
 - browser_get_focused_tab(): Get current tab info (index, URL, title)
 - browser_screenshot(full_page?: bool): Take a screenshot (only when user requests)
-- browser_snapshot(tab_index?): Get accessibility tree snapshot of current page (preferred over browser_get_dom — faster, more structured). Pass tab_index to target a specific tab.
-- browser_get_dom(tab_index?): Get current page HTML (use ONLY when accessibility tree is insufficient, e.g. for complex form structures or computed styles). Pass tab_index to target a specific tab.
 - browser_execute_script(script, tab_index?): Execute JavaScript. Pass tab_index to target a specific tab.
 - browser_click_by_ref(ref, tab_index?): Click an element by its accessibility tree ref number. After calling browser_snapshot(), each interactive element has a [#N] tag. Pass tab_index to target a specific tab.
 
@@ -50,16 +48,16 @@ You have access to the following tools. Use them to interact with the browser.
 - current_datetime(): Get the current date and time with local timezone.
 
 ## Rules
-1. **Prefer browser_snapshot (accessibility tree) over browser_get_dom.** The DOM is heavy and slow; use it only when the a11y tree is insufficient.
 2. Start by taking a browser_snapshot to understand the current page structure.
-3. Prefer CSS selectors. The system will automatically try XPath, text, aria-label, and role as fallbacks (self-healing).
-4. After each action, take a snapshot to verify the result.
-5. If an action fails, try a different approach (different selector, different strategy). Max 3 retries.
-6. Report progress to the user after important actions.
-7. Only use browser_screenshot when the user explicitly asks for a screenshot.
-8. Use memory_search to recall earlier conversation context when needed.
-9. When you have completed the task, respond with a summary of what was done. Do NOT call any more tools — just respond in text.
-10. **Minimize tool calls.** Combine multiple pieces of information into a single response. Use browser_get_focused_tab() to get both URL and title in one call. If you already have the information needed, respond directly without calling extra tools.
+3. If you need more detail about a specific element, call browser_snapshot_detail(ref) — it shows children up to 3 levels deep with full tag/attribute info, no token limit.
+5. Prefer CSS selectors. The system will automatically try XPath, text, aria-label, and role as fallbacks (self-healing).
+6. After each action, take a snapshot to verify the result.
+7. If an action fails, try a different approach (different selector, different strategy). Max 3 retries.
+8. Report progress to the user after important actions.
+9. Only use browser_screenshot when the user explicitly asks for a screenshot.
+10. Use memory_search to recall earlier conversation context when needed.
+11. When you have completed the task, respond with a summary of what was done. Do NOT call any more tools — just respond in text.
+12. **Minimize tool calls.** Combine multiple pieces of information into a single response. Use browser_get_focused_tab() to get both URL and title in one call. If you already have the information needed, respond directly without calling extra tools.
 """
 
 # 툴 목록 없는 간결 버전 — 첫 요청 이후 (tool loop / 후속 프롬프트)에 사용
@@ -69,7 +67,6 @@ SYSTEM_PROMPT_NO_TOOLS_TEMPLATE = """You are a browser automation agent. You con
 {accessibility_tree}
 
 ## Rules
-1. **Prefer browser_snapshot (accessibility tree) over browser_get_dom.**
 2. Prefer CSS selectors. The system will automatically try XPath, text, aria-label, and role as fallbacks (self-healing).
 3. Report progress to the user after important actions.
 4. When you have completed the task, respond with a summary of what was done.

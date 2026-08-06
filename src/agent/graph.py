@@ -40,6 +40,7 @@ def create_agent_graph(
     max_retries: int = 3,
     max_tool_calls: int = 30,
     job_scheduler: Any = None,
+    cron_job_id: str = "",
 ) -> StateGraph:
     """LangGraph 에이전트 그래프를 생성하고 컴파일한다.
 
@@ -51,6 +52,7 @@ def create_agent_graph(
         llm: 사전 생성된 LLM 인스턴스 (None이면 config로 생성)
         max_context_messages: 슬라이딩 윈도우 크기
         max_retries: 최대 오류 재시도 횟수
+        cron_job_id: 크론 job ID (크론 전용 도구용)
 
     Returns:
         컴파일된 StateGraph
@@ -60,7 +62,10 @@ def create_agent_graph(
     if llm is None:
         llm = create_llm(config)
 
-    tools = create_all_tools(manager, db=db, session_id=session_id, job_scheduler=job_scheduler)
+    tools = create_all_tools(
+        manager, db=db, session_id=session_id,
+        job_scheduler=job_scheduler, cron_job_id=cron_job_id,
+    )
 
     tool_dict: dict[str, Any] = {}
     for t in tools:

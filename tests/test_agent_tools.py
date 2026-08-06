@@ -35,7 +35,7 @@ class TestCreateBrowserTools:
         assert "browser_wait" in names
         assert "browser_select_option" in names
         assert "browser_hover" in names
-        assert "browser_get_dom" in names
+        assert "browser_snapshot_detail" in names
 
     @pytest.mark.asyncio
     async def test_browser_navigate_calls_manager(self):

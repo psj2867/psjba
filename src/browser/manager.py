@@ -20,6 +20,7 @@ from playwright.async_api import (
 from src.browser.accessibility import (
     get_accessibility_tree_with_refs,
     format_accessibility_tree_with_refs,
+    get_subtree_detail,
 )
 from src.browser.self_healing import SelfHealingSelector
 from src.chrome.launcher import ChromeLauncher
@@ -388,10 +389,33 @@ class PlaywrightManager:
                     return f"Switched to tab {i}: {tab.url} ({tab.title})"
             return f"Tab not found: {target}"
 
+    async def _refresh_tabs(self) -> None:
+        """CDP에서 현재 페이지 목록을 다시 읽어 self._tabs를 재구성한다.
+
+        외부에서 열린 탭(context.on("page")을 못 탄 경우)이나
+        닫힌 탭을 반영하기 위해 매번 CDP에 직접 쿼리한다.
+        기존 _TabInfo의 dialog override 상태는 보존한다.
+        """
+        if not self._context:
+            return
+        current_pages = self._context.pages
+        old_by_page = {id(t.page): t for t in self._tabs}
+        new_tabs: list[_TabInfo] = []
+        for p in current_pages:
+            tid = id(p)
+            if tid in old_by_page:
+                new_tabs.append(old_by_page[tid])
+            else:
+                new_tabs.append(_TabInfo(p))
+        self._tabs = new_tabs
+        if self._focused_tab_index >= len(self._tabs):
+            self._focused_tab_index = max(0, len(self._tabs) - 1)
+
     async def browser_list_tabs(self) -> str:
         logger.info("browser_list_tabs called")
         """현재 열린 탭 목록을 반환한다."""
         self._ensure_connected()
+        await self._refresh_tabs()
         lines: list[str] = []
         for i, tab in enumerate(self._tabs):
             await tab.update_info()
@@ -666,6 +690,7 @@ class PlaywrightManager:
         if not self._connected or not self._tabs:
             return "[Browser: not connected]"
 
+        await self._refresh_tabs()
         parts = [f"[Browser: connected ({len(self._tabs)} tabs)]"]
         for i, tab in enumerate(self._tabs):
             await tab.update_info()
@@ -705,6 +730,21 @@ class PlaywrightManager:
         if refs:
             logger.info("a11y snapshot: %d interactive refs", len(refs))
         return text
+
+    async def browser_snapshot_detail(self, ref: int,
+                                      tab_index: Optional[int] = None) -> str:
+        logger.info("browser_snapshot_detail called: ref=%s", ref)
+        """특정 ref의 서브트리를 깊이 3까지 상세 정보로 반환한다.
+
+        Args:
+            ref: browser_snapshot() 결과에 표시된 [#N] 번호
+            tab_index: 대상 탭 인덱스 (None이면 포커스 탭)
+        """
+        page = self._ensure_page(tab_index)
+        if not self._a11y_refs:
+            return ("No a11y refs available. "
+                    "Call browser_snapshot() first to get the accessibility tree.")
+        return await get_subtree_detail(page, ref, self._a11y_refs, max_depth=3)
 
     async def browser_click_by_ref(self, ref: int, tab_index: Optional[int] = None) -> str:
         """접근성 트리 ref 번호로 요소를 찾아 클릭한다.
@@ -759,22 +799,6 @@ class PlaywrightManager:
         if d:
             result += f"\n⚠️ Dialog recorded: [{d['type']}] {d.get('message','')}"
         return result
-
-    async def browser_get_dom(self, tab_index: Optional[int] = None) -> str:
-        logger.info("browser_get_dom called")
-        """특정 탭의 DOM HTML을 반환한다 (간략화).
-
-        Args:
-            tab_index: 대상 탭 인덱스 (None이면 포커스 탭)
-        """
-        page = self._ensure_page(tab_index)
-        try:
-            html = await page.content()
-            if len(html) > 50000:
-                html = html[:50000] + "\n... (truncated)"
-            return html
-        except Exception as e:
-            return f"DOM error: {e}"
 
     async def browser_screenshot(
         self,

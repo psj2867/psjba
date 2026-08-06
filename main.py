@@ -201,6 +201,18 @@ async def run(config: Config) -> None:
     await job_scheduler.start()
     logger.info("Step 5a/10: JobScheduler started")
 
+    # 모든 크론/예약 job 비활성화 (설정 UI에서 수동 활성화 필요)
+    await db.conn.execute(
+        "UPDATE psjba_cron_job SET status = 'disable', updated_at = datetime('now') "
+        "WHERE status = 'enable'"
+    )
+    await db.conn.execute(
+        "UPDATE psjba_scheduled_job SET status = 'cancelled' "
+        "WHERE status = 'pending'"
+    )
+    await db.conn.commit()
+    logger.info("Step 5c/10: All cron/scheduled jobs disabled at startup")
+
     # manager에 크론 의존성 주입
     manager.set_cron_dependencies(db=db, cron_scheduler=cron_scheduler)
     logger.info("Step 5b/10: Cron dependencies injected into manager")
@@ -417,6 +429,9 @@ async def _handle_prompt(
         # 응답 시작 전에 skeleton 표시
         window.show_ai_thinking("🤖 응답 대기 중...")
 
+        # 입력 메시지 개수를 미리 저장 (스트리밍 중 이전 응답을 걸러내기 위함)
+        input_msg_count = len(state["messages"])
+
         try:
             # astream 사용: 각 노드 실행 사이에 이벤트 루프에 yield 하여
             # Qt UI 이벤트가 처리될 기회를 준다 (UI 멈춤 방지)
@@ -424,7 +439,6 @@ async def _handle_prompt(
             # 각 이벤트 대기를 asyncio.wait_for 로 감싸 도구/LLM hang 시
             # 무기한 대기하지 않고 타임아웃으로 복구한다.
             final_state = None
-            last_ai_msg_id: str | None = None
             graph_timeout = int(config.get("agent", "graph_timeout", 300))
             stream = graph.astream(state, stream_mode="values")
             while True:
@@ -436,14 +450,12 @@ async def _handle_prompt(
                 # 실시간 AI content 표시 (툴 콜 없이 알려주는 텍스트)
                 try:
                     event_msgs = event.get("messages", [])
-                    if event_msgs:
-                        for m in reversed(event_msgs):
+                    if event_msgs and len(event_msgs) > input_msg_count:
+                        # 이번 입력 이후에 추가된 메시지만 고려
+                        new_msgs = event_msgs[input_msg_count:]
+                        for m in reversed(new_msgs):
                             if m.type != "ai":
                                 continue
-                            msg_id = getattr(m, "id", None)
-                            if msg_id is not None and msg_id == last_ai_msg_id:
-                                break
-                            last_ai_msg_id = msg_id
                             content = str(m.content or "").strip()
                             if content:
                                 window._chat.update_ai_content(content)
