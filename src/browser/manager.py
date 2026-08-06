@@ -445,14 +445,6 @@ class PlaywrightManager:
             lines.append(f"  [{i}] {tab.url} - {tab.title}{marker}")
         return "Open tabs:\n" + "\n".join(lines) if lines else "No tabs open"
 
-    async def browser_get_focused_tab(self) -> str:
-        logger.info("browser_get_focused_tab called")
-        """현재 focused tab 정보를 반환한다."""
-        self._ensure_connected()
-        tab = self._tabs[self._focused_tab_index]
-        await tab.update_info()
-        return f"[{self._focused_tab_index}] {tab.url} ({tab.title})"
-
     # ─── 네비게이션 ──────────────────────────────────────────
 
     async def browser_navigate(self, url: str) -> str:

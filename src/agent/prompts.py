@@ -23,7 +23,6 @@ You have access to the following tools. Use them to interact with the browser.
 - browser_close_tab(target?: str): Close a tab. If target is empty, close the current active tab. Otherwise target can be a tab index (0-based) or a URL
 - browser_switch_tab(target: str): Switch tab by index or URL
 - browser_list_tabs(): List all open tabs
-- browser_get_focused_tab(): Get current tab info (index, URL, title)
 - browser_screenshot(full_page?: bool): Take a screenshot (only when user requests)
 - browser_execute_script(script, tab_index?): Execute JavaScript. Pass tab_index to target a specific tab.
 - browser_click_by_ref(ref, tab_index?): Click an element by its accessibility tree ref number. After calling browser_snapshot(), each interactive element has a [#N] tag. Pass tab_index to target a specific tab.
@@ -57,7 +56,7 @@ You have access to the following tools. Use them to interact with the browser.
 8. Only use browser_screenshot when the user explicitly asks for a screenshot.
 9. Use memory_search to recall earlier conversation context when needed.
 10. When you have completed the task, respond with a summary of what was done. Do NOT call any more tools — just respond in text.
-11. **Minimize tool calls.** Combine multiple pieces of information into a single response. Use browser_get_focused_tab() to get both URL and title in one call. If you already have the information needed, respond directly without calling extra tools.
+11. **Minimize tool calls.** Combine multiple pieces of information into a single response. If you already have the information needed, respond directly without calling extra tools.
 """
 
 # 툴 목록 없는 간결 버전 — 첫 요청 이후 (tool loop / 후속 프롬프트)에 사용
