@@ -403,18 +403,19 @@ class PlaywrightManager:
         if self._focused_tab_index >= len(self._tabs):
             self._focused_tab_index = max(0, len(self._tabs) - 1)
 
-        # refresh_focus: 실제 DOM 포커스로 focused_tab_index 재탐지
-        if refresh_focus and len(self._tabs) > 1:
-            for i, tab in enumerate(self._tabs):
-                try:
-                    has_focus = await tab.page.evaluate(
-                        "document.hasFocus()", timeout=1000
-                    )
-                    if has_focus:
-                        self._focused_tab_index = i
-                        break
-                except Exception:
-                    continue
+        # refresh_focus: 모든 페이지 병렬로 document.hasFocus() 체크
+        if refresh_focus and self._tabs:
+            results = await asyncio.gather(
+                *(
+                    tab.page.evaluate("document.hasFocus()", timeout=1.0)
+                    for tab in self._tabs
+                ),
+                return_exceptions=True,
+            )
+            for i, res in enumerate(results):
+                if res is True:
+                    self._focused_tab_index = i
+                    break
 
     async def browser_list_tabs(self) -> str:
         logger.info("browser_list_tabs called")
