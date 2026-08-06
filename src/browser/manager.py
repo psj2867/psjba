@@ -389,12 +389,16 @@ class PlaywrightManager:
                     return f"Switched to tab {i}: {tab.url} ({tab.title})"
             return f"Tab not found: {target}"
 
-    async def _refresh_tabs(self) -> None:
+    async def _refresh_tabs(self, refresh_focus: bool = False) -> None:
         """CDP에서 현재 페이지 목록을 다시 읽어 self._tabs를 재구성한다.
 
         외부에서 열린 탭(context.on("page")을 못 탄 경우)이나
         닫힌 탭을 반영하기 위해 매번 CDP에 직접 쿼리한다.
         기존 _TabInfo의 dialog override 상태는 보존한다.
+
+        Args:
+            refresh_focus: True면 각 페이지의 document.hasFocus()로
+                           포커스된 탭을 다시 탐지한다.
         """
         if not self._context:
             return
@@ -410,6 +414,24 @@ class PlaywrightManager:
         self._tabs = new_tabs
         if self._focused_tab_index >= len(self._tabs):
             self._focused_tab_index = max(0, len(self._tabs) - 1)
+
+        # 포커스 탭 재탐지 (document.hasFocus 로 실제 포커스된 페이지 확인)
+        if refresh_focus and self._tabs:
+            found_focused = False
+            for i, tab in enumerate(self._tabs):
+                try:
+                    has_focus = await tab.page.evaluate(
+                        "document.hasFocus()", timeout=1.0
+                    )
+                    if has_focus:
+                        self._focused_tab_index = i
+                        found_focused = True
+                        break
+                except Exception:
+                    continue
+            if not found_focused:
+                logger.debug("_refresh_tabs: no tab has focus, keeping current index=%d",
+                             self._focused_tab_index)
 
     async def browser_list_tabs(self) -> str:
         logger.info("browser_list_tabs called")
@@ -690,7 +712,7 @@ class PlaywrightManager:
         if not self._connected or not self._tabs:
             return "[Browser: not connected]"
 
-        await self._refresh_tabs()
+        await self._refresh_tabs(refresh_focus=True)
         parts = [f"[Browser: connected ({len(self._tabs)} tabs)]"]
         for i, tab in enumerate(self._tabs):
             await tab.update_info()
