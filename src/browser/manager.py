@@ -378,6 +378,7 @@ class PlaywrightManager:
             if 0 <= idx < len(self._tabs):
                 self._focused_tab_index = idx
                 tab = self._tabs[idx]
+                await tab.page.bring_to_front()
                 await tab.update_info()
                 return f"Switched to tab {idx}: {tab.url} ({tab.title})"
             return f"Invalid tab index: {idx} (have {len(self._tabs)} tabs)"
@@ -385,6 +386,7 @@ class PlaywrightManager:
             for i, tab in enumerate(self._tabs):
                 if tab.url == target or target in tab.url:
                     self._focused_tab_index = i
+                    await tab.page.bring_to_front()
                     await tab.update_info()
                     return f"Switched to tab {i}: {tab.url} ({tab.title})"
             return f"Tab not found: {target}"
@@ -398,7 +400,6 @@ class PlaywrightManager:
 
         Args:
             refresh_focus: True면 각 페이지의 document.hasFocus()로
-                           포커스된 탭을 다시 탐지한다.
         """
         if not self._context:
             return
@@ -437,7 +438,7 @@ class PlaywrightManager:
         logger.info("browser_list_tabs called")
         """현재 열린 탭 목록을 반환한다."""
         self._ensure_connected()
-        await self._refresh_tabs()
+        await self._refresh_tabs(refresh_focus=True)
         lines: list[str] = []
         for i, tab in enumerate(self._tabs):
             await tab.update_info()
