@@ -703,34 +703,30 @@ class PlaywrightManager:
         else:
             return f"Failed to start Chrome: {result}"
 
-    async def browser_snapshot(self, tab_index: Optional[int] = None) -> str:
-        logger.info("browser_snapshot called")
+    async def browser_snapshot(self, tab_index: Optional[int] = None,
+                              ref: Optional[int] = None) -> str:
+        logger.info("browser_snapshot called (ref=%s)", ref)
         """특정 탭의 접근성 트리를 반환하고 ref 매핑을 저장한다.
+
+        ref가 주어지면 해당 ref의 상세 서브트리(3 depth, detail 모드)를 반환한다.
 
         Args:
             tab_index: 대상 탭 인덱스 (None이면 포커스 탭)
+            ref: 상세 조회할 [#N] ref 번호 (None이면 전체 트리)
         """
+        if ref is not None:
+            if not self._a11y_refs:
+                return ("No a11y refs available. "
+                        "Call browser_snapshot() first to get the accessibility tree.")
+            page = self._ensure_page(tab_index)
+            return await get_subtree_detail(page, ref, self._a11y_refs, max_depth=3)
+
         page = self._ensure_page(tab_index)
         text, refs = await get_accessibility_tree_with_refs(page)
         self._a11y_refs = refs
         if refs:
             logger.info("a11y snapshot: %d interactive refs", len(refs))
         return text
-
-    async def browser_snapshot_detail(self, ref: int,
-                                      tab_index: Optional[int] = None) -> str:
-        logger.info("browser_snapshot_detail called: ref=%s", ref)
-        """특정 ref의 서브트리를 깊이 3까지 상세 정보로 반환한다.
-
-        Args:
-            ref: browser_snapshot() 결과에 표시된 [#N] 번호
-            tab_index: 대상 탭 인덱스 (None이면 포커스 탭)
-        """
-        page = self._ensure_page(tab_index)
-        if not self._a11y_refs:
-            return ("No a11y refs available. "
-                    "Call browser_snapshot() first to get the accessibility tree.")
-        return await get_subtree_detail(page, ref, self._a11y_refs, max_depth=3)
 
     async def browser_click_by_ref(self, ref: int, tab_index: Optional[int] = None) -> str:
         """접근성 트리 ref 번호로 요소를 찾아 클릭한다.

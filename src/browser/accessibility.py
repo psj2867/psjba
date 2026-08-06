@@ -115,6 +115,12 @@ def _format_node(
         d = description[:80]
         label_parts.append(f"desc={d}")
 
+    # 접힌(collapsed) 서브트리 표시
+    collapsed = node.get("_collapsed")
+    if collapsed:
+        count = collapsed.get("count", 0)
+        label_parts.append(f"→ {count} children collapsed")
+
     # 상호작용 가능 요소에 ref 번호 부여
     if refs is not None and _is_interactive(role):
         ref = _next_ref()
@@ -293,6 +299,82 @@ def _prune_tree(snapshot: dict[str, Any]) -> Optional[dict[str, Any]]:
     return result
 
 
+def _has_interactive_descendant(node: dict[str, Any]) -> bool:
+    """노드의 서브트리에 상호작용 가능한 요소가 있는지 확인한다."""
+    role = node.get("role", "")
+    if _is_interactive(role):
+        return True
+    for child in node.get("children", []):
+        if _has_interactive_descendant(child):
+            return True
+    return False
+
+
+def _count_descendants(node: dict[str, Any]) -> int:
+    """노드의 모든 직간접 자식 수를 센다 (node 자신 제외)."""
+    total = 0
+    for child in node.get("children", []):
+        total += 1 + _count_descendants(child)
+    return total
+
+
+def _collapse_tree(
+    tree: dict[str, Any],
+    max_tokens: int = MAX_TOKEN_ESTIMATE,
+    refs: Optional[dict[int, dict[str, Any]]] = None,
+) -> dict[str, Any]:
+    """비-인터랙티브 서브트리를 요약 라인으로 접어 토큰을 줄인다.
+    
+    _prune_tree 로 더 이상 줄일 수 없을 때 호출된다.
+    interactive 요소가 전혀 없는 큰 서브트리를 찾아
+    '[role] "name" → N children collapsed' 형태로 치환한다.
+    """
+    for _ in range(20):
+        text = "\n".join(_format_tree(tree, refs=refs))
+        if _estimate_tokens(text) <= max_tokens:
+            return tree
+
+        # collapse 후보 수집: interactive descendant 가 없고 자식이 2개 이상인 노드
+        candidates: list[tuple[int, list[int], dict[str, Any]]] = []
+
+        def _find_candidates(
+            node: dict[str, Any],
+            path: list[int],
+        ) -> None:
+            children = node.get("children", [])
+            if not children:
+                return
+            # 자식을 먼저 방문 (bottom-up 우선)
+            for i, child in enumerate(children):
+                _find_candidates(child, path + [i])
+
+            # 자기 자신 평가
+            if node.get("_collapsed"):
+                return
+            if _has_interactive_descendant(node):
+                return
+            count = len(children)
+            if count < 2:
+                return
+            savings = _count_descendants(node)
+            candidates.append((savings, path, node))
+
+        _find_candidates(tree, [])
+
+        if not candidates:
+            break  # 더 이상 접을 게 없음
+
+        # savings 큰 순으로 정렬 (가장 큰 서브트리부터 collapse)
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        _, path, node = candidates[0]
+
+        child_count = len(node.get("children", []))
+        node["_collapsed"] = {"count": child_count}
+        node["children"] = []
+
+    return tree
+
+
 def _token_prune(
     snapshot: dict[str, Any],
     max_tokens: int = MAX_TOKEN_ESTIMATE,
@@ -305,7 +387,20 @@ def _token_prune(
         text = "\n".join(_format_tree(tree, refs=refs))
         if _estimate_tokens(text) <= max_tokens:
             return tree
-        tree = _prune_tree(tree) or {"role": "Root", "children": []}
+        pruned = _prune_tree(tree) or {"role": "Root", "children": []}
+        if pruned is tree:  # 더 이상 _prune_tree가 줄일 게 없으면 collapse 진입
+            tree = _collapse_tree(tree, max_tokens, refs=refs)
+            break
+        tree = pruned
+    # collapse 후에도 오버일 수 있으니 최종 체크
+    text = "\n".join(_format_tree(tree, refs=refs))
+    if _estimate_tokens(text) <= max_tokens:
+        return tree
+    for _ in range(10):
+        text = "\n".join(_format_tree(tree, refs=refs))
+        if _estimate_tokens(text) <= max_tokens:
+            return tree
+        tree = _collapse_tree(tree, max_tokens, refs=refs) or tree
     return tree
 
 
