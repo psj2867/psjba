@@ -249,7 +249,6 @@ async def _prune_tree(snapshot: dict[str, Any]) -> Optional[dict[str, Any]]:
             return None
 
     # 순수 레이아웃 div/span 컨테이너는 자식들을 한 단계 끌어올림
-    # 조건: role=none/generic, tag=div/span, 이름/값/설명/id/class 없음, 자식 있음
     is_pure_container = (
         role in ("none", "None", "generic", "Generic")
         and not name and not value and not description
@@ -259,18 +258,14 @@ async def _prune_tree(snapshot: dict[str, Any]) -> Optional[dict[str, Any]]:
         and bool(children)
     )
     if is_pure_container:
-        # 자식들을 먼저 정리한 뒤, 컨테이너 자체는 생략하고 자식들만 반환
-        pruned_all = []
-        for child in children:
-            pruned = await _prune_tree(child)
-            if pruned is not None:
-                pruned_all.append(pruned)
+        results = await asyncio.gather(
+            *(_prune_tree(c) for c in children),
+        )
+        pruned_all = [r for r in results if r is not None]
         if len(pruned_all) == 1:
             return pruned_all[0]
         if pruned_all:
-            # 자식이 여러 개면 synthetic none 노드로 감싸서 반환
-            merged = {"role": "none", "children": pruned_all}
-            return merged
+            return {"role": "none", "children": pruned_all}
         return None
 
     # 단일 자식만 가진 구조 래퍼는 펼치기 (interactive 노드면 보존)
@@ -291,13 +286,11 @@ async def _prune_tree(snapshot: dict[str, Any]) -> Optional[dict[str, Any]]:
             return child_pruned
         return None
 
-    pruned_children: list[dict[str, Any]] = []
-    for i, child in enumerate(children):
-        if i % 10 == 0:
-            await asyncio.sleep(0)
-        pruned = await _prune_tree(child)
-        if pruned is not None:
-            pruned_children.append(pruned)
+    # 일반 노드: 자식들을 병렬로 prune
+    results = await asyncio.gather(
+        *(_prune_tree(c) for c in children),
+    )
+    pruned_children = [r for r in results if r is not None]
 
     result = dict(snapshot)
     result["children"] = pruned_children
@@ -435,7 +428,7 @@ async def format_accessibility_tree(
     tree = await _prune_tree(snapshot) or {"role": "Root", "children": []}
     tree = await _token_prune(tree, max_tokens, refs=refs)
 
-    lines = await _format_tree(tree, refs=refs)
+    lines = await _format_tree(tree, refs=refs, max_depth=30)
     text = "\n".join(lines)
 
     token_count = _estimate_tokens(text)
