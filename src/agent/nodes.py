@@ -133,93 +133,30 @@ def _is_tool_error(result: str) -> bool:
     return any(kw in lower for kw in ERROR_KEYWORDS)
 
 
-async def call_model(
-    state: AgentState,
+async def _invoke_llm(
+    messages: list[BaseMessage],
     llm: BaseChatModel,
     max_context_messages: int = 30,
-    max_tool_calls: int = 30,
+    injected_msgs: Optional[list[BaseMessage]] = None,
+    state: Optional[AgentState] = None,
 ) -> dict[str, Any]:
-    """LLM을 호출하여 다음 액션을 결정한다.
-
-    슬라이딩 윈도우를 적용하고, 시스템 프롬프트에 동적 a11y 트리를 주입한다.
-    tool_call_count 가 max_tool_calls 를 초과하면 즉시 종료한다.
-    intervention_queue 가 있으면 실행 중 사용자 입력을 컨텍스트에 주입한다.
+    """LLM 호출 공통 코어: 슬라이딩 윈도우 → 시스템 프롬프트 → 호출 → 응답.
 
     Args:
-        state: 현재 에이전트 상태
-        llm: ChatOpenAI 인스턴스
+        messages: 컨텍스트 메시지 (슬라이딩 윈도우 적용 전)
+        llm: 바인딩된 ChatOpenAI 인스턴스
         max_context_messages: 슬라이딩 윈도우 크기
-        max_tool_calls: 한 프롬프트 당 최대 tool call 횟수
+        injected_msgs: intervention 등 추가로 붙일 메시지
+        state: 현재 상태 (에러 카운트 증가용, 없으면 0)
 
     Returns:
-        상태 업데이트 딕셔너리 (messages 추가)
+        상태 업데이트 딕셔너리 (messages + 추가)
     """
-    # ── intervention 큐 확인: 실행 중 사용자 입력을 메시지로 주입 ──
-    queue = state.get("intervention_queue")
-    injected_msgs: list[BaseMessage] = []
-    if queue:
-        while queue:
-            text = queue.pop(0)
-            logger.info("Injecting intervention: %s", text[:80])
-            injected_msgs.append(HumanMessage(content=text))
-
-    # ── pending dialog 큐 확인 (execute_tool이 검출한 dialog override 정보) ──
-    pending_dialogs: list[dict] = state.get("pending_dialogs", [])
-    dialog_msgs: list[HumanMessage] = []
-    if pending_dialogs:
-        for d in pending_dialogs:
-            tidx = d.get("tab_index", "?")
-            dtype = d.get("type", "?")
-            msg_text = d.get("message", "")
-            dialog_msgs.append(HumanMessage(
-                content=f"⚠️ Dialog pending on tab [{tidx}]: {dtype} '{msg_text}'",
-                additional_kwargs={"role": "developer"},
-            ))
-        state["pending_dialogs"] = []  # 소비
-
-    # 최대 tool call 횟수 초과 시 즉시 종료
-    current_count = state.get("tool_call_count", 0)
-    try:
-        current_count = int(current_count)
-        max_tool_calls = int(max_tool_calls)
-    except (TypeError, ValueError):
-        max_tool_calls = 30
-    if current_count >= max_tool_calls:
-        logger.warning(
-            f"Tool call limit reached: {current_count}/{max_tool_calls}, ending"
-        )
-        return {
-            "messages": [
-                AIMessage(
-                    content=(
-                        f"최대 tool call 횟수({max_tool_calls}회)에 도달했습니다. "
-                        f"작업을 완료하지 못했습니다. "
-                        f"더 간단한 작업으로 나누어 다시 시도해 주세요."
-                    )
-                )
-            ],
-            "is_final": True,
-        }
-    messages = list(state.get("messages", []))
-
-    # ── 툴콜 한도 경고: max_tool_calls - 5 이하 남았을 때 system role 로 안내 ──
-    remaining = max_tool_calls - current_count
-    if 0 < remaining <= 5:
-        warning = (
-            f"[시스템 경고] 이번 작업의 tool call 가능 횟수가 {remaining}회 남았습니다. "
-            f"최대 {max_tool_calls}회 제한 내에서 작업을 마무리해야 합니다. "
-            f"남은 횟수 안에서 목표를 달성할 수 있도록 계획을 줄이고 행동을 최소화하세요."
-        )
-        logger.warning("Tool call warning: %s remaining", remaining)
-        messages = [SystemMessage(content=warning)] + messages
-
     messages = _apply_sliding_window(messages, max_context_messages)
 
-    # 주입된 intervention 메시지를 LLM 컨텍스트에 추가
+    injected_msgs = injected_msgs or []
     if injected_msgs:
         messages = messages + injected_msgs
-    if dialog_msgs:
-        messages = messages + dialog_msgs
 
     # 첫 요청(call_model)에만 툴 목록 포함.
     # messages에 ToolMessage가 있으면 tool loop 안 → 툴 설명이 이미 컨텍스트에 있음
@@ -267,7 +204,7 @@ async def call_model(
             "messages": injected_msgs + [
                 AIMessage(content=f"LLM error: {e}. Please try again.")
             ],
-            "error_count": state.get("error_count", 0) + 1,
+            "error_count": (state.get("error_count", 0) + 1) if state else 1,
         }
 
     call_duration = time.monotonic() - call_start
@@ -306,6 +243,116 @@ async def call_model(
             logger.warning(warn_msg)
 
     return {"messages": injected_msgs + [response]}
+
+
+async def call_model_user(
+    state: AgentState,
+    llm: BaseChatModel,
+    max_context_messages: int = 30,
+    max_tool_calls: int = 30,
+) -> dict[str, Any]:
+    """사용자 요청용 LLM 호출 — intervention/dialog/경고 포함."""
+    # ── intervention 큐 확인: 실행 중 사용자 입력을 메시지로 주입 ──
+    queue = state.get("intervention_queue")
+    injected_msgs: list[BaseMessage] = []
+    if queue:
+        while queue:
+            text = queue.pop(0)
+            logger.info("Injecting intervention: %s", text[:80])
+            injected_msgs.append(HumanMessage(content=text))
+
+    # ── pending dialog 큐 확인 (execute_tool이 검출한 dialog override 정보) ──
+    pending_dialogs: list[dict] = state.get("pending_dialogs", [])
+    dialog_msgs: list[HumanMessage] = []
+    if pending_dialogs:
+        for d in pending_dialogs:
+            tidx = d.get("tab_index", "?")
+            dtype = d.get("type", "?")
+            msg_text = d.get("message", "")
+            dialog_msgs.append(HumanMessage(
+                content=f"⚠️ Dialog pending on tab [{tidx}]: {dtype} '{msg_text}'",
+                additional_kwargs={"role": "developer"},
+            ))
+        state["pending_dialogs"] = []  # 소비
+
+    # 최대 tool call 횟수 초과 시 즉시 종료
+    current_count = state.get("tool_call_count", 0)
+    try:
+        current_count = int(current_count)
+        max_tool_calls = int(max_tool_calls)
+    except (TypeError, ValueError):
+        max_tool_calls = 30
+    if current_count >= max_tool_calls:
+        logger.warning(
+            f"Tool call limit reached: {current_count}/{max_tool_calls}, ending"
+        )
+        return {
+            "messages": [
+                AIMessage(
+                    content=(
+                        f"최대 tool call 횟수({max_tool_calls}회)에 도달했습니다. "
+                        f"작업을 완료하지 못했습니다. "
+                        f"더 간단한 작업으로 나누어 다시 시도해 주세요."
+                    )
+                )
+            ],
+            "is_final": True,
+        }
+
+    messages = list(state.get("messages", []))
+
+    # ── 툴콜 한도 경고: max_tool_calls - 5 이하 남았을 때 system role 로 안내 ──
+    remaining = max_tool_calls - current_count
+    if 0 < remaining <= 5:
+        warning = (
+            f"[시스템 경고] 이번 작업의 tool call 가능 횟수가 {remaining}회 남았습니다. "
+            f"최대 {max_tool_calls}회 제한 내에서 작업을 마무리해야 합니다. "
+            f"남은 횟수 안에서 목표를 달성할 수 있도록 계획을 줄이고 행동을 최소화하세요."
+        )
+        logger.warning("Tool call warning: %s remaining", remaining)
+        messages = [SystemMessage(content=warning)] + messages
+
+    injected_all = injected_msgs + dialog_msgs
+
+    return await _invoke_llm(
+        messages, llm, max_context_messages, injected_msgs=injected_all, state=state,
+    )
+
+
+async def call_model_cron(
+    state: AgentState,
+    llm: BaseChatModel,
+    max_context_messages: int = 30,
+    max_tool_calls: int = 50,
+) -> dict[str, Any]:
+    """크론/잡 전용 LLM 호출 — intervention/dialog 없이 간결하게."""
+    current_count = state.get("tool_call_count", 0)
+    try:
+        current_count = int(current_count)
+        max_tool_calls = int(max_tool_calls)
+    except (TypeError, ValueError):
+        max_tool_calls = 50
+    if current_count >= max_tool_calls:
+        logger.warning(
+            f"Cron: tool call limit reached: {current_count}/{max_tool_calls}, ending"
+        )
+        return {
+            "messages": [
+                AIMessage(
+                    content=(
+                        f"최대 tool call 횟수({max_tool_calls}회)에 도달했습니다. "
+                        f"작업을 완료하지 못했습니다."
+                    )
+                )
+            ],
+            "is_final": True,
+        }
+
+    messages = list(state.get("messages", []))
+
+    return await _invoke_llm(
+        messages, llm, max_context_messages, injected_msgs=None, state=state,
+    )
 
 
 async def execute_tool(

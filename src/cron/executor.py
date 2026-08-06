@@ -87,8 +87,18 @@ class CronExecutor:
                 await self._db.update_cron_job(job)
 
             graph = self._create_graph(session.id, job.id)
+            from langchain_core.messages import HumanMessage, SystemMessage
+
+            state_messages: list = [HumanMessage(content=job.prompt)]
+            if notes:
+                state_messages.append(
+                    SystemMessage(
+                        content=f"[크론 메모 - 이전 실행에서 저장한 내용]\n{notes}"
+                    )
+                )
+
             state: dict[str, Any] = {
-                "messages": [],
+                "messages": state_messages,
                 "session_id": session.id,
                 "url": "",
                 "page_title": "",
@@ -98,10 +108,6 @@ class CronExecutor:
                 "is_final": False,
                 "intervention_queue": [],
             }
-
-            from langchain_core.messages import HumanMessage
-
-            state["messages"] = [HumanMessage(content=job.prompt)]
 
             try:
                 result = await asyncio.wait_for(
@@ -172,6 +178,7 @@ class CronExecutor:
                 "agent", "sliding_window_size", 30
             ),
             cron_job_id=cron_job_id,
+            max_tool_calls=self._config.get("agent", "cron_tool_calls", 50),
         )
 
     async def _save_message(

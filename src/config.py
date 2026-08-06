@@ -65,6 +65,7 @@ DEFAULTS: dict[str, dict[str, Any]] = {
         "sliding_window_size": 10,
         "cron_timeout": 300,
         "max_tool_calls": 30,
+        "cron_tool_calls": 50,
     },
     "workspace": {
         "workspace_dir": "./psjba_temp",

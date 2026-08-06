@@ -8,7 +8,12 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage
 from langgraph.graph import END, StateGraph
 
-from src.agent.nodes import assess_error, call_model, execute_tool
+from src.agent.nodes import (
+    assess_error,
+    call_model_cron,
+    call_model_user,
+    execute_tool,
+)
 from src.agent.state import AgentState
 from src.agent.tools import create_all_tools
 from src.browser.manager import PlaywrightManager
@@ -78,7 +83,7 @@ def create_agent_graph(
     graph.add_node(
         "call_model",
         partial(
-            call_model,
+            call_model_cron if cron_job_id else call_model_user,
             llm=bound_llm,
             max_context_messages=max_context_messages,
             max_tool_calls=max_tool_calls,

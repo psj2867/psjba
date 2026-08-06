@@ -69,6 +69,7 @@ FIELD_TOOLTIPS: dict[str, str] = {
     "workspace_dir": "프로그램이 읽고 쓸 수 있는 작업 폴더",
     "sliding_window_size": "슬라이딩 윈도우 크기 (user 메시지 기준)",
     "cron_timeout": "크론 작업별 최대 실행 시간 (초)",
+    "cron_tool_calls": "크론 최대 tool call 횟수",
     "font_size": "폰트 크기",
     "max_chat_lines": "대화 로그 최대 줄 수",
     "logging_level": "로그 레벨 (disabled=파일 로깅 비활성화)",
@@ -492,8 +493,11 @@ class SettingsDialog(QDialog):
         self._agent_window.setRange(10, 200)
         self._agent_cron_timeout = NoWheelSpinBox()
         self._agent_cron_timeout.setRange(30, 3600)
+        self._agent_cron_tool_calls = NoWheelSpinBox()
+        self._agent_cron_tool_calls.setRange(10, 200)
         agent_layout.addLayout(self._row("sliding_window_size:", self._agent_window, "sliding_window_size"))
         agent_layout.addLayout(self._row("cron_timeout:", self._agent_cron_timeout, "cron_timeout"))
+        agent_layout.addLayout(self._row("cron_tool_calls:", self._agent_cron_tool_calls, "cron_tool_calls"))
         main_layout.addWidget(agent_box)
 
         ui_box = self._make_section("UI", parent=page)
@@ -1438,6 +1442,7 @@ class SettingsDialog(QDialog):
 
         self._agent_window.setValue(c.get("agent", "sliding_window_size", 30))
         self._agent_cron_timeout.setValue(c.get("agent", "cron_timeout", 300))
+        self._agent_cron_tool_calls.setValue(c.get("agent", "cron_tool_calls", 50))
 
         self._ui_font_size.setValue(c.get("ui", "font_size", 14))
         self._ui_max_chat.setValue(c.get("ui", "max_chat_lines", 1000))
@@ -1485,6 +1490,7 @@ class SettingsDialog(QDialog):
 
         c.set("agent", "sliding_window_size", self._agent_window.value())
         c.set("agent", "cron_timeout", self._agent_cron_timeout.value())
+        c.set("agent", "cron_tool_calls", self._agent_cron_tool_calls.value())
 
         c.set("ui", "font_size", self._ui_font_size.value())
         c.set("ui", "max_chat_lines", self._ui_max_chat.value())
