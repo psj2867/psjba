@@ -23,6 +23,11 @@ logger = logging.getLogger("psjba.agent.nodes")
 ERROR_KEYWORDS = ("error", "failed", "exception", "not found", "timeout")
 MIN_KEEP_MESSAGES = 10
 
+# browser_execute_script no-op 패턴: 실제 JS 문장이 없는 경우
+_NOOP_SCRIPT_RE = re.compile(
+    r'^\s*(?:(?:\/\/[^\n]*|/\*[\s\S]*?\*/|<!--[\s\S]*?-->|\s*;)*\s*)*$'
+)
+
 
 def _apply_sliding_window(
     messages: list[BaseMessage],
@@ -418,6 +423,19 @@ async def execute_tool(
 
         if _is_tool_error(str(result)):
             any_error = True
+
+        # no-op script reject (모델이 생각용으로 script를 사용하는 경우 방지)
+        if tool_name == "browser_execute_script":
+            script = tool_args.get("script", "")
+            if _is_noop_script(script):
+                result = (
+                    "⚠️  No-op script rejected. This script contains only comments "
+                    "and no executable JavaScript. "
+                    "If you need to 'think', use your text output instead of "
+                    "creating fake script calls. "
+                    "browser_execute_script is for real JavaScript execution."
+                )
+                any_error = True
 
         # tool 실행 직후 dialog 체크 (override된 confirm/alert/prompt 기록)
         dialog_hint = ""
