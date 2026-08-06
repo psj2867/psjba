@@ -561,44 +561,22 @@ async def get_accessibility_tree_with_refs(
 
 # ─────────────────── Detail subtree ───────────────────
 
-async def get_subtree_detail(page: Page, ref: int, refs: dict[int, dict[str, Any]],
-                             max_depth: int = 3) -> str:
-    """특정 ref의 서브트리를 깊이 3까지 상세 포맷으로 반환한다.
+async def get_subtree_detail(page: Page, ref: int, refs: dict[int, dict[str, Any]]) -> str:
+    """특정 ref의 서브트리를 전체 a11y snapshot 포맷 기준으로 반환한다.
+
+    browser_snapshot()과 동일한 _prune_tree → _token_prune 파이프라인을 태워
+    토큰 제한 내에서 최대한 많은 정보를 보여준다.
 
     Args:
         page: Playwright Page
         ref: 대상 ref 번호
         refs: 현재 a11y refs 맵 (browser_snapshot()에서 얻은 것)
-        max_depth: 서브트리 최대 깊이
 
     Returns:
-        포맷된 서브트리 텍스트 (태그/속성 등 상세 정보 포함)
+        포맷된 서브트리 텍스트
     """
     from playwright.async_api import Error as PlaywrightError
 
-    _reset_ref_counter()
-
-    # 1) CDP full tree 얻기
-    try:
-        cdp = await page.context.new_cdp_session(page)
-        await cdp.send("Accessibility.enable")
-        full_result = await cdp.send("Accessibility.getFullAXTree", {})
-        raw_nodes = full_result.get("nodes", [])
-    except Exception as e:
-        return f"Subtree detail error (CDP): {e}"
-
-    if not raw_nodes:
-        return "(No CDP nodes available for subtree detail)"
-
-    # 2) node_map 구축
-    node_map: dict[str, dict] = {}
-    parent_map: dict[str, Optional[str]] = {}
-    for n in raw_nodes:
-        nid = n["nodeId"]
-        node_map[nid] = n
-        parent_map[nid] = n.get("parentId")
-
-    # 3) ref에 해당하는 노드 찾기: refs[ref]의 role+name으로 CDP 노드 매칭
     ref_info = refs.get(ref)
     if not ref_info:
         return f"Subtree detail: ref #{ref} not found. Call browser_snapshot() first."
@@ -606,42 +584,46 @@ async def get_subtree_detail(page: Page, ref: int, refs: dict[int, dict[str, Any
     target_role = ref_info.get("role", "")
     target_name = ref_info.get("name", "")
 
-    target_node_id: Optional[str] = None
-    for nid, n in node_map.items():
-        nrole = n.get("role", {}).get("value", "")
-        nname = ""
-        for prop in n.get("properties", []):
-            if prop.get("name") == "name":
-                nname = str(prop.get("value", {}).get("value", ""))
-                break
-        if nrole == target_role and nname == target_name:
-            target_node_id = nid
-            break
+    # Fresh snapshot + enrich
+    try:
+        snapshot = await page.accessibility.snapshot()
+    except Exception as e:
+        return f"Subtree detail error: {e}"
 
-    if not target_node_id:
+    if snapshot is None:
+        return "(No accessibility tree available)"
+
+    # ref에 해당하는 서브트리 찾기
+    subtree = _find_ref_subtree(snapshot, target_role, target_name)
+    if subtree is None:
         return (f"Subtree detail: could not locate ref #{ref} "
-                f"({target_role} \"{target_name}\") in CDP tree. "
+                f"({target_role} \"{target_name}\") in current snapshot. "
                 "Try calling browser_snapshot() again.")
 
-    # 4) 서브트리 추출
-    subtree_snapshot = _cdp_subtree_to_snapshot(target_node_id, node_map)
-
-    # 5) DOM enrichment - CDP DOM.describeNode로 태그/속성 정보 추가
-    try:
-        await _enrich_cdp_snapshot_with_dom(cdp, subtree_snapshot)
-    except Exception as e:
-        logger.debug("CDP DOM enrichment failed: %s", e)
-
-    # 6) 포맷 (detail 모드, max_depth 제한)
+    # 동일한 포맷 파이프라인 적용
     _reset_ref_counter()
-    lines = _format_tree(subtree_snapshot, detail=True, max_depth=max_depth)
+    pruned = _prune_tree(subtree) or subtree
+    result = _token_prune(pruned, max_tokens=MAX_TOKEN_ESTIMATE, refs=refs)
+    lines = _format_tree(result, refs=refs)
     text = "\n".join(lines)
-
-    if ref_info:
-        text = (f"--- Detail for ref #{ref} ({target_role} \"{target_name}\") "
-                f"depth ≤ {max_depth} ---\n{text}")
+    text = (f"--- Detail for ref #{ref} ({target_role} \"{target_name}\") ---\n{text}")
 
     return text
+
+
+def _find_ref_subtree(
+    snapshot: dict[str, Any],
+    target_role: str,
+    target_name: str,
+) -> Optional[dict[str, Any]]:
+    """snapshot에서 role+name이 일치하는 서브트리를 찾는다."""
+    if snapshot.get("role") == target_role and snapshot.get("name", "") == target_name:
+        return snapshot
+    for child in snapshot.get("children", []):
+        found = _find_ref_subtree(child, target_role, target_name)
+        if found:
+            return found
+    return None
 
 
 def _cdp_subtree_to_snapshot(node_id: str, node_map: dict[str, dict]) -> dict[str, Any]:

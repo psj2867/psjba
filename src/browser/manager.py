@@ -719,7 +719,7 @@ class PlaywrightManager:
                 return ("No a11y refs available. "
                         "Call browser_snapshot() first to get the accessibility tree.")
             page = self._ensure_page(tab_index)
-            return await get_subtree_detail(page, ref, self._a11y_refs, max_depth=3)
+            return await get_subtree_detail(page, ref, self._a11y_refs)
 
         page = self._ensure_page(tab_index)
         text, refs = await get_accessibility_tree_with_refs(page)
