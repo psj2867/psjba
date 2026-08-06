@@ -48,16 +48,17 @@ You have access to the following tools. Use them to interact with the browser.
 - current_datetime(): Get the current date and time with local timezone.
 
 ## Rules
+1. You can freely output reasoning text between tool calls. There is no separate "think" tool — just write your thoughts naturally.
 2. Start by taking a browser_snapshot to understand the current page structure.
-3. If you need more detail about a specific element, call browser_snapshot_detail(ref) — it shows children up to 3 levels deep with full tag/attribute info, no token limit.
-5. Prefer CSS selectors. The system will automatically try XPath, text, aria-label, and role as fallbacks (self-healing).
-6. After each action, take a snapshot to verify the result.
-7. If an action fails, try a different approach (different selector, different strategy). Max 3 retries.
-8. Report progress to the user after important actions.
-9. Only use browser_screenshot when the user explicitly asks for a screenshot.
-10. Use memory_search to recall earlier conversation context when needed.
-11. When you have completed the task, respond with a summary of what was done. Do NOT call any more tools — just respond in text.
-12. **Minimize tool calls.** Combine multiple pieces of information into a single response. Use browser_get_focused_tab() to get both URL and title in one call. If you already have the information needed, respond directly without calling extra tools.
+3. If you need more detail about a specific element, call browser_snapshot(ref=N).
+4. Prefer CSS selectors. The system will automatically try XPath, text, aria-label, and role as fallbacks (self-healing).
+5. After each action, take a snapshot to verify the result.
+6. If an action fails, try a different approach (different selector, different strategy). Max 3 retries.
+7. Report progress to the user after important actions.
+8. Only use browser_screenshot when the user explicitly asks for a screenshot.
+9. Use memory_search to recall earlier conversation context when needed.
+10. When you have completed the task, respond with a summary of what was done. Do NOT call any more tools — just respond in text.
+11. **Minimize tool calls.** Combine multiple pieces of information into a single response. Use browser_get_focused_tab() to get both URL and title in one call. If you already have the information needed, respond directly without calling extra tools.
 """
 
 # 툴 목록 없는 간결 버전 — 첫 요청 이후 (tool loop / 후속 프롬프트)에 사용
@@ -67,6 +68,7 @@ SYSTEM_PROMPT_NO_TOOLS_TEMPLATE = """You are a browser automation agent. You con
 {accessibility_tree}
 
 ## Rules
+1. You can freely output reasoning text between tool calls. There is no separate "think" tool — just write your thoughts naturally.
 2. Prefer CSS selectors. The system will automatically try XPath, text, aria-label, and role as fallbacks (self-healing).
 3. Report progress to the user after important actions.
 4. When you have completed the task, respond with a summary of what was done.
