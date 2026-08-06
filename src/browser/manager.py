@@ -46,12 +46,26 @@ class _TabInfo:
         except Exception:
             pass
 
-    async def check_dialog(self) -> Optional[dict]:
-        """Override된 dialog 정보를 page에서 읽어온다."""
+    async def check_dialog(self, timeout: float = 2.0) -> Optional[dict]:
+        """Override된 dialog 정보를 page에서 읽어온다.
+
+        page.evaluate 는 페이지 상태가 좋지 않으면 무기한 대기할 수 있어
+        짧은 타임아웃을 적용한다 (agent 실행이 멈추는 것 방지).
+
+        Args:
+            timeout: evaluate 최대 대기 시간 (초)
+
+        Returns:
+            대화상자 정보 dict, 또는 None
+        """
         try:
-            d = await self.page.evaluate("window.__psjba_dialog")
+            d = await self.page.evaluate(
+                "window.__psjba_dialog", timeout=timeout
+            )
             if d and not d.get("_handled"):
-                await self.page.evaluate("window.__psjba_dialog._handled = true")
+                await self.page.evaluate(
+                    "window.__psjba_dialog._handled = true", timeout=timeout
+                )
                 self.dialog = d
                 return d
         except Exception:
@@ -375,12 +389,16 @@ class PlaywrightManager:
                     return f"Switched to tab {i}: {tab.url} ({tab.title})"
             return f"Tab not found: {target}"
 
-    async def _refresh_tabs(self) -> None:
+    async def _refresh_tabs(self, refresh_focus: bool = False) -> None:
         """CDP에서 현재 페이지 목록을 다시 읽어 self._tabs를 재구성한다.
 
         외부에서 열린 탭(context.on("page")을 못 탄 경우)이나
         닫힌 탭을 반영하기 위해 매번 CDP에 직접 쿼리한다.
         기존 _TabInfo의 dialog override 상태는 보존한다.
+
+        Args:
+            refresh_focus: True면 각 페이지의 document.hasFocus()로
+                           포커스된 탭을 다시 탐지한다.
         """
         if not self._context:
             return
@@ -396,6 +414,24 @@ class PlaywrightManager:
         self._tabs = new_tabs
         if self._focused_tab_index >= len(self._tabs):
             self._focused_tab_index = max(0, len(self._tabs) - 1)
+
+        # 포커스 탭 재탐지 (document.hasFocus 로 실제 포커스된 페이지 확인)
+        if refresh_focus and self._tabs:
+            found_focused = False
+            for i, tab in enumerate(self._tabs):
+                try:
+                    has_focus = await tab.page.evaluate(
+                        "document.hasFocus()", timeout=1.0
+                    )
+                    if has_focus:
+                        self._focused_tab_index = i
+                        found_focused = True
+                        break
+                except Exception:
+                    continue
+            if not found_focused:
+                logger.debug("_refresh_tabs: no tab has focus, keeping current index=%d",
+                             self._focused_tab_index)
 
     async def browser_list_tabs(self) -> str:
         logger.info("browser_list_tabs called")
@@ -676,7 +712,7 @@ class PlaywrightManager:
         if not self._connected or not self._tabs:
             return "[Browser: not connected]"
 
-        await self._refresh_tabs()
+        await self._refresh_tabs(refresh_focus=True)
         parts = [f"[Browser: connected ({len(self._tabs)} tabs)]"]
         for i, tab in enumerate(self._tabs):
             await tab.update_info()
@@ -914,25 +950,6 @@ class PlaywrightManager:
             await self._cron_scheduler.update_job(job)
 
         return f"cron_edit: job '{job.name}' (id={job_id}) updated"
-
-    async def cron_toggle(self, job_id: str) -> str:
-        """크론 작업 활성/비활성을 전환한다."""
-        if self._db is None:
-            return "cron_toggle error: database not initialized"
-
-        job = await self._db.get_cron_job(job_id)
-        if not job:
-            return f"cron_toggle error: job '{job_id}' not found"
-
-        new_status = await self._db.toggle_cron_job(job_id)
-        if new_status is None:
-            return f"cron_toggle error: failed to toggle job '{job_id}'"
-
-        if self._cron_scheduler:
-            await self._cron_scheduler.toggle_job(job_id, new_status)
-
-        status_text = "enabled" if new_status else "disabled"
-        return f"cron_toggle: job '{job.name}' (id={job_id}) is now {status_text}"
 
     async def cron_remove(self, job_id: str) -> str:
         """크론 작업을 삭제한다."""

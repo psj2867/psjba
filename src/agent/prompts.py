@@ -32,7 +32,6 @@ You have access to the following tools. Use them to interact with the browser.
 - cron_add(name: str, schedule: str, prompt: str): Add a new cron job
 - cron_list(): List all cron jobs
 - cron_edit(job_id: str, name?: str, schedule?: str, prompt?: str): Edit a cron job
-- cron_toggle(job_id: str): Toggle cron job enable/disable
 - cron_remove(job_id: str): Remove a cron job
 
 ### One-time Job Tool
