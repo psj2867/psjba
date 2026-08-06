@@ -428,7 +428,7 @@ async def execute_tool(
         # no-op script reject (모델이 생각용으로 script를 사용하는 경우 방지)
         if tool_name == "browser_execute_script":
             script = tool_args.get("script", "")
-            if _is_noop_script(script):
+            if _NOOP_SCRIPT_RE.match(script):
                 result = (
                     "⚠️  No-op script rejected. This script contains only comments "
                     "and no executable JavaScript. "
