@@ -441,8 +441,10 @@ class PlaywrightManager:
         lines: list[str] = []
         for i, tab in enumerate(self._tabs):
             await tab.update_info()
-            marker = " ◀" if i == self._focused_tab_index else ""
-            lines.append(f"  [{i}] {tab.url} - {tab.title}{marker}")
+            if i == self._focused_tab_index:
+                lines.append(f"  [{i}] {tab.url} - {tab.title} ◀ FOCUSED")
+            else:
+                lines.append(f"  [{i}] {tab.url} - {tab.title}")
         return "Open tabs:\n" + "\n".join(lines) if lines else "No tabs open"
 
     # ─── 네비게이션 ──────────────────────────────────────────
