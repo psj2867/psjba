@@ -364,6 +364,7 @@ class PlaywrightManager:
             if 0 <= idx < len(self._tabs):
                 self._focused_tab_index = idx
                 tab = self._tabs[idx]
+                await tab.page.bring_to_front()
                 await tab.update_info()
                 return f"Switched to tab {idx}: {tab.url} ({tab.title})"
             return f"Invalid tab index: {idx} (have {len(self._tabs)} tabs)"
@@ -371,16 +372,21 @@ class PlaywrightManager:
             for i, tab in enumerate(self._tabs):
                 if tab.url == target or target in tab.url:
                     self._focused_tab_index = i
+                    await tab.page.bring_to_front()
                     await tab.update_info()
                     return f"Switched to tab {i}: {tab.url} ({tab.title})"
             return f"Tab not found: {target}"
 
-    async def _refresh_tabs(self) -> None:
+    async def _refresh_tabs(self, refresh_focus: bool = False) -> None:
         """CDP에서 현재 페이지 목록을 다시 읽어 self._tabs를 재구성한다.
 
         외부에서 열린 탭(context.on("page")을 못 탄 경우)이나
         닫힌 탭을 반영하기 위해 매번 CDP에 직접 쿼리한다.
         기존 _TabInfo의 dialog override 상태는 보존한다.
+
+        Args:
+            refresh_focus: True면 각 페이지의 document.hasFocus()로
+                          실제 포커스된 탭을 다시 탐지한다.
         """
         if not self._context:
             return
@@ -397,11 +403,24 @@ class PlaywrightManager:
         if self._focused_tab_index >= len(self._tabs):
             self._focused_tab_index = max(0, len(self._tabs) - 1)
 
+        # refresh_focus: 실제 DOM 포커스로 focused_tab_index 재탐지
+        if refresh_focus and len(self._tabs) > 1:
+            for i, tab in enumerate(self._tabs):
+                try:
+                    has_focus = await tab.page.evaluate(
+                        "document.hasFocus()", timeout=1000
+                    )
+                    if has_focus:
+                        self._focused_tab_index = i
+                        break
+                except Exception:
+                    continue
+
     async def browser_list_tabs(self) -> str:
         logger.info("browser_list_tabs called")
         """현재 열린 탭 목록을 반환한다."""
         self._ensure_connected()
-        await self._refresh_tabs()
+        await self._refresh_tabs(refresh_focus=True)
         lines: list[str] = []
         for i, tab in enumerate(self._tabs):
             await tab.update_info()
