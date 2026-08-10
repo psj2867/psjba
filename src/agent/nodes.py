@@ -215,11 +215,26 @@ async def _invoke_llm(
     call_duration = time.monotonic() - call_start
     finish_str = _extract_finish_reason(response)
 
+    # token usage
+    meta = getattr(response, "response_metadata", {}) or {}
+    usage = meta.get("token_usage", {}) or {}
+    tokens_str = ""
+    if usage:
+        parts = []
+        if "prompt_tokens" in usage:
+            parts.append(f"in={usage['prompt_tokens']}")
+        if "completion_tokens" in usage:
+            parts.append(f"out={usage['completion_tokens']}")
+        if "total_tokens" in usage:
+            parts.append(f"total={usage['total_tokens']}")
+        if parts:
+            tokens_str = " [" + ", ".join(parts) + "]"
+
     has_tool_calls = hasattr(response, "tool_calls") and response.tool_calls
     if has_tool_calls:
         tool_names = [tc["name"] for tc in response.tool_calls]
         log_msg = (
-            f"LLM response ({call_duration:.1f}s): "
+            f"LLM response ({call_duration:.1f}s){tokens_str}: "
             f"{len(response.tool_calls)} tool calls "
             f"→ {tool_names}"
         )
@@ -229,7 +244,7 @@ async def _invoke_llm(
     else:
         content = str(response.content or "").strip()
         log_msg = (
-            f"LLM response ({call_duration:.1f}s): "
+            f"LLM response ({call_duration:.1f}s){tokens_str}: "
             f"\"{content[:200]}\""
         )
         if finish_str:
