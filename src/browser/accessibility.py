@@ -426,13 +426,6 @@ async def format_accessibility_tree(
 
     _reset_ref_counter()
     tree = await _prune_tree(snapshot) or {"role": "Root", "children": []}
-
-    if logger.isEnabledFor(logging.DEBUG):
-        # Debug 모드: collapse 없이 전체 트리 출력
-        lines = await _format_tree(tree, refs=refs, max_depth=999)
-        text = "\n".join(lines)
-        return text
-
     tree = await _token_prune(tree, max_tokens, refs=refs)
 
     lines = await _format_tree(tree, refs=refs, max_depth=30)
