@@ -503,13 +503,6 @@ class PlaywrightManager:
                 except Exception:
                     continue
 
-        # TODO: 디버그 로그 — 탭 상태 확인용, 안정화 후 제거
-        lines = [
-            f"  Tab {i}: {t.page.url}{' ◀ FOCUSED' if i == self._focused_tab_index else ''}"
-            for i, t in enumerate(self._tabs)
-        ]
-        logger.debug("Tabs refreshed (%d):\n%s", len(self._tabs), "\n".join(lines))
-
     async def browser_list_tabs(self) -> str:
         logger.info("browser_list_tabs called")
         """현재 열린 탭 목록을 반환한다."""
