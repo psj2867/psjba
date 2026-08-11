@@ -9,6 +9,7 @@ from uuid import uuid4
 from src.config import Config
 from src.database import Database
 from src.models.schemas import CronJob, Message, Session
+from src.browser.manager import set_session_id as _set_session_context
 
 logger = logging.getLogger("psjba.cron.executor")
 
@@ -87,6 +88,7 @@ class CronExecutor:
                 await self._db.update_cron_job(job)
 
             graph = self._create_graph(session.id, job.id)
+            _set_session_context.set(session.id)
             from langchain_core.messages import HumanMessage, SystemMessage
 
             state_messages: list = [HumanMessage(content=job.prompt)]
