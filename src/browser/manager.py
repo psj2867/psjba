@@ -305,22 +305,12 @@ class PlaywrightManager:
     async def disconnect(self) -> str:
         """CDP 연결만 해제한다 (Chrome 프로세스는 유지).
 
-        연결 종료 시 확장도 제거한다.
+        확장은 브라우저 세션에 남지만, 다음 connect() 시
+        Extensions.getExtensions로 자동 재탐지된다.
         """
         if not self._connected:
             logger.debug("disconnect() called but not connected")
             return "Not connected"
-
-        # 연결 종료 전에 로드된 확장 제거
-        if self._ext_available and self._ext_id:
-            try:
-                browser_cdp = await self._browser.new_browser_cdp_session()
-                await browser_cdp.send("Extensions.unloadExtension", {
-                    "id": self._ext_id,
-                })
-                logger.info("Extension unloaded: id=%s", self._ext_id)
-            except Exception:
-                logger.debug("Extensions.unloadExtension failed, ignoring")
 
         logger.info("Disconnecting from Chrome CDP...")
         try:
