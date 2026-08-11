@@ -426,7 +426,7 @@ async def _handle_prompt(
 
         # 브라우저 현재 상태 수집 (연결/탭/포커스) -> developer 메시지로 추가
         browser_ctx = await manager.get_browser_context()
-        logger.info("Browser context: %s", browser_ctx[:120])
+        logger.info("Browser context:\n%s", browser_ctx)
 
         history_developer_msg = None
         if browser_ctx and browser_ctx != "[Browser: not connected]":
