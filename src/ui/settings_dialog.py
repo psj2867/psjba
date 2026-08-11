@@ -1435,7 +1435,7 @@ class SettingsDialog(QDialog):
 
         self._chrome_path.setText(c.get("chrome", "path", ""))
         self._chrome_user_data.setText(c.get("chrome", "user_data_dir", ""))
-        self._chrome_headless.setChecked(c.get("chrome", "headless", "false").lower() in ("true", "1", "yes"))
+        self._chrome_headless.setChecked(bool(c.get("chrome", "headless", False)))
 
         self._sqlite_path.setText(c.get("sqlite", "path", ""))
         self._ws_dir.setText(c.get("workspace", "workspace_dir", ""))
