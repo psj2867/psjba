@@ -379,6 +379,8 @@ class PlaywrightManager:
         page-level session을 사용한다.
         """
         if not self._ext_available or not self._ext_id or not self._tabs:
+            logger.debug("get_active_tab_url: skip (ext_available=%s ext_id=%s tabs=%d)",
+                         self._ext_available, self._ext_id, len(self._tabs))
             return None
         try:
             page_cdp = await self._context.new_cdp_session(self._tabs[0].page)
@@ -387,7 +389,10 @@ class PlaywrightManager:
                 "storageArea": "session",
                 "keys": ["activeTabUrl"],
             })
-            return data.get("data", {}).get("activeTabUrl")
+            result = data.get("data", {}).get("activeTabUrl")
+            logger.debug("get_active_tab_url: ext_id=%s result=%s",
+                         self._ext_id, result)
+            return result
         except Exception as e:
             logger.debug("get_active_tab_url error: %s", e)
             return None
