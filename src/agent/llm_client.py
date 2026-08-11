@@ -41,7 +41,6 @@ class LLMClient:
             max_retries=MAX_RETRIES,
             default_headers={
                 "X-Title": "psjba",
-                "HTTP-Referer": "https://psjba.app",
             },
         )
 
