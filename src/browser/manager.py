@@ -127,6 +127,9 @@ class PlaywrightManager:
         self._a11y_refs: dict[str, dict[int, dict[str, Any]]] = {}
         self._db: Optional[Any] = None
         self._cron_scheduler: Optional[Any] = None
+        # 확장 프로그램 (포커스 탭 감지)
+        self._ext_id: Optional[str] = None
+        self._ext_available: bool = False
 
     @property
     def is_connected(self) -> bool:
@@ -280,6 +283,17 @@ class PlaywrightManager:
             await self._inject_dialog_override()
 
             self._connected = True
+            
+            # 확장 프로그램 로드 (포커스 탭 감지)
+            await self._setup_extension()
+            if not self._ext_available:
+                logger.warning(
+                    "Focus detection extension not loaded — "
+                    "tab switch tracking will be incomplete. "
+                    "Ensure --load-extension=chrome/extension or "
+                    "enable the Extensions CDP domain."
+                )
+
             url = self.focused_page.url if self.focused_page else "about:blank"
             logger.info("Chrome CDP connected (%d tabs, url=%s)", len(self._tabs), url)
             return "Chrome connected"
@@ -316,6 +330,76 @@ class PlaywrightManager:
         self._tabs.clear()
         self._focused_tab_index = 0
         self._connected = False
+        self._ext_id = None
+        self._ext_available = False
+
+    async def _setup_extension(self) -> None:
+        """확장 프로그램을 로드하여 포커스 탭 감지를 설정한다.
+
+        Fallback 순서:
+          1. --load-extension으로 이미 로드된 확장 확인
+          2. Extensions.loadUnpacked로 런타임 로드
+          3. 둘 다 실패 → 경고 (포커스 탐지 불가)
+        """
+        ext_path = str(
+            Path(__file__).resolve().parent.parent.parent / "chrome" / "extension"
+        )
+        ext_path = os.path.normpath(ext_path)
+
+        if not os.path.isdir(ext_path):
+            logger.warning("Extension directory not found: %s", ext_path)
+            return
+
+        try:
+            browser_cdp = await self._browser.new_browser_cdp_session()
+        except Exception as e:
+            logger.warning("Extension setup: CDP session unavailable (%s)", e)
+            return
+
+        # 1) 이미 로드된 unpacked 확장 중에서 찾기
+        try:
+            exts = await browser_cdp.send("Extensions.getExtensions")
+            for ext in exts.get("extensions", []):
+                ep = os.path.normpath(ext.get("path", ""))
+                if ep == ext_path:
+                    self._ext_id = ext["id"]
+                    self._ext_available = True
+                    logger.info(
+                        "Extension already loaded: id=%s path=%s",
+                        self._ext_id, ext_path,
+                    )
+                    return
+        except Exception as e:
+            logger.debug("Extensions.getExtensions not available: %s", e)
+
+        # 2) Extensions.loadUnpacked로 런타임 로드
+        try:
+            result = await browser_cdp.send("Extensions.loadUnpacked", {
+                "path": ext_path,
+            })
+            self._ext_id = result.get("id")
+            self._ext_available = True
+            logger.info("Extension loaded via loadUnpacked: id=%s", self._ext_id)
+        except Exception as e:
+            logger.warning(
+                "Extension load failed — focus detection disabled: %s", e,
+            )
+
+    async def _get_active_tab_url(self) -> Optional[str]:
+        """확장 storage.session에서 activeTabUrl을 읽어온다."""
+        if not self._ext_available or not self._ext_id:
+            return None
+        try:
+            browser_cdp = await self._browser.new_browser_cdp_session()
+            data = await browser_cdp.send("Extensions.getStorageItems", {
+                "id": self._ext_id,
+                "storageArea": "session",
+                "keys": ["activeTabUrl"],
+            })
+            return data.get("data", {}).get("activeTabUrl")
+        except Exception as e:
+            logger.debug("get_active_tab_url error: %s", e)
+            return None
 
     def _ensure_connected(self) -> None:
         if not self._connected:
@@ -435,6 +519,15 @@ class PlaywrightManager:
         self._tabs = new_tabs
         if self._focused_tab_index >= len(self._tabs):
             self._focused_tab_index = max(0, len(self._tabs) - 1)
+
+        # 확장 프로그램으로 active tab URL 읽어서 포커스 보정
+        if self._ext_available:
+            active_url = await self._get_active_tab_url()
+            if active_url:
+                for i, tab in enumerate(self._tabs):
+                    if tab.url == active_url:
+                        self._focused_tab_index = i
+                        break
 
         # TODO: 디버그 로그 — 탭 상태 확인용, 안정화 후 제거
         lines = [
