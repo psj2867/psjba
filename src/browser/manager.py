@@ -1,6 +1,7 @@
 """PlaywrightManager — Playwright 브라우저 제어 서비스 클래스 (핵심)."""
 
 import asyncio
+import contextvars
 import json
 import logging
 import os
@@ -27,6 +28,14 @@ from src.chrome.launcher import ChromeLauncher
 logger = logging.getLogger("psjba.browser.manager")
 
 SCREENSHOT_DATE_FMT = "%Y%m%d-%H%M%S"
+
+# asyncio task별 현재 세션 ID (execute_tool에서 설정, cron/agent 간 격리)
+_current_session_id: contextvars.ContextVar[str] = contextvars.ContextVar("session_id", default="")
+
+
+def set_session_id(sid: str) -> None:
+    """현재 asyncio task에 세션 ID를 설정한다 (a11y refs 격리용)."""
+    _current_session_id.set(sid)
 
 
 class _TabInfo:
@@ -100,8 +109,8 @@ class PlaywrightManager:
         self._tabs: list[_TabInfo] = []
         self._focused_tab_index: int = 0
         self._connected: bool = False
-        # 마지막 접근성 스냅샷의 ref 매핑
-        self._a11y_refs: dict[int, dict[str, Any]] = {}
+        # session_id → refs 매핑 (cron/agent 간 격리)
+        self._a11y_refs: dict[str, dict[int, dict[str, Any]]] = {}
         self._db: Optional[Any] = None
         self._cron_scheduler: Optional[Any] = None
 
@@ -114,6 +123,16 @@ class PlaywrightManager:
         if 0 <= self._focused_tab_index < len(self._tabs):
             return self._tabs[self._focused_tab_index].page
         return None
+
+    def _get_session_refs(self, session_id: str = "") -> dict[int, dict[str, Any]]:
+        """현재 task의 session에 귀속된 a11y refs를 반환한다."""
+        sid = session_id or _current_session_id.get()
+        return self._a11y_refs.get(sid, {})
+
+    def _set_session_refs(self, refs: dict[int, dict[str, Any]], session_id: str = "") -> None:
+        """현재 task의 session에 a11y refs를 저장한다."""
+        sid = session_id or _current_session_id.get()
+        self._a11y_refs[sid] = refs
 
     def update_config(
         self,
@@ -735,15 +754,16 @@ class PlaywrightManager:
             ref: 상세 조회할 [#N] ref 번호 (None이면 전체 트리)
         """
         if ref is not None:
-            if not self._a11y_refs:
+            session_refs = self._get_session_refs()
+            if not session_refs:
                 return ("No a11y refs available. "
                         "Call browser_snapshot() first to get the accessibility tree.")
             page = self._ensure_page(tab_index)
-            return await get_subtree_detail(page, ref, self._a11y_refs)
+            return await get_subtree_detail(page, ref, session_refs)
 
         page = self._ensure_page(tab_index)
         text, refs = await get_accessibility_tree_with_refs(page)
-        self._a11y_refs = refs
+        self._set_session_refs(refs)
         if refs:
             logger.info("a11y snapshot: %d interactive refs", len(refs))
         return text
@@ -755,7 +775,8 @@ class PlaywrightManager:
             ref: browser_snapshot() 결과에 표시된 [#N] 번호
             tab_index: 대상 탭 인덱스 (None이면 포커스 탭)
         """
-        node = self._a11y_refs.get(ref)
+        session_refs = self._get_session_refs()
+        node = session_refs.get(ref)
         if node is None:
             return (f"Click by ref failed: ref #{ref} not found. "
                     "Call browser_snapshot() first to refresh the tree.")

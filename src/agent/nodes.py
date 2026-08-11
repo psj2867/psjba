@@ -17,6 +17,7 @@ from langchain_core.language_models import BaseChatModel
 
 from src.agent.prompts import build_system_prompt
 from src.agent.state import AgentState
+from src.browser.manager import set_session_id as _set_current_session
 
 logger = logging.getLogger("psjba.agent.nodes")
 
@@ -424,6 +425,9 @@ async def execute_tool(
                 result = f"Unknown tool: {tool_name}"
                 any_error = True
             else:
+                # session context 설정 (a11y refs session 격리)
+                if manager is not None:
+                    _set_current_session(state.get("session_id", ""))
                 result = await tool_func.ainvoke(tool_args)
         except Exception as e:
             result = f"Tool execution error ({tool_name}): {e}"
