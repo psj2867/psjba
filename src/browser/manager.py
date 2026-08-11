@@ -372,12 +372,19 @@ class PlaywrightManager:
             )
 
     async def _get_active_tab_url(self) -> Optional[str]:
-        """확장 storage.session에서 activeTabUrl을 읽어온다."""
+        """확장 storage.session에서 activeTabUrl을 읽어온다.
+
+        CDP Extensions.getStorageItems는 browser context가 연결된
+        session이 필요하므로, page-level CDP session을 사용한다.
+        """
         if not self._ext_available or not self._ext_id:
             return None
+        if not self._tabs:
+            return None
         try:
-            browser_cdp = await self._browser.new_browser_cdp_session()
-            data = await browser_cdp.send("Extensions.getStorageItems", {
+            # page-level session (browser context가 연결됨)
+            page_cdp = await self._context.new_cdp_session(self._tabs[0].page)
+            data = await page_cdp.send("Extensions.getStorageItems", {
                 "id": self._ext_id,
                 "storageArea": "session",
                 "keys": ["activeTabUrl"],
