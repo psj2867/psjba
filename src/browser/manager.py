@@ -386,30 +386,39 @@ class PlaywrightManager:
             )
 
     async def _get_active_tab_url(self) -> Optional[str]:
-        """확장 storage.session에서 activeTabUrl을 읽어온다.
+        """확장 storage에서 activeTabUrl을 읽어온다.
 
         CDP Extensions.getStorageItems 사용.
-        browser-level session은 browser context가 없어 실패하므로
-        page-level session을 사용한다.
+        browser-level -> page-level session, session -> local storage
+        순서로 fallback.
         """
         if not self._ext_available or not self._ext_id or not self._tabs:
             logger.debug("get_active_tab_url: skip (ext_available=%s ext_id=%s tabs=%d)",
                          self._ext_available, self._ext_id, len(self._tabs))
             return None
-        try:
-            page_cdp = await self._context.new_cdp_session(self._tabs[0].page)
-            data = await page_cdp.send("Extensions.getStorageItems", {
-                "id": self._ext_id,
-                "storageArea": "session",
-                "keys": ["activeTabUrl"],
-            })
-            result = data.get("data", {}).get("activeTabUrl")
-            logger.debug("get_active_tab_url: ext_id=%s result=%s",
-                         self._ext_id, result)
-            return result
-        except Exception as e:
-            logger.debug("get_active_tab_url error: %s", e)
-            return None
+
+        for label, make_session in [
+            ("browser", lambda: self._browser.new_browser_cdp_session()),
+            ("page", lambda: self._context.new_cdp_session(self._tabs[0].page)),
+        ]:
+            for area in ("session", "local"):
+                try:
+                    cdp = await make_session()
+                    data = await cdp.send("Extensions.getStorageItems", {
+                        "id": self._ext_id,
+                        "storageArea": area,
+                        "keys": ["activeTabUrl"],
+                    })
+                    result = data.get("data", {}).get("activeTabUrl")
+                    logger.debug("get_active_tab_url: session=%s area=%s ext_id=%s result=%s",
+                                 label, area, self._ext_id, result)
+                    if result:
+                        return result
+                except Exception as e:
+                    logger.debug("get_active_tab_url: session=%s area=%s error=%s",
+                                 label, area, e)
+
+        return None
 
     def _ensure_connected(self) -> None:
         if not self._connected:
