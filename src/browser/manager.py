@@ -372,24 +372,83 @@ class PlaywrightManager:
             )
 
     async def _get_active_tab_url(self) -> Optional[str]:
-        """확장 storage.session에서 activeTabUrl을 읽어온다.
+        """확장 background service worker에 attach하여 activeTabUrl을 읽어온다.
 
-        CDP Extensions.getStorageItems는 browser context가 연결된
-        session이 필요하므로, page-level CDP session을 사용한다.
+        Target.attachToTarget + Runtime.evaluate로 chrome.storage.session에
+        직접 접근한다 (Extensions.getStorageItems 대체).
         """
         if not self._ext_available or not self._ext_id:
             return None
-        if not self._tabs:
-            return None
+
         try:
-            # page-level session (browser context가 연결됨)
-            page_cdp = await self._context.new_cdp_session(self._tabs[0].page)
-            data = await page_cdp.send("Extensions.getStorageItems", {
-                "id": self._ext_id,
-                "storageArea": "session",
-                "keys": ["activeTabUrl"],
+            browser_cdp = await self._browser.new_browser_cdp_session()
+
+            # 1) 확장의 service worker target 찾기
+            targets = await browser_cdp.send("Target.getTargets")
+            ext_target = None
+            for ti in targets.get("targetInfos", targets.get("targets", [])):
+                ttype = ti.get("type", "")
+                url = ti.get("url", "")
+                # MV3: service_worker, MV2 fallback: page with chrome-extension://
+                if (ttype == "service_worker" and self._ext_id in url) or \
+                   (ttype == "page" and url.startswith(f"chrome-extension://{self._ext_id}")):
+                    ext_target = ti
+                    break
+
+            if not ext_target:
+                logger.debug("get_active_tab_url: extension target not found")
+                return None
+
+            # 2) attach + sendMessageToTarget 으로 Runtime.evaluate
+            attach = await browser_cdp.send("Target.attachToTarget", {
+                "targetId": ext_target["targetId"],
+                "flatten": False,
             })
-            return data.get("data", {}).get("activeTabUrl")
+            session_id = attach.get("sessionId")
+            if not session_id:
+                logger.debug("get_active_tab_url: no sessionId from attach")
+                return None
+
+            # receivedMessageFromTarget 이벤트를 한 번 받기 위한 준비
+            future: asyncio.Future = asyncio.get_event_loop().create_future()
+
+            def on_msg(event_data: dict) -> None:
+                if not future.done():
+                    future.set_result(event_data)
+
+            browser_cdp.on("Target.receivedMessageFromTarget", on_msg)
+            try:
+                msg = json.dumps({
+                    "id": 1,
+                    "method": "Runtime.evaluate",
+                    "params": {
+                        "expression": (
+                            "new Promise(r => "
+                            "chrome.storage.session.get(['activeTabUrl'], "
+                            "v => r(v.activeTabUrl || ''))"
+                            ")"
+                        ),
+                        "awaitPromise": True,
+                    },
+                })
+                await browser_cdp.send("Target.sendMessageToTarget", {
+                    "sessionId": session_id,
+                    "message": msg,
+                })
+
+                raw = await asyncio.wait_for(future, timeout=5.0)
+                msg_data = json.loads(raw.get("message", "{}"))
+                result = msg_data.get("result", {})
+                if result.get("type") == "string":
+                    val = result.get("value")
+                    return str(val) if val else None
+                return None
+            finally:
+                browser_cdp.remove_listener("Target.receivedMessageFromTarget", on_msg)
+
+        except asyncio.TimeoutError:
+            logger.debug("get_active_tab_url: timeout waiting for response")
+            return None
         except Exception as e:
             logger.debug("get_active_tab_url error: %s", e)
             return None
