@@ -134,6 +134,11 @@ class PlaywrightManager:
         sid = session_id or _current_session_id.get()
         self._a11y_refs[sid] = refs
 
+    def _clear_session_refs(self, session_id: str = "") -> None:
+        """현재 task의 session a11y refs를 제거한다 (메모리 관리)."""
+        sid = session_id or _current_session_id.get()
+        self._a11y_refs.pop(sid, None)
+
     def update_config(
         self,
         cdp_host: Optional[str] = None,
@@ -748,6 +753,7 @@ class PlaywrightManager:
         """특정 탭의 접근성 트리를 반환하고 ref 매핑을 저장한다.
 
         ref가 주어지면 해당 ref의 상세 서브트리(3 depth, detail 모드)를 반환한다.
+        ref가 없는 전체 트리 요청 시에는 이전 refs + counter를 초기화한다 (메모리 관리).
 
         Args:
             tab_index: 대상 탭 인덱스 (None이면 포커스 탭)
@@ -760,6 +766,11 @@ class PlaywrightManager:
                         "Call browser_snapshot() first to get the accessibility tree.")
             page = self._ensure_page(tab_index)
             return await get_subtree_detail(page, ref, session_refs)
+
+        # 전체 트리 요청: 이전 refs + counter 초기화
+        self._clear_session_refs()
+        from src.browser.accessibility import _reset_ref_counter
+        _reset_ref_counter()
 
         page = self._ensure_page(tab_index)
         text, refs = await get_accessibility_tree_with_refs(page)
