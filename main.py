@@ -13,6 +13,7 @@ import signal
 import sys
 import traceback
 from pathlib import Path
+from typing import Any, AsyncIterator, Optional
 
 import qasync
 
@@ -40,10 +41,20 @@ CONFIG_PATH = "config.ini"
 
 _CANCELLED_MSG = "⚠️ 사용자가 실행을 취소했습니다."
 
+_DEFAULT_AGENT_TIMEOUT = 300  # 메인 세션 그래프 타임아웃 (초)
+
 
 def _finish_prompt_cancelled(window: "MainWindow") -> None:
     """stop/cancel 시 UI 정리: 스켈론 교체 + 입력창 복구."""
     window._chat.replace_thinking_skeleton(_CANCELLED_MSG)
+    window._prompt.set_running(False)
+
+
+def _show_error_in_ui(window: "MainWindow", title: str, exc: Optional[BaseException]) -> None:
+    """에러 메시지를 UI 채팅에 표시하고 입력창을 복구한다."""
+    detail = f"({type(exc).__name__}: {exc})" if exc else ""
+    msg = f"{title} {detail}" if detail else title
+    window._chat.replace_thinking_skeleton(msg)
     window._prompt.set_running(False)
 
 # ─── 크래시 진단 후크 ───────────────────────────────────────
@@ -334,6 +345,27 @@ async def run(config: Config) -> None:
         logger.info("Application stopped")
 
 
+async def _async_iter_timeout(
+    aiterable: Any,
+    timeout: float,
+    timeout_msg: str = "Async iteration timed out",
+) -> AsyncIterator[Any]:
+    """aysnc generator/async iterable에 타임아웃을 적용한다.
+
+    각 yield 사이의 간격만 타임아웃 체크 (전체 실행 시간이 아님).
+    """
+    it = aiterable.__aiter__()
+    while True:
+        try:
+            val = await asyncio.wait_for(it.__anext__(), timeout=timeout)
+            yield val
+        except StopAsyncIteration:
+            break
+        except asyncio.TimeoutError:
+            logger.error(timeout_msg)
+            raise
+
+
 async def _handle_prompt(
     config: Config,
     db: Database,
@@ -433,19 +465,15 @@ async def _handle_prompt(
         input_msg_count = len(state["messages"])
 
         try:
-            # astream 사용: 각 노드 실행 사이에 이벤트 루프에 yield 하여
-            # Qt UI 이벤트가 처리될 기회를 준다 (UI 멈춤 방지)
-            # 매 이벤트마다 AI content를 확인하여 실시간 표시한다.
+            # astream 사용 + 타임아웃 (메인 세션도 무한 대기 방지)
             # 각 이벤트 대기를 asyncio.wait_for 로 감싸 도구/LLM hang 시
             # 무기한 대기하지 않고 타임아웃으로 복구한다.
             final_state = None
-            graph_timeout = int(config.get("agent", "graph_timeout", 300))
-            stream = graph.astream(state, stream_mode="values")
-            while True:
-                try:
-                    event = await asyncio.wait_for(stream.__anext__(), timeout=graph_timeout)
-                except StopAsyncIteration:
-                    break
+            async for event in _async_iter_timeout(
+                graph.astream(state, stream_mode="values"),
+                timeout=_DEFAULT_AGENT_TIMEOUT,
+                timeout_msg="Agent graph execution timed out",
+            ):
                 final_state = event
                 # 실시간 AI content 표시 (툴 콜 없이 알려주는 텍스트)
                 try:
@@ -478,10 +506,13 @@ async def _handle_prompt(
             logger.warning("Agent execution cancelled (graph astream)")
             _finish_prompt_cancelled(window)
             return
+        except asyncio.TimeoutError:
+            logger.error("Agent graph execution timed out")
+            _show_error_in_ui(window, "⏱️ 실행 시간 초과 (300초)", None)
+            return
         except Exception as e:
-            logger.error(f"Agent execution failed: {e}", exc_info=True)
-            window._chat.update_thinking("⚠️ 에이전트 실행 중 오류 발생")
-            window._prompt.set_running(False)
+            logger.error("Agent execution failed", exc_info=True)
+            _show_error_in_ui(window, "⚠️ 에이전트 실행 중 오류", e)
             return
 
         # 사용자가 stop 요청한 경우 → 부분 결과 처리 안 함
@@ -537,10 +568,12 @@ async def _handle_prompt(
     except asyncio.CancelledError:
         logger.warning("Agent initialization cancelled — shutdown in progress")
         raise
+    except asyncio.TimeoutError:
+        logger.error("Agent LLM initialization timed out")
+        _show_error_in_ui(window, "⏱️ LLM 초기화 시간 초과", None)
     except Exception as e:
         logger.error(f"Agent initialization failed: {e}", exc_info=True)
-        window._chat.update_thinking("⚠️ 에이전트 초기화 중 오류 발생")
-        window._prompt.set_running(False)
+        _show_error_in_ui(window, "⚠️ 에이전트 초기화 중 오류", e)
     finally:
         if llm_client is not None:
             await llm_client.close()
