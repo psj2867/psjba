@@ -411,28 +411,36 @@ async def execute_tool(
         }
 
     tool_messages: list[BaseMessage] = []
-    any_error = False
+    batch_has_error = False
+    # 이미 처리된 dialog 중복 방지 (5번 수정)
+    seen_dialogs: set[tuple] = set()
+
+    # session context 설정 — batch당 한 번만 (4번 수정)
+    if manager is not None:
+        _set_current_session(state.get("session_id", ""))
 
     for tc in last_ai.tool_calls:
         tool_name = tc["name"]
         tool_args = tc.get("args", {})
         tool_id = tc["id"]
+        tool_error = False  # 1번 수정: per-tool-call error tracking
 
         start = time.monotonic()
         try:
             tool_func = tools.get(tool_name)
             if tool_func is None:
                 result = f"Unknown tool: {tool_name}"
-                any_error = True
+                tool_error = True
             else:
-                # session context 설정 (a11y refs session 격리)
-                if manager is not None:
-                    _set_current_session(state.get("session_id", ""))
                 result = await tool_func.ainvoke(tool_args)
         except Exception as e:
             result = f"Tool execution error ({tool_name}): {e}"
-            any_error = True
+            tool_error = True
         duration_ms = int((time.monotonic() - start) * 1000)
+
+        # 3번 수정: except에서 못 잡은 문자열 에러만 _is_tool_error로 체크
+        if not tool_error and _is_tool_error(str(result)):
+            tool_error = True
 
         if logger.isEnabledFor(logging.DEBUG):
             logger.info(
@@ -447,10 +455,7 @@ async def execute_tool(
                 f"({duration_ms}ms)"
             )
 
-        if _is_tool_error(str(result)):
-            any_error = True
-
-        # no-op script reject (모델이 생각용으로 script를 사용하는 경우 방지)
+        # no-op script reject
         if tool_name == "browser_execute_script":
             script = tool_args.get("script", "")
             if _NOOP_SCRIPT_RE.match(script):
@@ -461,22 +466,25 @@ async def execute_tool(
                     "creating fake script calls. "
                     "browser_execute_script is for real JavaScript execution."
                 )
-                any_error = True
+                tool_error = True
 
-        # tool 실행 직후 dialog 체크 (override된 confirm/alert/prompt 기록)
+        # tool 실행 직후 dialog 체크 (5번 수정: 중복 방지)
         dialog_hint = ""
         if manager and hasattr(manager, "check_all_tabs_dialog"):
             try:
                 dialogs = await manager.check_all_tabs_dialog()
                 if dialogs:
-                    # 여러 탭 dialog를 큐로 관리
                     pending_dialogs = state.setdefault("pending_dialogs", [])
                     for d in dialogs:
-                        pending_dialogs.append(d)
-                    dialog_hint = (
-                        f" ⚠️Dialog: tab[{dialogs[0]['tab_index']}] "
-                        f"{dialogs[0]['type']} '{dialogs[0].get('message','')}'"
-                    )
+                        d_key = (d.get("tab_index"), d.get("type"), d.get("message", ""))
+                        if d_key not in seen_dialogs:
+                            seen_dialogs.add(d_key)
+                            pending_dialogs.append(d)
+                    if dialogs:
+                        dialog_hint = (
+                            f" ⚠️Dialog: tab[{dialogs[0]['tab_index']}] "
+                            f"{dialogs[0]['type']} '{dialogs[0].get('message','')}'"
+                        )
             except Exception:
                 pass
 
@@ -485,7 +493,7 @@ async def execute_tool(
                 "tool": tool_name,
                 "result": str(result) + dialog_hint,
                 "duration_ms": duration_ms,
-                "status": "error" if any_error else "success",
+                "status": "error" if tool_error else "success",  # 1번 수정: per-tool
             },
             ensure_ascii=False,
         )
@@ -493,7 +501,10 @@ async def execute_tool(
             ToolMessage(content=tool_msg_content, tool_call_id=tool_id)
         )
 
-    new_error_count = error_count + 1 if any_error else 0
+        if tool_error:
+            batch_has_error = True  # 배치 단위 error_count용
+
+    new_error_count = error_count + 1 if batch_has_error else 0  # 2번 유지
 
     # tool call 횟수 증가 및 로그
     current_tool_count = state.get("tool_call_count", 0)
@@ -508,13 +519,13 @@ async def execute_tool(
         "tool_call_count": tool_call_count,
     }
 
-    if any_error:
+    if batch_has_error:
         updates["error_count"] = new_error_count
     else:
         updates["error_count"] = 0
 
     screenshot_path = state.get("last_screenshot_path", "")
-    if not any_error:
+    if not batch_has_error:
         for tm in tool_messages:
             try:
                 data = json.loads(tm.content)
