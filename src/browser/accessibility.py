@@ -26,6 +26,24 @@ _INTERACTIVE_ROLES = {
 # 타이핑 가능한 role
 _TYPE_ROLES = {"textbox", "searchbox", "combobox", "spinbutton"}
 
+# 시맨틱 섹션 라벨 (LLM이 페이지 구조를 빠르게 파악)
+_LANDMARK_LABELS = {
+    "navigation": "Nav",
+    "form": "Form",
+    "dialog": "Dialog",
+    "main": "Main",
+    "banner": "Header",
+    "contentinfo": "Footer",
+    "complementary": "Sidebar",
+    "search": "Search",
+    "tabpanel": "TabPanel",
+    "region": "Section",
+    "article": "Article",
+    "alertdialog": "AlertDialog",
+    "toolbar": "Toolbar",
+    "menubar": "MenuBar",
+}
+
 
 def _reset_ref_counter() -> None:
     """ref 번호 카운터를 초기화한다."""
@@ -48,6 +66,34 @@ def _is_type_role(role: str) -> bool:
 
 def _estimate_tokens(text: str) -> int:
     return len(text) // CHARS_PER_TOKEN + 1
+
+
+def _build_child_summary(children: list[dict[str, Any]]) -> list[str]:
+    """자식 노드 리스트의 간결한 요약 문자열 리스트를 생성한다.
+
+    interactive 자식은 [role] "name", 비-interactive는 role로 표시,
+    중복은 ×N으로 집계한다.
+    """
+    from collections import Counter
+    items: list[str] = []
+    for c in children:
+        role = c.get("role", "")
+        name = c.get("name", "")
+        if _is_interactive(role) and name:
+            n = name[:30]
+            items.append(f"[{role}] \"{n}\"")
+        elif name:
+            items.append(role or "?")
+        else:
+            items.append(role or "?")
+    counted: list[tuple[str, int]] = Counter(items).most_common()
+    result: list[str] = []
+    for item, cnt in counted:
+        if cnt > 1:
+            result.append(f"{item} ×{cnt}")
+        else:
+            result.append(item)
+    return result
 
 
 def _format_node(
@@ -75,7 +121,8 @@ def _format_node(
 
     label_parts: list[str] = []
     if role:
-        label_parts.append(f"[{role}]")
+        semantic = _LANDMARK_LABELS.get(role.lower())
+        label_parts.append(f"[{semantic or role}]")
 
     # 태그 정보 (detail 모드 또는 interactive 요소)
     tag = node.get("tag", "")
@@ -116,11 +163,15 @@ def _format_node(
         d = description[:80]
         label_parts.append(f"desc={d}")
 
-    # 접힌(collapsed) 서브트리 표시
+    # 접힌(collapsed) 서브트리 표시 — child_summary와 함께
     collapsed = node.get("_collapsed")
     if collapsed:
         count = collapsed.get("count", 0)
-        label_parts.append(f"→ {count} children collapsed")
+        summary = collapsed.get("summary", [])
+        if summary:
+            label_parts.append(f"→ {', '.join(summary)}")
+        else:
+            label_parts.append(f"→ {count} children")
 
     # 상호작용 가능 요소에 ref 번호 부여
     if refs is not None and _is_interactive(role):
@@ -322,10 +373,10 @@ async def _collapse_tree(
     refs: Optional[dict[int, dict[str, Any]]] = None,
 ) -> dict[str, Any]:
     """비-인터랙티브 서브트리를 요약 라인으로 접어 토큰을 줄인다.
-    
+
     _prune_tree 로 더 이상 줄일 수 없을 때 호출된다.
-    interactive 요소가 전혀 없는 큰 서브트리를 찾아
-    '[role] "name" → N children collapsed' 형태로 치환한다.
+    interactive 요소가 전혀 없는 서브트리를 찾아
+    '→ [role] "name", [role] ×N' 형태로 치환한다.
     """
     for iteration in range(20):
         await asyncio.sleep(0)
@@ -333,7 +384,7 @@ async def _collapse_tree(
         if _estimate_tokens(text) <= max_tokens:
             return tree
 
-        # collapse 후보 수집: interactive descendant 가 없고 자식이 2개 이상인 노드
+        # collapse 후보 수집: interactive descendant 가 없는 노드
         candidates: list[tuple[int, list[int], dict[str, Any]]] = []
 
         def _find_candidates(
@@ -343,7 +394,7 @@ async def _collapse_tree(
             children = node.get("children", [])
             if not children:
                 return
-            # 자식을 먼저 방문 (bottom-up 우선)
+            # 자식을 먼저 방문 (bottom-up)
             for i, child in enumerate(children):
                 _find_candidates(child, path + [i])
 
@@ -351,9 +402,6 @@ async def _collapse_tree(
             if node.get("_collapsed"):
                 return
             if _has_interactive_descendant(node):
-                return
-            count = len(children)
-            if count < 2:
                 return
             savings = _count_descendants(node)
             candidates.append((savings, path, node))
@@ -363,12 +411,13 @@ async def _collapse_tree(
         if not candidates:
             break  # 더 이상 접을 게 없음
 
-        # savings 큰 순으로 정렬 (가장 큰 서브트리부터 collapse)
+        # savings 큰 순으로 정렬
         candidates.sort(key=lambda x: x[0], reverse=True)
         _, path, node = candidates[0]
 
-        child_count = len(node.get("children", []))
-        node["_collapsed"] = {"count": child_count}
+        children = node.get("children", [])
+        summary = _build_child_summary(children)
+        node["_collapsed"] = {"count": len(children), "summary": summary}
         node["children"] = []
 
     return tree
