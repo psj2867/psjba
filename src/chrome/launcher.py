@@ -221,6 +221,21 @@ class ChromeLauncher:
             return self._process.pid
         return None
 
+    def kill_chrome(self) -> None:
+        """Chrome 프로세스를 종료한다."""
+        if self._process and self._process.poll() is None:
+            try:
+                self._process.terminate()
+                self._process.wait(timeout=5)
+                logger.info("Chrome process terminated: PID=%s", self._process.pid)
+            except Exception:
+                try:
+                    self._process.kill()
+                    self._process.wait(timeout=3)
+                except Exception:
+                    pass
+            self._process = None
+
     def is_chrome_process_alive(self) -> bool:
         """Chrome 프로세스가 아직 살아있는지 확인."""
         if self._process is None:

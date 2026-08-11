@@ -226,19 +226,18 @@ class PlaywrightManager:
                 pass
 
     async def connect(self, launch_if_needed: bool = False) -> str:
-        """CDP에 연결한다.
+        """CDP에 연결하고 확장 프로그램을 설정한다.
 
-        Args:
-            launch_if_needed: 연결 실패 시 Chrome을 자동 실행할지 여부
-
-        Returns:
-            상태 메시지
+        확장 프로그램이 로드되지 않았으면 launcher가 설정된 경우
+        Chrome을 재시작하여 --load-extension을 적용한다.
         """
         if self._connected:
             logger.debug("connect() called but already connected")
             return "Already connected"
 
         logger.info("Connecting to Chrome CDP (host=%s, port=%s)...", self._cdp_host, self._cdp_port)
+
+        # 1차 연결 (기존 Chrome에 붙거나 실행)
         quick_ok = await self._launcher.quick_check()
         logger.info("CDP quick check result: %s (launch_if_needed=%s)",
                     quick_ok, launch_if_needed)
@@ -254,9 +253,31 @@ class PlaywrightManager:
                 logger.info("Chrome not connected (launch_if_needed=False)")
                 return "Chrome not connected"
 
+        result = await self._connect_cdp()
+        if result != "Chrome connected":
+            return result
+
+        # 확장이 없으면 launcher로 Chrome 재시작
+        if not self._ext_available and self._launcher.chrome_path:
+            logger.warning("Extension not found — restarting Chrome with --load-extension")
+            await self.disconnect()
+            await self._launcher.kill_chrome()
+            launched = await self._launcher.launch_chrome()
+            if not launched:
+                return "Error: Chrome restart failed. Please update Chrome browser."
+            result = await self._connect_cdp()
+
+        if not self._ext_available:
+            return (
+                "Error: Focus detection extension not loaded. "
+                "Please update Chrome to the latest version."
+            )
+        return result
+
+    async def _connect_cdp(self) -> str:
+        """Playwright로 CDP WebSocket에 연결하고 탭/확장을 설정한다."""
         try:
             self._playwright = await async_playwright().start()
-            # /json/version → webSocketDebuggerUrl 조회 (동기, run_in_executor)
             loop = asyncio.get_event_loop()
             ws_url = await loop.run_in_executor(None, self._launcher.get_cdp_ws_endpoint)
             logger.info("Connecting to CDP via WebSocket: %s", ws_url)
@@ -281,21 +302,14 @@ class PlaywrightManager:
 
             # 모든 페이지에 dialog override init script 주입
             await self._inject_dialog_override()
-
             self._connected = True
-            
+
             # 확장 프로그램 로드 (포커스 탭 감지)
             await self._setup_extension()
-            if not self._ext_available:
-                logger.warning(
-                    "Focus detection extension not loaded — "
-                    "tab switch tracking will be incomplete. "
-                    "Ensure --load-extension=chrome/extension or "
-                    "enable the Extensions CDP domain."
-                )
 
             url = self.focused_page.url if self.focused_page else "about:blank"
-            logger.info("Chrome CDP connected (%d tabs, url=%s)", len(self._tabs), url)
+            logger.info("CDP connected (%d tabs, url=%s, ext=%s)",
+                        len(self._tabs), url, self._ext_available)
             return "Chrome connected"
         except Exception as e:
             logger.error("CDP connection error: %s", e)
