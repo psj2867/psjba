@@ -714,6 +714,117 @@ class PlaywrightManager:
                 parts.append(f"       ⚠️ Dialog: [{d.get('type')}] {d.get('message', '')}")
         return "\n".join(parts)
 
+    async def test_tabs(self) -> str:
+        """[테스트용] 여러 방식으로 포커스 탭 탐지 시도 결과를 반환한다."""
+        if not self._connected or not self._tabs:
+            return "[Browser: not connected]"
+
+        await self._refresh_tabs()
+        lines: list[str] = []
+        total = len(self._tabs)
+
+        # ── JS 기반 탐지 ──
+        line = f"Tabs: {total}, focused_index={self._focused_tab_index}"
+        lines.append(line)
+        logger.info("test_tabs: %s", line)
+
+        for i, tab in enumerate(self._tabs):
+            await tab.update_info()
+            page = tab.page
+            url = tab.url
+            title = tab.title
+            heading = f"\n[Tab {i}] {title} ({url})"
+            lines.append(heading)
+            logger.info("test_tabs: Tab %d url=%s", i, url)
+
+            checks: list[tuple[str, str]] = []
+
+            # 1-5: JS 기반
+            js_checks = [
+                ("document.hasFocus()", "document.hasFocus()"),
+                ("document.visibilityState", "document.visibilityState"),
+                ("document.hidden", "document.hidden"),
+                ("document.webkitHidden", "document.webkitHidden"),
+                ("document.webkitVisibilityState", "document.webkitVisibilityState"),
+                ("matchMedia(display-mode:browser)", "window.matchMedia('(display-mode: browser)').matches"),
+                ("matchMedia(display-mode:standalone)",
+                 "window.matchMedia('(display-mode: standalone)').matches"),
+                ("document.hasFocus + visState",
+                 "JSON.stringify({f: document.hasFocus(), v: document.visibilityState, h: document.hidden})"),
+            ]
+            for label, expr in js_checks:
+                try:
+                    val = await page.evaluate(expr)
+                    checks.append((label, str(val)))
+                except Exception as e:
+                    checks.append((label, f"ERR:{e}"))
+
+            for label, val in checks:
+                lines.append(f"  {label}: {val}")
+                logger.debug("test_tabs Tab%d %s: %s", i, label, val)
+
+        # ── CDP 기반 탐지 ──
+        try:
+            browser_cdp = await self._browser.new_browser_cdp_session()
+        except Exception as e:
+            lines.append(f"\n[CDP new_browser_cdp_session] ERR: {e}")
+            logger.info("test_tabs CDP session error: %s", e)
+            browser_cdp = None
+
+        if browser_cdp:
+            # a) Target.getTargets
+            try:
+                targets_resp = await browser_cdp.send("Target.getTargets")
+                target_infos = targets_resp.get("targetInfos", targets_resp.get("targets", []))
+                lines.append(f"\n[CDP Target.getTargets] ({len(target_infos)} targets)")
+                logger.info("test_tabs Target.getTargets: %d targets", len(target_infos))
+                for ti in target_infos:
+                    lines.append(f"  targetId={ti.get('targetId','')[:8]}... "
+                                 f"type={ti.get('type')} url={ti.get('url','')[:80]}")
+            except Exception as e:
+                lines.append(f"\n[CDP Target.getTargets] ERR: {e}")
+                logger.info("test_tabs Target.getTargets error: %s", e)
+
+            # b) Browser.getWindowForTarget per tab
+            lines.append("\n[CDP Browser.getWindowForTarget]")
+            for i, tab in enumerate(self._tabs):
+                try:
+                    page_cdp = await self._context.new_cdp_session(tab.page)
+                    # targetId from CDP session
+                    target_id = page_cdp._session  # or some way to get it
+                    # Actually, let's try directly via Browser.getWindowForTarget
+                    win = await browser_cdp.send("Browser.getWindowForTarget")
+                    lines.append(f"  Tab {i}: windowId={win.get('windowId')} bounds={win.get('bounds')}")
+                except Exception as e:
+                    lines.append(f"  Tab {i}: ERR: {e}")
+
+            # c) Page.getLayoutMetrics per tab
+            lines.append("\n[CDP Page.getLayoutMetrics]")
+            for i, tab in enumerate(self._tabs):
+                try:
+                    page_cdp = await self._context.new_cdp_session(tab.page)
+                    metrics = await page_cdp.send("Page.getLayoutMetrics")
+                    lv = metrics.get("layoutViewport", {})
+                    cv = metrics.get("contentSize", {})
+                    lines.append(f"  Tab {i}: layout=({lv.get('clientWidth')}, {lv.get('clientHeight')}) "
+                                 f"content=({cv.get('width')}, {cv.get('height')})")
+                except Exception as e:
+                    lines.append(f"  Tab {i}: ERR: {e}")
+
+            # d) Page.getAppManifest
+            lines.append("\n[CDP Page.getAppManifest]")
+            for i, tab in enumerate(self._tabs):
+                try:
+                    page_cdp = await self._context.new_cdp_session(tab.page)
+                    manifest = await page_cdp.send("Page.getAppManifest")
+                    lines.append(f"  Tab {i}: {manifest.get('url', 'N/A')}")
+                except Exception as e:
+                    lines.append(f"  Tab {i}: ERR: {e}")
+
+        text = "\n".join(lines)
+        logger.info("test_tabs result:\n%s", text)
+        return text
+
     async def chrome_start(self) -> str:
         """Chrome/CDP에 연결을 시도하고, 연결이 안 되어 있으면 Chrome을 실행한 후 연결한다.
 

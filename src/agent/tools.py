@@ -161,6 +161,11 @@ def create_browser_tools(
         return await manager.browser_get_text(ref, tab_index)
 
     @tool
+    async def test_tabs() -> str:
+        """[테스트] 여러 방식으로 현재 포커스 탭을 탐지하고 결과를 반환한다."""
+        return await manager.test_tabs()
+
+    @tool
     async def workspace_write(filename: str, content: str) -> str:
         """Save content to a file in the workspace exports folder. Use this to save generated data, reports, or any text output the user might want to keep. Only allows safe filenames (letters, numbers, dots, dashes, underscores)."""
         return await manager.workspace_write(filename, content)
@@ -195,6 +200,7 @@ def create_browser_tools(
         browser_execute_script,
         browser_click_by_ref,
         browser_get_text,
+        test_tabs,
         workspace_write,
         current_datetime,
     ]
