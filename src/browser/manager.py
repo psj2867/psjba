@@ -716,7 +716,7 @@ class PlaywrightManager:
         if not self._connected or not self._tabs:
             return "[Browser: not connected]"
 
-        await self._refresh_tabs(refresh_focus=True)
+        await self._refresh_tabs()
         parts = [f"[Browser: connected ({len(self._tabs)} tabs)]"]
         for i, tab in enumerate(self._tabs):
             await tab.update_info()
