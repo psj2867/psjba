@@ -116,35 +116,29 @@ def parse_args() -> str:
 
 
 def setup_logging(config: Config) -> None:
-    level_str = config.get("logging", "level", "disabled")
-    log_path = config.get("logging", "path", "./psjba.log")
+    level_str = config.get("logging", "level", "warning")
+    log_path = config.get("logging", "path", "")
 
     root_logger = logging.getLogger("psjba")
-    root_logger.setLevel(logging.DEBUG)
+    level = getattr(logging, level_str.upper(), logging.WARNING)
+    root_logger.setLevel(level)
 
-    console = logging.StreamHandler(sys.stderr)
-    console.setLevel(logging.INFO)
-    console.setFormatter(
-        logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
-    )
-    root_logger.addHandler(console)
+    fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
-    if level_str and level_str.lower() != "disabled":
-        level = getattr(logging, level_str.upper(), None)
-        if level is not None:
-            Path(log_path).parent.mkdir(parents=True, exist_ok=True)
-            file_handler = logging.FileHandler(log_path, encoding="utf-8")
-            file_handler.setLevel(level)
-            file_handler.setFormatter(
-                logging.Formatter(
-                    "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
-                )
-            )
-            root_logger.addHandler(file_handler)
-            root_logger.setLevel(level)
-            logger.info("Logging enabled: level=%s path=%s", level_str, log_path)
+    if log_path and log_path.strip():
+        # 파일만
+        Path(log_path).parent.mkdir(parents=True, exist_ok=True)
+        fh = logging.FileHandler(log_path, encoding="utf-8")
+        fh.setLevel(logging.NOTSET)
+        fh.setFormatter(fmt)
+        root_logger.addHandler(fh)
+        logger.info("Logging to file: level=%s path=%s", level_str, log_path)
     else:
-        logger.info("Logging disabled (console only)")
+        # 콘솔만 (기본)
+        ch = logging.StreamHandler(sys.stderr)
+        ch.setLevel(logging.NOTSET)
+        ch.setFormatter(fmt)
+        root_logger.addHandler(ch)
 
 
 def setup_signal_handlers(
