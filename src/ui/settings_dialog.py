@@ -1425,27 +1425,27 @@ class SettingsDialog(QDialog):
         self._llm_url.setText(c.get("llm", "url", ""))
         self._llm_model.setText(c.get("llm", "model", ""))
         self._llm_api_key.setText(c.api_key)
-        self._llm_max_tokens.setValue(c.get("llm", "max_tokens", 4096))
-        self._llm_temperature.setValue(c.get("llm", "temperature", 0.0))
-        self._llm_timeout.setValue(c.get("llm", "timeout", 60))
+        self._llm_max_tokens.setValue(int(c.get("llm", "max_tokens", 4096)))
+        self._llm_temperature.setValue(float(c.get("llm", "temperature", 0.0)))
+        self._llm_timeout.setValue(int(c.get("llm", "timeout", 60)))
 
         self._cdp_host.setText(c.get("cdp", "host", "127.0.0.1"))
-        self._cdp_port.setValue(c.get("cdp", "port", 9222))
-        self._cdp_timeout.setValue(c.get("cdp", "connection_timeout", 1.0))
+        self._cdp_port.setValue(int(c.get("cdp", "port", 9222)))
+        self._cdp_timeout.setValue(float(c.get("cdp", "connection_timeout", 1.0)))
 
         self._chrome_path.setText(c.get("chrome", "path", ""))
         self._chrome_user_data.setText(c.get("chrome", "user_data_dir", ""))
-        self._chrome_headless.setChecked(c.get("chrome", "headless", False))
+        self._chrome_headless.setChecked(c.get("chrome", "headless", "false").lower() in ("true", "1", "yes"))
 
         self._sqlite_path.setText(c.get("sqlite", "path", ""))
         self._ws_dir.setText(c.get("workspace", "workspace_dir", ""))
 
-        self._agent_window.setValue(c.get("agent", "sliding_window_size", 30))
-        self._agent_cron_timeout.setValue(c.get("agent", "cron_timeout", 300))
-        self._agent_cron_tool_calls.setValue(c.get("agent", "cron_tool_calls", 50))
+        self._agent_window.setValue(int(c.get("agent", "sliding_window_size", 30)))
+        self._agent_cron_timeout.setValue(int(c.get("agent", "cron_timeout", 300)))
+        self._agent_cron_tool_calls.setValue(int(c.get("agent", "cron_tool_calls", 50)))
 
-        self._ui_font_size.setValue(c.get("ui", "font_size", 14))
-        self._ui_max_chat.setValue(c.get("ui", "max_chat_lines", 1000))
+        self._ui_font_size.setValue(int(c.get("ui", "font_size", 14)))
+        self._ui_max_chat.setValue(int(c.get("ui", "max_chat_lines", 1000)))
 
         log_idx = self._log_level_combo.findData(c.get("logging", "level", "disabled"))
         if log_idx >= 0:
