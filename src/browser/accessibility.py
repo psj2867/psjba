@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import time
 from typing import Any, Optional
 
 from playwright.async_api import Page
@@ -11,7 +12,7 @@ logger = logging.getLogger("psjba.browser.accessibility")
 MAX_TOKEN_ESTIMATE = 4000
 CHARS_PER_TOKEN = 4
 
-# ref 번호 부여용 카운터 (module-level, 동시성 문제 없음)
+# ref 번호 부여용 카운터 (module-level, session 동안 단조 증가)
 _REF_COUNTER = {"n": 0}
 
 # a11y role 중 상호작용 가능한 것
@@ -473,11 +474,18 @@ async def format_accessibility_tree(
     if snapshot is None:
         return "(No accessibility tree available)"
 
-    _reset_ref_counter()
+    t0 = time.monotonic()
     tree = await _prune_tree(snapshot) or {"role": "Root", "children": []}
+    t1 = time.monotonic()
+    logger.debug("prune_tree: %dms", int((t1 - t0) * 1000))
+
     tree = await _token_prune(tree, max_tokens, refs=refs)
+    t2 = time.monotonic()
+    logger.debug("token_prune + collapse: %dms", int((t2 - t1) * 1000))
 
     lines = await _format_tree(tree, refs=refs, max_depth=30)
+    t3 = time.monotonic()
+    logger.debug("format_tree: %dms", int((t3 - t2) * 1000))
     text = "\n".join(lines)
 
     token_count = _estimate_tokens(text)
@@ -488,6 +496,8 @@ async def format_accessibility_tree(
         text = "\n".join(truncated_lines)
         text += f"\n... (truncated, ~{_estimate_tokens(text)} tokens)"
 
+    logger.debug("format_accessibility_tree total: %dms, %d tokens",
+                 int((time.monotonic() - t0) * 1000), _estimate_tokens(text))
     return text
 
 
@@ -659,14 +669,25 @@ async def get_subtree_detail(page: Page, ref: int, refs: dict[int, dict[str, Any
                 f"({target_role} \"{target_name}\") in current snapshot. "
                 "Try calling browser_snapshot() again.")
 
-    # 동일한 포맷 파이프라인 적용
-    _reset_ref_counter()
+    # 동일한 포맷 파이프라인 적용 (refs 미할당 — detail view는 참고용)
+    t0 = time.monotonic()
     pruned = (await _prune_tree(subtree)) or subtree
-    result = await _token_prune(pruned, max_tokens=MAX_TOKEN_ESTIMATE, refs=refs)
-    lines = await _format_tree(result, refs=refs)
+    t1 = time.monotonic()
+    logger.debug("get_subtree_detail prune_tree: %dms (ref=%d)",
+                 int((t1 - t0) * 1000), ref)
+    result = await _token_prune(pruned, max_tokens=MAX_TOKEN_ESTIMATE)
+    t2 = time.monotonic()
+    logger.debug("get_subtree_detail token_prune: %dms (ref=%d)",
+                 int((t2 - t1) * 1000), ref)
+    lines = await _format_tree(result)
+    t3 = time.monotonic()
+    logger.debug("get_subtree_detail format_tree: %dms (ref=%d)",
+                 int((t3 - t2) * 1000), ref)
     text = "\n".join(lines)
     text = (f"--- Detail for ref #{ref} ({target_role} \"{target_name}\") ---\n{text}")
 
+    logger.debug("get_subtree_detail total: %dms (ref=%d)",
+                 int((time.monotonic() - t0) * 1000), ref)
     return text
 
 
