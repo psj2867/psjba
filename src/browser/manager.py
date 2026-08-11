@@ -772,7 +772,8 @@ class PlaywrightManager:
             browser_cdp = None
 
         if browser_cdp:
-            # a) Target.getTargets
+            # a) Target.getTargets (모든 target 정보 저장)
+            target_infos: list[dict] = []
             try:
                 targets_resp = await browser_cdp.send("Target.getTargets")
                 target_infos = targets_resp.get("targetInfos", targets_resp.get("targets", []))
@@ -785,16 +786,66 @@ class PlaywrightManager:
                 lines.append(f"\n[CDP Target.getTargets] ERR: {e}")
                 logger.info("test_tabs Target.getTargets error: %s", e)
 
-            # b) Browser.getWindowForTarget per tab
+            # b) 페이지 target → tab 매핑 후 Browser.getWindowForTarget
             lines.append("\n[CDP Browser.getWindowForTarget]")
+            page_targets = [ti for ti in target_infos if ti.get("type") == "page"]
+            for i, tab in enumerate(self._tabs):
+                try:
+                    # URL로 target 매칭 (완전 일치 → 부분 일치)
+                    target_id = None
+                    for ti in page_targets:
+                        if ti.get("url") == tab.url:
+                            target_id = ti.get("targetId")
+                            break
+                    if target_id is None:
+                        for ti in page_targets:
+                            if tab.url and ti.get("url", "").startswith(tab.url[:60]):
+                                target_id = ti.get("targetId")
+                                break
+                    if target_id is None:
+                        lines.append(f"  Tab {i}: target not matched (url={tab.url[:60]})")
+                        continue
+                    win = await browser_cdp.send(
+                        "Browser.getWindowForTarget", {"targetId": target_id}
+                    )
+                    lines.append(f"  Tab {i}: windowId={win.get('windowId')} "
+                                 f"bounds={win.get('bounds')}")
+                except Exception as e:
+                    lines.append(f"  Tab {i}: ERR: {e}")
+
+            # b2) Target.getTargetInfo (attached / openerId / canAccessOpener)
+            lines.append("\n[CDP Target.getTargetInfo]")
+            for i, tab in enumerate(self._tabs):
+                try:
+                    target_id = None
+                    for ti in page_targets:
+                        if ti.get("url") == tab.url:
+                            target_id = ti.get("targetId")
+                            break
+                    if target_id is None:
+                        lines.append(f"  Tab {i}: target not matched")
+                        continue
+                    info = await browser_cdp.send(
+                        "Target.getTargetInfo", {"targetId": target_id}
+                    )
+                    ti = info.get("targetInfo", {})
+                    lines.append(
+                        f"  Tab {i}: attached={ti.get('attached')} "
+                        f"canAccessOpener={ti.get('canAccessOpener')} "
+                        f"openerId={str(ti.get('openerId'))[:8]}"
+                    )
+                except Exception as e:
+                    lines.append(f"  Tab {i}: ERR: {e}")
+
+            # b3) Page.getNavigationHistory (history index/길이 차이?)
+            lines.append("\n[CDP Page.getNavigationHistory]")
             for i, tab in enumerate(self._tabs):
                 try:
                     page_cdp = await self._context.new_cdp_session(tab.page)
-                    # targetId from CDP session
-                    target_id = page_cdp._session  # or some way to get it
-                    # Actually, let's try directly via Browser.getWindowForTarget
-                    win = await browser_cdp.send("Browser.getWindowForTarget")
-                    lines.append(f"  Tab {i}: windowId={win.get('windowId')} bounds={win.get('bounds')}")
+                    hist = await page_cdp.send("Page.getNavigationHistory")
+                    idx = hist.get("currentIndex", -1)
+                    entries = hist.get("entries", [])
+                    lines.append(f"  Tab {i}: currentIndex={idx} entries={len(entries)}")
                 except Exception as e:
                     lines.append(f"  Tab {i}: ERR: {e}")
 
@@ -818,6 +869,23 @@ class PlaywrightManager:
                     page_cdp = await self._context.new_cdp_session(tab.page)
                     manifest = await page_cdp.send("Page.getAppManifest")
                     lines.append(f"  Tab {i}: {manifest.get('url', 'N/A')}")
+                except Exception as e:
+                    lines.append(f"  Tab {i}: ERR: {e}")
+
+            # e) Page.getFrameTree (depth 차이?)
+            lines.append("\n[CDP Page.getFrameTree]")
+            for i, tab in enumerate(self._tabs):
+                try:
+                    page_cdp = await self._context.new_cdp_session(tab.page)
+                    ft = await page_cdp.send("Page.getFrameTree")
+                    tree = ft.get("frameTree", {})
+                    # 재귀적으로 frame 수 계산
+                    def _count(tree_node: dict) -> int:
+                        n = 1
+                        for c in tree_node.get("childFrames", []):
+                            n += _count(c)
+                        return n
+                    lines.append(f"  Tab {i}: frames={_count(tree)}")
                 except Exception as e:
                     lines.append(f"  Tab {i}: ERR: {e}")
 
