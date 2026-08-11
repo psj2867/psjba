@@ -430,11 +430,18 @@ async def execute_tool(
             any_error = True
         duration_ms = int((time.monotonic() - start) * 1000)
 
-        logger.info(
-            f"Tool {tool_name}({tool_args}) → "
-            f"{result[:200]}{'...' if len(str(result)) > 200 else ''} "
-            f"({duration_ms}ms)"
-        )
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.info(
+                f"Tool {tool_name}({tool_args}) → "
+                f"{result} "
+                f"({duration_ms}ms)"
+            )
+        else:
+            logger.info(
+                f"Tool {tool_name}({tool_args}) → "
+                f"{result[:200]}{'...' if len(str(result)) > 200 else ''} "
+                f"({duration_ms}ms)"
+            )
 
         if _is_tool_error(str(result)):
             any_error = True
