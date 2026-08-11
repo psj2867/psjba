@@ -428,16 +428,18 @@ async def format_accessibility_tree(
     tree = await _prune_tree(snapshot) or {"role": "Root", "children": []}
     tree = await _token_prune(tree, max_tokens, refs=refs)
 
-    lines = await _format_tree(tree, refs=refs, max_depth=30)
+    max_depth = 999 if logger.isEnabledFor(logging.DEBUG) else 30
+    lines = await _format_tree(tree, refs=refs, max_depth=max_depth)
     text = "\n".join(lines)
 
-    token_count = _estimate_tokens(text)
-    if token_count > max_tokens:
-        truncated_lines = lines
-        while truncated_lines and _estimate_tokens("\n".join(truncated_lines)) > max_tokens:
-            truncated_lines.pop()
-        text = "\n".join(truncated_lines)
-        text += f"\n... (truncated, ~{_estimate_tokens(text)} tokens)"
+    if not logger.isEnabledFor(logging.DEBUG):
+        token_count = _estimate_tokens(text)
+        if token_count > max_tokens:
+            truncated_lines = lines
+            while truncated_lines and _estimate_tokens("\n".join(truncated_lines)) > max_tokens:
+                truncated_lines.pop()
+            text = "\n".join(truncated_lines)
+            text += f"\n... (truncated, ~{_estimate_tokens(text)} tokens)"
 
     return text
 
