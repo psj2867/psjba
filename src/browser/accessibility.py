@@ -588,8 +588,17 @@ async def get_subtree_detail(page: Page, ref: int, refs: dict[int, dict[str, Any
     # Fresh snapshot + enrich
     try:
         snapshot = await page.accessibility.snapshot()
+    except (AttributeError, PlaywrightError):
+        snapshot = None
     except Exception as e:
-        return f"Subtree detail error: {e}"
+        logger.warning("get_subtree_detail accessibility.snapshot() failed: %s", e)
+        snapshot = None
+
+    if snapshot is None:
+        try:
+            snapshot = await _get_cdp_snapshot(page)
+        except Exception as e:
+            return f"Subtree detail error: {e}"
 
     if snapshot is None:
         return "(No accessibility tree available)"
@@ -752,6 +761,29 @@ async def _enrich_cdp_snapshot_with_dom(cdp_session: Any,
 async def _get_accessibility_via_cdp(page: Page) -> str:
     text, _refs = await _get_accessibility_via_cdp_with_refs(page)
     return text
+
+
+async def _get_cdp_snapshot(page: Page) -> Optional[dict[str, Any]]:
+    """CDP Accessibility domain으로 raw snapshot dict를 가져온다.
+
+    page.accessibility.snapshot()이 실패할 때 fallback으로 사용.
+    """
+    try:
+        cdp = await page.context.new_cdp_session(page)
+        await cdp.send("Accessibility.enable")
+        result = await cdp.send("Accessibility.getFullAXTree", {})
+        raw_nodes = result.get("nodes", [])
+        if not raw_nodes:
+            return None
+        snapshot = _cdp_nodes_to_snapshot(raw_nodes)
+        try:
+            await _enrich_cdp_snapshot_with_dom(cdp, snapshot)
+        except Exception as e:
+            logger.debug("CDP DOM enrichment failed: %s", e)
+        return snapshot
+    except Exception as e:
+        logger.warning("CDP snapshot failed: %s", e)
+        return None
 
 
 async def _get_accessibility_via_cdp_with_refs(
