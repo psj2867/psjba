@@ -73,7 +73,7 @@ FIELD_TOOLTIPS: dict[str, str] = {
     "font_size": "폰트 크기",
     "max_chat_lines": "대화 로그 최대 줄 수",
     "logging_level": "로그 레벨 (warning=기본, info=상세, debug=디버그)",
-    "logging_path": "로그 파일 경로",
+    "logging_path": "비어있으면 콘솔 출력, 입력하면 파일에만 기록",
 }
 
 
