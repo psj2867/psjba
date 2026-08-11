@@ -151,6 +151,16 @@ def create_browser_tools(
         return await manager.browser_click_by_ref(ref, tab_index)
 
     @tool
+    async def browser_get_text(ref: int, tab_index: Optional[int] = None) -> str:
+        """Get the visible DOM text content of an element by its [#N] ref number. Use this to read text that doesn't appear in the accessibility tree (e.g. links with empty accessible names, custom components, or dynamically loaded content). Call browser_snapshot() first to get ref numbers.
+
+        Args:
+            ref: The [#N] ref number from the accessibility tree
+            tab_index: Target tab index (default: focused tab)
+        """
+        return await manager.browser_get_text(ref, tab_index)
+
+    @tool
     async def workspace_write(filename: str, content: str) -> str:
         """Save content to a file in the workspace exports folder. Use this to save generated data, reports, or any text output the user might want to keep. Only allows safe filenames (letters, numbers, dots, dashes, underscores)."""
         return await manager.workspace_write(filename, content)
@@ -184,6 +194,7 @@ def create_browser_tools(
         browser_snapshot,
         browser_execute_script,
         browser_click_by_ref,
+        browser_get_text,
         workspace_write,
         current_datetime,
     ]

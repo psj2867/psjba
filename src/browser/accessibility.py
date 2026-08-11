@@ -477,15 +477,21 @@ async def format_accessibility_tree(
     t0 = time.monotonic()
     tree = await _prune_tree(snapshot) or {"role": "Root", "children": []}
     t1 = time.monotonic()
-    logger.debug("prune_tree: %dms", int((t1 - t0) * 1000))
+    logger.debug("prune_tree: %dms (tree: %d nodes→%d nodes)",
+                 int((t1 - t0) * 1000),
+                 _count_descendants(snapshot),
+                 _count_descendants(tree))
 
     tree = await _token_prune(tree, max_tokens, refs=refs)
     t2 = time.monotonic()
-    logger.debug("token_prune + collapse: %dms", int((t2 - t1) * 1000))
+    logger.debug("token_prune + collapse: %dms (tree: %d nodes)",
+                 int((t2 - t1) * 1000),
+                 _count_descendants(tree))
 
     lines = await _format_tree(tree, refs=refs, max_depth=30)
     t3 = time.monotonic()
-    logger.debug("format_tree: %dms", int((t3 - t2) * 1000))
+    logger.debug("format_tree: %dms (%d lines)",
+                 int((t3 - t2) * 1000), len(lines))
     text = "\n".join(lines)
 
     token_count = _estimate_tokens(text)
@@ -677,8 +683,8 @@ async def get_subtree_detail(page: Page, ref: int, refs: dict[int, dict[str, Any
                  int((t1 - t0) * 1000), ref)
     result = await _token_prune(pruned, max_tokens=MAX_TOKEN_ESTIMATE)
     t2 = time.monotonic()
-    logger.debug("get_subtree_detail token_prune: %dms (ref=%d)",
-                 int((t2 - t1) * 1000), ref)
+    logger.debug("get_subtree_detail prune_tree: %dms | token_prune: %dms (ref=%d)",
+                 int((t1 - t0) * 1000), int((t2 - t1) * 1000), ref)
     lines = await _format_tree(result)
     t3 = time.monotonic()
     logger.debug("get_subtree_detail format_tree: %dms (ref=%d)",

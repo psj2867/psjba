@@ -834,6 +834,65 @@ class PlaywrightManager:
             result += f"\n⚠️ Dialog recorded: [{d['type']}] {d.get('message','')}"
         return result
 
+    async def browser_get_text(self, ref: int, tab_index: Optional[int] = None) -> str:
+        """접근성 트리 ref 번호로 요소의 DOM 텍스트를 가져온다.
+
+        접근성 트리에 표시되지 않는 보이는 텍스트를 추출할 때 사용한다.
+        aria-label 등 accessible name이 비어있어도 실제 DOM 텍스트를 반환한다.
+
+        Args:
+            ref: browser_snapshot() 결과에 표시된 [#N] 번호
+            tab_index: 대상 탭 인덱스 (None이면 포커스 탭)
+        """
+        session_refs = self._get_session_refs()
+        node = session_refs.get(ref)
+        if node is None:
+            return (f"Get text by ref failed: ref #{ref} not found. "
+                    "Call browser_snapshot() first to refresh the tree.")
+
+        page = self._ensure_page(tab_index)
+        role = node.get("role", "")
+        name = node.get("name", "")
+
+        try:
+            # Playwright get_by_role 로 찾기
+            if name:
+                locator = page.get_by_role(role, name=name, exact=False)
+            else:
+                locator = page.get_by_role(role)
+
+            # 모든 일치 요소의 텍스트 수집
+            count = await locator.count()
+            if count == 0:
+                return f"Text for ref #{ref} ({role} \"{name}\"): (no elements found)"
+            if count == 1:
+                text = (await locator.first.inner_text()).strip()
+                return f"Text for ref #{ref} ({role} \"{name}\"):\n{text}"
+            # 여러 개면 인덱스와 함께 표시
+            parts = []
+            for i in range(count):
+                t = (await locator.nth(i).inner_text()).strip()
+                short = t[:200] + ("..." if len(t) > 200 else "")
+                parts.append(f"[{i}] {short}")
+            return (f"Elements with role '{role}' (ref #{ref}): "
+                    f"{count} matches\n" + "\n".join(parts))
+        except Exception as e:
+            # fallback: page.evaluate 로 DOM textContent 직접 추출
+            try:
+                escaped_role = role.replace("'", "\\'")
+                script = (
+                    f"Array.from(document.querySelectorAll('[role=\"{escaped_role}\"], "
+                    f"{escaped_role}, [href]'))"
+                    f".slice(0, 20).map((el, i) => "
+                    f"'['+i+'] '+(el.textContent||'').trim().substring(0,200))"
+                )
+                results = await page.evaluate(script)
+                if results:
+                    return f"Text for ref #{ref} ({role} \"{name}\") [DOM fallback]:\n" + "\n".join(results)
+                return f"Text for ref #{ref} ({role} \"{name}\") [DOM fallback]: (empty)"
+            except Exception as e2:
+                return f"Get text by ref #{ref} failed: {e} (fallback: {e2})"
+
     async def browser_screenshot(
         self,
         full_page: bool = False,
