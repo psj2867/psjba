@@ -400,16 +400,12 @@ class PlaywrightManager:
                     return f"Switched to tab {i}: {tab.url} ({tab.title})"
             return f"Tab not found: {target}"
 
-    async def _refresh_tabs(self, refresh_focus: bool = False) -> None:
+    async def _refresh_tabs(self) -> None:
         """CDP에서 현재 페이지 목록을 다시 읽어 self._tabs를 재구성한다.
 
         외부에서 열린 탭(context.on("page")을 못 탄 경우)이나
         닫힌 탭을 반영하기 위해 매번 CDP에 직접 쿼리한다.
         기존 _TabInfo의 dialog override 상태는 보존한다.
-
-        Args:
-            refresh_focus: True면 각 페이지의 document.hasFocus()로
-                          실제 포커스된 탭을 다시 탐지한다.
         """
         if not self._context:
             return
@@ -426,31 +422,11 @@ class PlaywrightManager:
         if self._focused_tab_index >= len(self._tabs):
             self._focused_tab_index = max(0, len(self._tabs) - 1)
 
-        # refresh_focus: 모든 페이지 병렬로 포커스 체크
-        if refresh_focus and self._tabs:
-            async def _check_focused(tab: _TabInfo) -> bool:
-                try:
-                    return bool(await asyncio.wait_for(
-                        tab.page.evaluate("document.hasFocus()"),
-                        timeout=1.0,
-                    ))
-                except Exception:
-                    return False
-
-            results = await asyncio.gather(
-                *(_check_focused(tab) for tab in self._tabs),
-            )
-            logger.info("check_visible %s", results)
-            for i, focused in enumerate(results):
-                if focused:
-                    self._focused_tab_index = i
-                    break
-
     async def browser_list_tabs(self) -> str:
         logger.info("browser_list_tabs called")
         """현재 열린 탭 목록을 반환한다."""
         self._ensure_connected()
-        await self._refresh_tabs(refresh_focus=True)
+        await self._refresh_tabs()
         lines: list[str] = []
         for i, tab in enumerate(self._tabs):
             await tab.update_info()
