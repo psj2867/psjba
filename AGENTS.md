@@ -178,3 +178,24 @@ QT_QPA_PLATFORM=offscreen python main.py
 - ❌ Chrome 프로세스는 종료하지 않음 (종료 시에도 유지)
 - ❌ 파일 접근 샌드박스 위반 금지
 - ❌ config.ini에 api_key 평문 저장 금지 (암호화 필수)
+
+## 9. 아키텍처 결정 사항
+
+### 9.1 `_a11y_refs` session 격리 (contextvars)
+
+`PlaywrightManager._a11y_refs`는 브라우저 접근성 트리에서 상호작용 가능한 요소의 ref 번호 → 노드 정보 매핑을 저장.
+
+크론 작업과 메인 에이전트가 동일한 `PlaywrightManager` 인스턴스를 공유하므로, `_a11y_refs`가 덮어씌워지면 ref 조회(`browser_snapshot(ref=N)` / `browser_click_by_ref`)가 엉뚱한 요소를 찾음.
+
+**해결**: `_a11y_refs`를 `dict[str, dict[int, dict[str, Any]]]`로 변경, 키를 `session_id`로 함. 각 asyncio task의 session_id는 `contextvars.ContextVar`로 격리.
+
+**설정 시점**:
+- `agent/nodes.py` `execute_tool()`: `manager.set_session_id(state["session_id"])` — 각 tool 호출 직전
+- `cron/executor.py` `_run()`: `set_session_id(session.id)` — graph 실행 직전
+
+**읽기/쓰기**: `_get_session_refs()` / `_set_session_refs()` 헬퍼가 현재 task의 session_id로 자동 라우팅.
+
+**파일**:
+- `browser/manager.py`: `set_session_id()` 함수, `_current_session_id` ContextVar, `_get_session_refs()`, `_set_session_refs()`
+- `agent/nodes.py`: `execute_tool()`에서 session 설정
+- `cron/executor.py`: `_run()`에서 session 설정
