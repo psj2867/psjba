@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QMessageBox,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -209,21 +210,40 @@ class MainWindow(QMainWindow):
             logger.debug("Calling manager.connect(launch_if_needed=True)...")
             result = await self._manager.connect(launch_if_needed=True)
             logger.debug("manager.connect returned: %s", result)
-            return "Chrome connected" in result or "Already" in result
+            return result
 
         self._run_async_background(_do(), self._on_connect_done)
 
-    def _on_connect_done(self, connected: bool) -> None:
-        logger.debug("Chrome connect result: connected=%s", connected)
-        if connected:
+    def _on_connect_done(self, result: str) -> None:
+        logger.debug("Chrome connect result: %s", result)
+        if "Chrome connected" in result or "Already" in result:
             self._set_chrome_status("connected")
+            return
+        if "Extension" in result or "Error" in result or "update Chrome" in result:
+            QMessageBox.warning(
+                self,
+                "Chrome 연결 오류",
+                "Chrome 확장 프로그램(PSJBA Focus Tracker)을 불러올 수 없습니다.\n"
+                "Chrome을 최신 버전으로 업데이트한 후 다시 시도해 주세요."
+            )
+        elif "Chrome not connected" in result:
+            QMessageBox.information(
+                self,
+                "Chrome 연결",
+                "Chrome 실행 중인 상태에서 다시 시도해 주세요."
+            )
         else:
-            self._set_chrome_status("disconnected")
+            QMessageBox.critical(
+                self,
+                "Chrome 연결 실패",
+                f"Chrome 연결 중 오류가 발생했습니다:\n{result}"
+            )
+        self._set_chrome_status("disconnected")
 
     def _disconnect_chrome(self) -> None:
         async def _do():
             await self._manager.disconnect()
-            return False
+            return "disconnected"
 
         self._run_async_background(_do(), self._on_connect_done)
 
