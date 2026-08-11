@@ -50,7 +50,7 @@ class NoWheelComboBox(NoWheelMixin, QComboBox):
 from src.config import Config
 from src.database import Database
 
-LOG_LEVELS = {"disabled": "비활성화", "info": "Info", "debug": "Debug"}
+LOG_LEVELS = {"warning": "Warning", "info": "Info", "debug": "Debug"}
 
 FIELD_TOOLTIPS: dict[str, str] = {
     "api_key": "LLM API 키 (UI에서 입력, config.ini에는 암호화 저장)",
@@ -72,7 +72,7 @@ FIELD_TOOLTIPS: dict[str, str] = {
     "cron_tool_calls": "크론 최대 tool call 횟수",
     "font_size": "폰트 크기",
     "max_chat_lines": "대화 로그 최대 줄 수",
-    "logging_level": "로그 레벨 (disabled=파일 로깅 비활성화)",
+    "logging_level": "로그 레벨 (warning=기본, info=상세, debug=디버그)",
     "logging_path": "로그 파일 경로",
 }
 
@@ -1447,7 +1447,7 @@ class SettingsDialog(QDialog):
         self._ui_font_size.setValue(int(c.get("ui", "font_size", 14)))
         self._ui_max_chat.setValue(int(c.get("ui", "max_chat_lines", 1000)))
 
-        log_idx = self._log_level_combo.findData(c.get("logging", "level", "disabled"))
+        log_idx = self._log_level_combo.findData(c.get("logging", "level", "warning"))
         if log_idx >= 0:
             self._log_level_combo.setCurrentIndex(log_idx)
         self._log_path.setText(c.get("logging", "path", ""))
