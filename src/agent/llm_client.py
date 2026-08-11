@@ -39,6 +39,10 @@ class LLMClient:
             max_tokens=int(max_tokens),
             timeout=int(timeout),
             max_retries=MAX_RETRIES,
+            default_headers={
+                "X-Title": "psjba",
+                "HTTP-Referer": "https://psjba.app",
+            },
         )
 
         logger.info(f"LLM created: model={model}, base_url={base_url}")
