@@ -182,8 +182,17 @@ class ChromeLauncher:
         cmd.append(f"--remote-allow-origins=http://127.0.0.1:{self._port}")
         cmd.append("--no-first-run")
         cmd.append("--no-default-browser-check")
-        cmd.append("--disable-extensions")
         cmd.append("--disable-blink-features=AutomationControlled")
+
+        # 포커스 감지 확장 프로그램 로드
+        ext_path = os.path.normpath(
+            os.path.join(os.path.dirname(__file__), "..", "chrome", "extension")
+        )
+        if os.path.isdir(ext_path):
+            cmd.append(f"--load-extension={ext_path}")
+            logger.info("Loading extension from: %s", ext_path)
+        else:
+            logger.warning("Extension directory not found: %s", ext_path)
 
         ud = self._get_user_data_dir()
         cmd.append(f"--user-data-dir={ud}")
