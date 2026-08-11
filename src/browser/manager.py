@@ -499,10 +499,9 @@ class PlaywrightManager:
                     )
                     if active == "true":
                         self._focused_tab_index = i
-                        logger.debug("Focus detected via extension: tab %d", i)
                         break
-                except Exception as e:
-                    logger.debug("Focus check tab %d: %s", i, e)
+                except Exception:
+                    continue
 
         # TODO: 디버그 로그 — 탭 상태 확인용, 안정화 후 제거
         lines = [
