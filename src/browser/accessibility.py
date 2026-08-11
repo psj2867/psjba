@@ -1,6 +1,7 @@
 """접근성 트리 포맷팅 — Playwright accessibility snapshot → 계층 텍스트 (고도화)."""
 
 import asyncio
+import contextvars
 import logging
 from typing import Any, Optional
 
@@ -11,8 +12,8 @@ logger = logging.getLogger("psjba.browser.accessibility")
 MAX_TOKEN_ESTIMATE = 4000
 CHARS_PER_TOKEN = 4
 
-# ref 번호 부여를 위한 전역 카운터 (포맷 시에만 사용)
-_REF_COUNTER = {"n": 0}
+# ref 번호 부여를 위한 per-task 카운터 (contextvars로 cron/agent 간 격리)
+_REF_COUNTER: contextvars.ContextVar[int] = contextvars.ContextVar("ref_counter", default=0)
 
 # a11y role 중 상호작용 가능한 것
 _INTERACTIVE_ROLES = {
@@ -29,13 +30,14 @@ _TYPE_ROLES = {"textbox", "searchbox", "combobox", "spinbutton"}
 
 def _reset_ref_counter() -> None:
     """ref 번호 카운터를 초기화한다."""
-    _REF_COUNTER["n"] = 0
+    _REF_COUNTER.set(0)
 
 
 def _next_ref() -> int:
     """다음 ref 번호를 발급한다."""
-    _REF_COUNTER["n"] += 1
-    return _REF_COUNTER["n"]
+    n = _REF_COUNTER.get() + 1
+    _REF_COUNTER.set(n)
+    return n
 
 
 def _is_interactive(role: str) -> bool:
