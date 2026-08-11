@@ -2,8 +2,15 @@
   "manifest_version": 3,
   "name": "PSJBA Focus Tracker",
   "version": "1.0",
-  "permissions": ["tabs", "storage"],
+  "permissions": ["tabs"],
   "background": {
     "service_worker": "background.js"
-  }
+  },
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*", "file://*/*"],
+      "js": ["content.js"],
+      "run_at": "document_start"
+    }
+  ]
 }

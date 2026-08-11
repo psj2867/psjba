@@ -1,28 +1,32 @@
-// PSJBA Focus Tracker — active tab 감지 → chrome.storage에 기록
-// CDP Extensions.getStorageItems로 파이썬에서 읽어간다.
+// PSJBA Focus Tracker — active tab 감지 → 모든 탭 content script에 브로드캐스트
+// content script가 document.documentElement에 data-psjba-active 속성으로 기록
+
+function broadcast(activeTabId) {
+  chrome.tabs.query({}, (tabs) => {
+    for (const t of tabs) {
+      const isActive = t.id === activeTabId;
+      chrome.tabs.sendMessage(
+        t.id,
+        { type: "SET_ACTIVE", value: isActive ? "true" : "false" }
+      ).catch(() => {}); // content script 없는 탭(chrome:// 등)은 무시
+    }
+  });
+}
 
 chrome.tabs.onActivated.addListener((activeInfo) => {
-  chrome.tabs.get(activeInfo.tabId, (tab) => {
-    if (chrome.runtime.lastError) return;
-    const data = {
-      activeTabId: activeInfo.tabId,
-      activeTabUrl: tab.url,
-      activeTabTitle: tab.title,
-    };
-    chrome.storage.session.set(data);
-    chrome.storage.local.set(data);
-  });
+  broadcast(activeInfo.tabId);
 });
 
-// 최초 연결 시에도 현재 활성 탭 기록
-chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-  if (tabs && tabs.length > 0) {
-    const data = {
-      activeTabId: tabs[0].id,
-      activeTabUrl: tabs[0].url,
-      activeTabTitle: tabs[0].title,
-    };
-    chrome.storage.session.set(data);
-    chrome.storage.local.set(data);
+// 페이지 새로고침/네비게이션 후에도 활성 마커 재설정
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (changeInfo.status === "complete") {
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      if (tabs && tabs.length > 0) broadcast(tabs[0].id);
+    });
   }
+});
+
+// 최초 로드 시 현재 활성 탭 기록
+chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+  if (tabs && tabs.length > 0) broadcast(tabs[0].id);
 });
