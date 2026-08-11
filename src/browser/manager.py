@@ -276,6 +276,22 @@ class PlaywrightManager:
                 self._tabs = [_TabInfo(page)]
                 self._focused_tab_index = 0
 
+            # TODO: 디버그 로그 — 탭 변화 추적, 안정화 후 제거
+            async def _on_page(page: Page) -> None:
+                try:
+                    await page.wait_for_load_state("domcontentloaded", timeout=5.0)
+                except Exception:
+                    pass
+                try:
+                    url = page.url
+                except Exception:
+                    url = "<?>"
+                tabs = self._tabs
+                lines = [f"  Tab {i}: {t.page.url if hasattr(t, 'page') else '?'}" for i, t in enumerate(tabs)]
+                logger.debug("Tab event: new page=%s | tabs(%d):\n%s", url, len(tabs), "\n".join(lines))
+
+            self._context.on("page", _on_page)
+
             # 모든 페이지에 dialog override init script 주입
             await self._inject_dialog_override()
 
