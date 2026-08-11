@@ -385,41 +385,6 @@ class PlaywrightManager:
                 "Extension load failed — focus detection disabled: %s", e,
             )
 
-    async def _get_active_tab_url(self) -> Optional[str]:
-        """확장 storage에서 activeTabUrl을 읽어온다.
-
-        CDP Extensions.getStorageItems 사용.
-        browser-level -> page-level session, session -> local storage
-        순서로 fallback.
-        """
-        if not self._ext_available or not self._ext_id or not self._tabs:
-            logger.debug("get_active_tab_url: skip (ext_available=%s ext_id=%s tabs=%d)",
-                         self._ext_available, self._ext_id, len(self._tabs))
-            return None
-
-        for label, make_session in [
-            ("browser", lambda: self._browser.new_browser_cdp_session()),
-            ("page", lambda: self._context.new_cdp_session(self._tabs[0].page)),
-        ]:
-            for area in ("session", "local"):
-                try:
-                    cdp = await make_session()
-                    data = await cdp.send("Extensions.getStorageItems", {
-                        "id": self._ext_id,
-                        "storageArea": area,
-                        "keys": ["activeTabUrl"],
-                    })
-                    result = data.get("data", {}).get("activeTabUrl")
-                    logger.debug("get_active_tab_url: session=%s area=%s ext_id=%s result=%s",
-                                 label, area, self._ext_id, result)
-                    if result:
-                        return result
-                except Exception as e:
-                    logger.debug("get_active_tab_url: session=%s area=%s error=%s",
-                                 label, area, e)
-
-        return None
-
     def _ensure_connected(self) -> None:
         if not self._connected:
             raise RuntimeError("Not connected to Chrome. Call connect() first.")
@@ -539,14 +504,19 @@ class PlaywrightManager:
         if self._focused_tab_index >= len(self._tabs):
             self._focused_tab_index = max(0, len(self._tabs) - 1)
 
-        # 확장 프로그램으로 active tab URL 읽어서 포커스 보정
+        # 확장 프로그램 content script DOM attribute로 포커스 보정
         if self._ext_available:
-            active_url = await self._get_active_tab_url()
-            if active_url:
-                for i, tab in enumerate(self._tabs):
-                    if tab.url == active_url:
+            for i, tab in enumerate(self._tabs):
+                try:
+                    active = await tab.page.evaluate(
+                        "document.documentElement.getAttribute('data-psjba-active')"
+                    )
+                    if active == "true":
                         self._focused_tab_index = i
+                        logger.debug("Focus detected via extension: tab %d", i)
                         break
+                except Exception as e:
+                    logger.debug("Focus check tab %d: %s", i, e)
 
         # TODO: 디버그 로그 — 탭 상태 확인용, 안정화 후 제거
         lines = [
