@@ -211,32 +211,25 @@ class MainWindow(QMainWindow):
         )
 
     def _on_connect_done(self, result) -> None:
-        """connect() 완료 후 호출. result는 str 또는 발생한 예외."""
+        """connect() 완료 후 호출. result는 성공 시 str, 실패 시 예외."""
         if isinstance(result, ExtensionError):
-            QMessageBox.warning(
-                self,
-                "Chrome 연결 오류",
-                str(result),
-            )
-            self._set_chrome_status("disconnected")
+            QMessageBox.warning(self, "Chrome 연결 오류", str(result))
         elif isinstance(result, Exception):
             QMessageBox.critical(
-                self,
-                "Chrome 연결 실패",
+                self, "Chrome 연결 실패",
                 f"Chrome 연결 중 오류가 발생했습니다:\n{result}",
             )
-            self._set_chrome_status("disconnected")
-        elif "Chrome connected" in result or "Already" in result:
-            self._set_chrome_status("connected")
         else:
-            self._set_chrome_status("disconnected")
+            self._set_chrome_status("connected")
+            return
+        self._set_chrome_status("disconnected")
 
     def _disconnect_chrome(self) -> None:
-        async def _do():
-            await self._manager.disconnect()
-            return "disconnected"
-
-        self._run_async_background(_do(), self._on_connect_done)
+        """Chrome 연결을 해제한다."""
+        self._run_async_background(
+            self._manager.disconnect(),
+            lambda _: self._set_chrome_status("disconnected"),
+        )
 
     def _set_chrome_status(self, status: str) -> None:
         if status == "connected":
