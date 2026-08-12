@@ -171,7 +171,14 @@ def _format_node(
             if not _leaf_text:
                 _leaf_text = ""
         else:
-            # non-leaf: name이 있으면 표시, 없으면 _text_content로 fallback
+            # non-leaf: 자식과 중복된 name은 생략 (interactive는 유지)
+            if name and not _is_interactive(role) and any(
+                name == c.get("name", "")
+                or name.startswith(c.get("name", ""))
+                or c.get("name", "").startswith(name)
+                for c in children
+            ):
+                name = ""
             if name:
                 label_parts.append(f'"{name}"')
             else:
@@ -443,17 +450,6 @@ async def _prune_tree(snapshot: dict[str, Any]) -> Optional[dict[str, Any]]:
         and not pruned_children
     ):
         return None
-
-    # non-interactive 컨테이너: 자식과 중복된 name 제거
-    if name and pruned_children and not _is_interactive(role):
-        if any(
-            name == c.get("name", "") or name.startswith(c.get("name", ""))
-            or c.get("name", "").startswith(name)
-            for c in pruned_children
-        ):
-            snapshot = dict(snapshot)
-            snapshot.pop("name", None)
-            name = ""  # 로컬 변수도 초기화
 
     result = dict(snapshot)
     result["children"] = pruned_children
