@@ -141,9 +141,10 @@ def _format_node(
 
     # 태그 정보
     tag = node.get("tag", "")
+    nid = node.get("_id", "")
+    cls = node.get("_class", "")
     if tag:
         attr_parts = [tag]
-        nid = node.get("_id", "")
         if nid:
             attr_parts.append(f"#{nid}")
         if attr_parts:
@@ -1085,17 +1086,19 @@ def _cdp_nodes_to_snapshot(nodes: list[dict]) -> dict[str, Any]:
     return snapshot
 
 
-async def _fallback_via_evaluate(page: Page) -> str:
-    """page.evaluate() 로 DOM 기반 접근성 정보를 추출한다."""
+async def _fallback_via_evaluate(page: Page, max_tokens: int = 2000) -> str:
+    """page.evaluate() 로 DOM 기반 접근성 정보를 추출한다.
+
+    _get_accessibility_via_cdp_with_refs와 동일한 format_accessibility_tree 파이프라인을 태운다.
+    """
     try:
         js = r"""
         () => {
-            const parts = [];
-
-            parts.push("=== Page ===");
-            parts.push(document.title || "(no title)");
-            parts.push("URL: " + (location.href || ""));
-
+            const root = {
+                role: "Root",
+                name: document.title || "",
+                children: []
+            };
             const selectors = [
                 "nav", "main", "section", "article", "aside",
                 "header", "footer", "form", "search",
@@ -1107,26 +1110,30 @@ async def _fallback_via_evaluate(page: Page) -> str:
                 '[role="dialog"]', '[role="alert"]', '[role="menu"]',
             ];
             const seen = new Set();
-            parts.push("\n=== Interactive Elements ===");
             document.querySelectorAll(selectors.join(",")).forEach(el => {
                 const tag = el.tagName.toLowerCase();
                 const text = (el.textContent || "").trim().slice(0, 100);
                 const aria = el.getAttribute("aria-label") || "";
-                const label = aria || text;
-                if (!label || seen.has(label)) return;
-                seen.add(label);
+                const name = aria || text;
+                if (!name || seen.has(name)) return;
+                seen.add(name);
                 const role = el.getAttribute("role") || tag;
-                parts.push(`  [${role}] "${label}" (<${tag}${el.id ? ' #'+el.id : ''}>)`);
+                const node = {
+                    role: role,
+                    name: name,
+                    tag: tag,
+                    _id: el.id || "",
+                    _class: el.className || "",
+                };
+                root.children.push(node);
             });
-
-            parts.push("\n=== Body Text ===");
-            const bodyText = (document.body && document.body.innerText || "").trim();
-            parts.push(bodyText.slice(0, 3000) + (bodyText.length > 3000 ? "\n... (truncated)" : ""));
-
-            return parts.join("\n");
+            return JSON.stringify(root);
         }
         """
-        text = await page.evaluate(js)
+        json_str = await page.evaluate(js)
+        snapshot = json.loads(json_str)
+
+        text, _refs = await format_accessibility_tree_with_refs(snapshot, max_tokens=max_tokens)
         return text or "(Empty page)"
     except Exception as e:
         logger.error("Fallback evaluate failed: %s", e)
