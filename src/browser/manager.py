@@ -1195,14 +1195,14 @@ class PlaywrightManager:
                     "backendNodeId": backend_id,
                 })
                 outer = result.get("outerHTML", "")
-                # textContent만 추출
+                # TrustedHTML CSP 우회: DOMParser 사용 (innerHTML 금지)
                 text = await page.evaluate(
-                    "(html) => { const d = document.createElement('div'); "
-                    "d.innerHTML = html; "
-                    "return (d.textContent || '').trim().substring(0, 5000); }",
+                    "(html) => { const d = new DOMParser().parseFromString(html, 'text/html'); "
+                    "return (d.body.textContent || '').trim().substring(0, 5000); }",
                     outer,
                 )
-                return f"Text for ref #{ref} ({role} \"{name}\"):\n{text}"
+                if text:
+                    return f"Text for ref #{ref} ({role} \"{name}\"):\n{text}"
             except Exception as e:
                 logger.warning("CDP getOuterHTML for ref %d failed: %s", ref, e)
 
