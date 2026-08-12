@@ -907,22 +907,20 @@ async def _enrich_node(cdp_session: Any, node: dict[str, Any]) -> None:
             elif attr_name == "name":
                 node["_form_name"] = attr_val
 
-        # 리프 노드(자식 없음)일 때만 DOM textContent 추출
-        children = node.get("children", [])
-        if not children:
-            try:
-                html_resp = await cdp_session.send("DOM.getOuterHTML", {
-                    "backendNodeId": backend_id,
-                })
-                outer = html_resp.get("outerHTML", "")
-                if outer:
-                    import re
-                    text = re.sub(r'<[^>]+>', '', outer).strip()
-                    text = ' '.join(text.split())  # 연속 공백 제거
-                    if text:
-                        node["_text_content"] = text[:200]  # 최대 200자
-            except Exception:
-                pass
+        # DOM getOuterHTML로 순수 텍스트 추출 (모든 노드 시도)
+        try:
+            html_resp = await cdp_session.send("DOM.getOuterHTML", {
+                "backendNodeId": backend_id,
+            })
+            outer = html_resp.get("outerHTML", "")
+            if outer:
+                import re
+                text = re.sub(r'<[^>]+>', '', outer).strip()
+                text = ' '.join(text.split())  # 연속 공백 제거
+                if text:
+                    node["_text_content"] = text[:200]  # 최대 200자
+        except Exception:
+            pass
     except Exception:
         pass
 
