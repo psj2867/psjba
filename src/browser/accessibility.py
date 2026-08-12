@@ -154,17 +154,18 @@ def _format_node(
         if attr_parts:
             label_parts.append(f"<{' '.join(attr_parts)}>")
 
-    if name:
-        # 리프 노드는 텍스트를 뒤에 "..." 형태로 추가
+    if name or node.get("_text_content"):
         children = node.get("children", [])
         if not children:
-            text = name.strip()
+            # 리프 노드는 DOM textContent 우선, 없으면 accessibility name
+            text = (node.get("_text_content", "") or name).strip()
             if len(text) > 10:
                 text = text[:10] + "..."
             _leaf_text = f'"{text}"'
         else:
             _leaf_text = ""
-            label_parts.append(f'"{name}"')
+            if name:
+                label_parts.append(f'"{name}"')
     else:
         _leaf_text = ""
 
@@ -867,33 +868,51 @@ async def _enrich_cdp_snapshot_with_dom(cdp_session: Any,
 
 
 async def _enrich_node(cdp_session: Any, node: dict[str, Any]) -> None:
-    """단일 노드의 DOM 속성을 CDP describeNode로 채운다."""
+    """단일 노드의 DOM 속성과 텍스트를 CDP describeNode로 채운다."""
     backend_id = node.get("_backendNodeId")
-    if backend_id:
-        try:
-            desc = await cdp_session.send("DOM.describeNode", {
-                "backendNodeId": backend_id,
-            })
-            dom_node = desc.get("node", {})
-            node["tag"] = dom_node.get("localName", "").lower()
-            attrs = dom_node.get("attributes", [])
-            for i in range(0, len(attrs) - 1, 2):
-                attr_name = attrs[i]
-                attr_val = attrs[i + 1]
-                if attr_name == "id":
-                    node["_id"] = attr_val
-                elif attr_name == "class":
-                    node["_class"] = attr_val
-                elif attr_name == "type":
-                    node["_type"] = attr_val
-                elif attr_name == "placeholder":
-                    node["_placeholder"] = attr_val
-                elif attr_name in ("aria-label", "aria_label"):
-                    node["_aria_label"] = attr_val
-                elif attr_name == "name":
-                    node["_form_name"] = attr_val
-        except Exception:
-            pass
+    if not backend_id:
+        return
+    try:
+        desc = await cdp_session.send("DOM.describeNode", {
+            "backendNodeId": backend_id,
+        })
+        dom_node = desc.get("node", {})
+        node["tag"] = dom_node.get("localName", "").lower()
+        attrs = dom_node.get("attributes", [])
+        for i in range(0, len(attrs) - 1, 2):
+            attr_name = attrs[i]
+            attr_val = attrs[i + 1]
+            if attr_name == "id":
+                node["_id"] = attr_val
+            elif attr_name == "class":
+                node["_class"] = attr_val
+            elif attr_name == "type":
+                node["_type"] = attr_val
+            elif attr_name == "placeholder":
+                node["_placeholder"] = attr_val
+            elif attr_name in ("aria-label", "aria_label"):
+                node["_aria_label"] = attr_val
+            elif attr_name == "name":
+                node["_form_name"] = attr_val
+
+        # 리프 노드(자식 없음)일 때만 DOM textContent 추출
+        children = node.get("children", [])
+        if not children:
+            try:
+                html_resp = await cdp_session.send("DOM.getOuterHTML", {
+                    "backendNodeId": backend_id,
+                })
+                outer = html_resp.get("outerHTML", "")
+                if outer:
+                    import re
+                    text = re.sub(r'<[^>]+>', '', outer).strip()
+                    text = ' '.join(text.split())  # 연속 공백 제거
+                    if text:
+                        node["_text_content"] = text[:200]  # 최대 200자
+            except Exception:
+                pass
+    except Exception:
+        pass
 
 
 # ─── Legacy CDP fallback (getFullAXTree → snapshot) ───
