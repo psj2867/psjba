@@ -181,6 +181,11 @@ def _format_node(
     else:
         _leaf_text = ""
 
+    # image: name/alt 없으면 role만 표시하고 디테일 생략
+    is_image = role.lower() in ("image", "img", "graphic", "icon")
+    if is_image and not _leaf_text and not name:
+        return f"{indent * depth}[{role}] {_leaf_text}".rstrip()
+
     # 타이핑에 중요한 속성들
     input_type = node.get("_type", "")
     if input_type and input_type != "text":
