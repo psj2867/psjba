@@ -228,42 +228,51 @@ class PlaywrightManager:
             logger.debug("connect() called but already connected")
             return "Already connected"
 
-        logger.info("Connecting to Chrome CDP (host=%s, port=%s)...", self._cdp_host, self._cdp_port)
+        logger.info("Connecting to Chrome CDP (host=%s, port=%s)...",
+                    self._cdp_host, self._cdp_port)
 
-        # 1차 연결 (기존 Chrome에 붙거나 실행)
-        quick_ok = await self._launcher.quick_check()
-        if not quick_ok:
-            if launch_if_needed:
-                logger.info("Chrome not detected on port %s, launching...", self._cdp_port)
-                launched = await self._launcher.launch_chrome()
-                if not launched:
-                    raise ExtensionError("Chrome을 실행할 수 없습니다. (CDP 연결 실패)")
-                logger.info("Chrome launched successfully, CDP ready")
-            else:
-                raise ExtensionError("Chrome이 실행 중이지 않습니다.")
+        try:
+            # 1차 연결
+            quick_ok = await self._launcher.quick_check()
+            if not quick_ok:
+                if launch_if_needed:
+                    logger.info("Chrome not detected, launching...")
+                    launched = await self._launcher.launch_chrome()
+                    if not launched:
+                        raise ExtensionError("Chrome을 실행할 수 없습니다.")
+                else:
+                    raise ExtensionError("Chrome이 실행 중이지 않습니다.")
 
-        await self._connect_cdp()
+            await self._connect_cdp()
 
-        # 확장이 없으면 launcher로 Chrome 재시작
-        if not self._ext_available:
-            if self._launcher.chrome_path:
-                logger.warning("Extension not found — restarting Chrome with --load-extension")
-                await self.disconnect()
-                await self._launcher.kill_chrome()
-                launched = await self._launcher.launch_chrome()
-                if not launched:
+            # 확장이 없으면 launcher로 Chrome 재시작
+            if not self._ext_available:
+                if self._launcher.chrome_path:
+                    logger.warning("Extension not found — restarting Chrome")
+                    await self.disconnect()
+                    await self._launcher.kill_chrome()
+                    launched = await self._launcher.launch_chrome()
+                    if not launched:
+                        raise ExtensionError(
+                            "Chrome 재시작 후에도 확장 프로그램을 불러올 수 없습니다.\n"
+                            "Chrome을 최신 버전으로 업데이트한 후 다시 시도해 주세요."
+                        )
+                    await self._connect_cdp()
+                else:
                     raise ExtensionError(
-                        "Chrome 재시작 후에도 확장 프로그램을 불러올 수 없습니다.\n"
+                        "Chrome 확장 프로그램(PSJBA Focus Tracker)을 불러올 수 없습니다.\n"
                         "Chrome을 최신 버전으로 업데이트한 후 다시 시도해 주세요."
                     )
-                await self._connect_cdp()
-            else:
-                raise ExtensionError(
-                    "Chrome 확장 프로그램(PSJBA Focus Tracker)을 불러올 수 없습니다.\n"
-                    "Chrome을 최신 버전으로 업데이트한 후 다시 시도해 주세요."
-                )
 
-        return "Chrome connected"
+            return "Chrome connected"
+
+        except ExtensionError:
+            self._cleanup_state()
+            raise
+        except Exception as e:
+            logger.error("Chrome connection error: %s [%s]", e, type(e).__name__)
+            self._cleanup_state()
+            raise ExtensionError(f"Chrome 연결 중 오류 발생: {e}") from e
 
     async def _connect_cdp(self) -> str:
         """Playwright로 CDP WebSocket에 연결하고 탭/확장을 설정한다."""
