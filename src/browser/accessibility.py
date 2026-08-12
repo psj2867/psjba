@@ -157,11 +157,23 @@ def _format_node(
     if name or node.get("_text_content"):
         children = node.get("children", [])
         if not children:
-            # 리프 노드는 DOM textContent 우선, 없으면 accessibility name
-            text = (node.get("_text_content", "") or name).strip()
-            if len(text) > 10:
-                text = text[:10] + "..."
-            _leaf_text = f'"{text}"'
+            # 리프 노드: DOM textContent + accessibility name 둘 다 표시
+            dom_text = node.get("_text_content", "")
+            if dom_text:
+                dt = dom_text.strip()
+                if len(dt) > 10:
+                    dt = dt[:10] + "..."
+                _leaf_text = f'"{dt}"'
+            else:
+                _leaf_text = ""
+            # accessibility name이 DOM text와 다르면 따로 표시
+            if name and name.strip() != dom_text.strip():
+                an = name.strip()
+                if len(an) > 10:
+                    an = an[:10] + "..."
+                _leaf_text += f' a11y="{an}"' if _leaf_text else f'"{an}"'
+            if not _leaf_text:
+                _leaf_text = ""
         else:
             _leaf_text = ""
             if name:
