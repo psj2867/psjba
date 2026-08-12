@@ -177,6 +177,28 @@ class TestPruneTree:
         assert "StaticText" not in result
         assert '"ok"' in result
 
+    @pytest.mark.asyncio
+    async def test_collapse_none_with_name_and_children(self):
+        """name 있어도 children 있으면 none은 순수 컨테이너로 취급 → 자식만 남김"""
+        node = {
+            "role": "Root",
+            "name": "",
+            "children": [
+                {
+                    "role": "none",
+                    "name": "Search commands...",
+                    "children": [
+                        {"role": "button", "name": "New Chat", "children": []},
+                        {"role": "button", "name": "Customize", "children": []},
+                    ],
+                }
+            ],
+        }
+        result = await format_accessibility_tree(node)
+        assert "Search commands" not in result
+        assert '"New Chat"' in result
+        assert '"Customize"' in result
+
 
 class TestTokenPrune:
     @pytest.mark.asyncio
