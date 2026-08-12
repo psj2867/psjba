@@ -155,11 +155,13 @@ def _format_node(
             label_parts.append(f"<{' '.join(attr_parts)}>")
 
     if name:
-        # 리프 노드는 → 10자까지 간략 표시
+        # 리프 노드는 → textContent (앞 공백 제거, 10자, 넘치면 ...)
         children = node.get("children", [])
         if not children:
-            truncated = name[:10]
-            label_parts.append(f"→ {truncated}")
+            text = name.strip()
+            if len(text) > 10:
+                text = text[:10] + "..."
+            label_parts.append(f"→ {text}")
         else:
             label_parts.append(f'"{name}"')
 
