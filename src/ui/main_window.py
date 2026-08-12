@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from src.browser.manager import PlaywrightManager
+from src.browser.manager import PlaywrightManager, ExtensionError
 from src.config import Config
 from src.database import Database
 from src.ui.chat_widget import ChatWidget
@@ -205,40 +205,31 @@ class MainWindow(QMainWindow):
     def _connect_chrome(self) -> None:
         self._set_chrome_status("connecting")
         logger.debug("Chrome connect requested, launching...")
+        self._run_async_background(
+            self._manager.connect(launch_if_needed=True),
+            self._on_connect_done,
+        )
 
-        async def _do():
-            logger.debug("Calling manager.connect(launch_if_needed=True)...")
-            result = await self._manager.connect(launch_if_needed=True)
-            logger.debug("manager.connect returned: %s", result)
-            return result
-
-        self._run_async_background(_do(), self._on_connect_done)
-
-    def _on_connect_done(self, result: str) -> None:
-        logger.debug("Chrome connect result: %s", result)
-        if "Chrome connected" in result or "Already" in result:
-            self._set_chrome_status("connected")
-            return
-        if "Extension" in result or "Error" in result or "update Chrome" in result:
+    def _on_connect_done(self, result) -> None:
+        """connect() 완료 후 호출. result는 str 또는 발생한 예외."""
+        if isinstance(result, ExtensionError):
             QMessageBox.warning(
                 self,
                 "Chrome 연결 오류",
-                "Chrome 확장 프로그램(PSJBA Focus Tracker)을 불러올 수 없습니다.\n"
-                "Chrome을 최신 버전으로 업데이트한 후 다시 시도해 주세요."
+                str(result),
             )
-        elif "Chrome not connected" in result:
-            QMessageBox.information(
-                self,
-                "Chrome 연결",
-                "Chrome 실행 중인 상태에서 다시 시도해 주세요."
-            )
-        else:
+            self._set_chrome_status("disconnected")
+        elif isinstance(result, Exception):
             QMessageBox.critical(
                 self,
                 "Chrome 연결 실패",
-                f"Chrome 연결 중 오류가 발생했습니다:\n{result}"
+                f"Chrome 연결 중 오류가 발생했습니다:\n{result}",
             )
-        self._set_chrome_status("disconnected")
+            self._set_chrome_status("disconnected")
+        elif "Chrome connected" in result or "Already" in result:
+            self._set_chrome_status("connected")
+        else:
+            self._set_chrome_status("disconnected")
 
     def _disconnect_chrome(self) -> None:
         async def _do():
@@ -379,7 +370,7 @@ class MainWindow(QMainWindow):
                 result = None
             except Exception as e:
                 logger.error("Background task error: %s [%s]", e, type(e).__name__)
-                result = None
+                result = e  # 예외 객체를 그대로 콜백에 전달
             if callback:
                 from PySide6.QtCore import QTimer
                 QTimer.singleShot(0, lambda r=result: callback(r))
