@@ -88,6 +88,10 @@ class _TabInfo:
             pass
 
 
+class ExtensionError(RuntimeError):
+    """확장 프로그램 관련 오류."""
+    pass
+
 class PlaywrightManager:
     """Playwright를 통한 브라우저 제어를 담당하는 서비스 클래스.
 
@@ -230,6 +234,9 @@ class PlaywrightManager:
 
         확장 프로그램이 로드되지 않았으면 launcher가 설정된 경우
         Chrome을 재시작하여 --load-extension을 적용한다.
+
+        Raises:
+            ExtensionError: 확장 프로그램을 로드할 수 없는 경우
         """
         if self._connected:
             logger.debug("connect() called but already connected")
@@ -239,39 +246,40 @@ class PlaywrightManager:
 
         # 1차 연결 (기존 Chrome에 붙거나 실행)
         quick_ok = await self._launcher.quick_check()
-        logger.info("CDP quick check result: %s (launch_if_needed=%s)",
-                    quick_ok, launch_if_needed)
         if not quick_ok:
             if launch_if_needed:
                 logger.info("Chrome not detected on port %s, launching...", self._cdp_port)
                 launched = await self._launcher.launch_chrome()
                 if not launched:
-                    logger.error("Chrome launch failed: CDP not available after launch")
-                    return "Chrome connection failed"
+                    raise ExtensionError("Chrome을 실행할 수 없습니다. (CDP 연결 실패)")
                 logger.info("Chrome launched successfully, CDP ready")
             else:
                 logger.info("Chrome not connected (launch_if_needed=False)")
-                return "Chrome not connected"
+                raise ExtensionError("Chrome이 실행 중이지 않습니다.")
 
         result = await self._connect_cdp()
         if result != "Chrome connected":
-            return result
+            raise ExtensionError(f"CDP 연결 실패: {result}")
 
         # 확장이 없으면 launcher로 Chrome 재시작
-        if not self._ext_available and self._launcher.chrome_path:
-            logger.warning("Extension not found — restarting Chrome with --load-extension")
-            await self.disconnect()
-            await self._launcher.kill_chrome()
-            launched = await self._launcher.launch_chrome()
-            if not launched:
-                return "Error: Chrome restart failed. Please update Chrome browser."
-            result = await self._connect_cdp()
-
         if not self._ext_available:
-            return (
-                "Error: Focus detection extension not loaded. "
-                "Please update Chrome to the latest version."
-            )
+            if self._launcher.chrome_path:
+                logger.warning("Extension not found — restarting Chrome with --load-extension")
+                await self.disconnect()
+                await self._launcher.kill_chrome()
+                launched = await self._launcher.launch_chrome()
+                if not launched:
+                    raise ExtensionError(
+                        "Chrome 재시작 후에도 확장 프로그램을 불러올 수 없습니다.\n"
+                        "Chrome을 최신 버전으로 업데이트한 후 다시 시도해 주세요."
+                    )
+                result = await self._connect_cdp()
+            else:
+                raise ExtensionError(
+                    "Chrome 확장 프로그램(PSJBA Focus Tracker)을 불러올 수 없습니다.\n"
+                    "Chrome을 최신 버전으로 업데이트한 후 다시 시도해 주세요."
+                )
+
         return result
 
     async def _connect_cdp(self) -> str:
