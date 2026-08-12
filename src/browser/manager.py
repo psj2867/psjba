@@ -1103,6 +1103,7 @@ class PlaywrightManager:
 
         접근성 트리에 표시되지 않는 보이는 텍스트를 추출할 때 사용한다.
         aria-label 등 accessible name이 비어있어도 실제 DOM 텍스트를 반환한다.
+        CDP backendNodeId로 정확한 요소를 찾는다.
 
         Args:
             ref: browser_snapshot() 결과에 표시된 [#N] 번호
@@ -1117,45 +1118,64 @@ class PlaywrightManager:
         page = self._ensure_page(tab_index)
         role = node.get("role", "")
         name = node.get("name", "")
+        backend_id = node.get("_backendNodeId")
 
-        try:
-            # Playwright get_by_role 로 찾기
-            if name:
-                locator = page.get_by_role(role, name=name, exact=False)
-            else:
-                locator = page.get_by_role(role)
-
-            # 모든 일치 요소의 텍스트 수집
-            count = await locator.count()
-            if count == 0:
-                return f"Text for ref #{ref} ({role} \"{name}\"): (no elements found)"
-            if count == 1:
-                text = (await locator.first.inner_text()).strip()
-                return f"Text for ref #{ref} ({role} \"{name}\"):\n{text}"
-            # 여러 개면 인덱스와 함께 표시
-            parts = []
-            for i in range(count):
-                t = (await locator.nth(i).inner_text()).strip()
-                short = t[:200] + ("..." if len(t) > 200 else "")
-                parts.append(f"[{i}] {short}")
-            return (f"Elements with role '{role}' (ref #{ref}): "
-                    f"{count} matches\n" + "\n".join(parts))
-        except Exception as e:
-            # fallback: page.evaluate 로 DOM textContent 직접 추출
+        # backendNodeId가 있으면 CDP getOuterHTML로 정확히 찾기
+        if backend_id is not None:
             try:
-                escaped_role = role.replace("'", "\\'")
-                script = (
-                    f"Array.from(document.querySelectorAll('[role=\"{escaped_role}\"], "
-                    f"{escaped_role}, [href]'))"
-                    f".slice(0, 20).map((el, i) => "
-                    f"'['+i+'] '+(el.textContent||'').trim().substring(0,200))"
+                cdp = await page.context.new_cdp_session(page)
+                result = await cdp.send("DOM.getOuterHTML", {
+                    "backendNodeId": backend_id,
+                })
+                outer = result.get("outerHTML", "")
+                # textContent만 추출
+                text = await page.evaluate(
+                    "(html) => { const d = document.createElement('div'); "
+                    "d.innerHTML = html; "
+                    "return (d.textContent || '').trim().substring(0, 5000); }",
+                    outer,
                 )
-                results = await page.evaluate(script)
-                if results:
-                    return f"Text for ref #{ref} ({role} \"{name}\") [DOM fallback]:\n" + "\n".join(results)
-                return f"Text for ref #{ref} ({role} \"{name}\") [DOM fallback]: (empty)"
-            except Exception as e2:
-                return f"Get text by ref #{ref} failed: {e} (fallback: {e2})"
+                return f"Text for ref #{ref} ({role} \"{name}\"):\n{text}"
+            except Exception as e:
+                logger.warning("CDP getOuterHTML for ref %d failed: %s", ref, e)
+
+        # fallback 1: _text_content (CDP enrichment에서 저장된 값)
+        text_content = node.get("_text_content", "")
+        if text_content:
+            return (f"Text for ref #{ref} ({role} \"{name}\"):\n"
+                    f"{text_content.strip()[:5000]}")
+
+        # fallback 2: page.evaluate 로 DOM textContent 직접 추출 (querySelector)
+        try:
+            tag = node.get("tag", "")
+            nid = node.get("_id", "")
+            if tag and nid:
+                script = (
+                    f"(document.querySelector('{tag}#{nid}')"
+                    f"?.textContent || '').trim().substring(0, 5000)"
+                )
+                text = await page.evaluate(script)
+                if text:
+                    return f"Text for ref #{ref} ({role} \"{name}\"):\n{text}"
+
+            # 최후: CSS selector fallback
+            escaped_role = role.replace("'", "\\'")
+            selector = f'[role="{escaped_role}"]'
+            if name:
+                escaped_name = name.replace("'", "\\'")
+                selector += f'[aria-label="{escaped_name}"]'
+            if tag:
+                selector = tag + selector
+            script = (
+                f"(document.querySelector('{selector}')"
+                f"?.textContent || '').trim().substring(0, 5000)"
+            )
+            text = await page.evaluate(script)
+            if text:
+                return f"Text for ref #{ref} ({role} \"{name}\"):\n{text}"
+            return f"Text for ref #{ref} ({role} \"{name}\"): (no text found)"
+        except Exception as e:
+            return f"Get text by ref #{ref} failed: {e}"
 
     async def browser_screenshot(
         self,
