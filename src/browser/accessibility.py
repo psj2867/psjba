@@ -629,6 +629,9 @@ async def get_accessibility_tree_with_refs(
     """접근성 트리 텍스트와 ref 매핑을 함께 가져온다.
     DOM 정보도 함께 수집하여 refs를 풍부하게 만든다.
 
+    CDP DOM.describeNode로 전체 트리에 속성(tag, class, id, name 등)을
+    심어서 _format_node에서 <tag .class #id name=...> 형태로 출력한다.
+
     Returns:
         (포맷팅된 텍스트, {ref: {role, name, tag, _id, _class, ...}})
     """
@@ -650,8 +653,14 @@ async def get_accessibility_tree_with_refs(
             text = await _fallback_via_evaluate(page)
             return text, {}
 
+    # CDP 세션으로 snapshot 트리에 DOM 속성(name, class, id 등) 심기
+    try:
+        cdp = await page.context.new_cdp_session(page)
+        await _enrich_cdp_snapshot_with_dom(cdp, snapshot)
+    except Exception as e:
+        logger.debug("CDP tree enrichment failed (non-fatal): %s", e)
+
     text, refs = await format_accessibility_tree_with_refs(snapshot)
-    await enrich_with_dom_info(page, refs)
     return text, refs
 
 
@@ -829,39 +838,57 @@ def _cdp_subtree_to_snapshot(node_id: str, node_map: dict[str, dict]) -> dict[st
 
 async def _enrich_cdp_snapshot_with_dom(cdp_session: Any,
                                         snapshot: dict[str, Any]) -> None:
-    """CDP DOM.describeNode로 snapshot 트리의 모든 노드에 태그/속성 정보를 추가한다."""
-    async def _enrich(node: dict[str, Any]) -> None:
-        backend_id = node.get("_backendNodeId")
-        if backend_id:
-            try:
-                desc = await cdp_session.send("DOM.describeNode", {
-                    "backendNodeId": backend_id,
-                })
-                dom_node = desc.get("node", {})
-                node["tag"] = dom_node.get("localName", "").lower()
-                # CDP returns attributes as flat list [name1, value1, name2, value2, ...]
-                attrs = dom_node.get("attributes", [])
-                for i in range(0, len(attrs) - 1, 2):
-                    attr_name = attrs[i]
-                    attr_val = attrs[i + 1]
-                    if attr_name == "id":
-                        node["_id"] = attr_val
-                    elif attr_name == "class":
-                        node["_class"] = attr_val
-                    elif attr_name == "type":
-                        node["_type"] = attr_val
-                    elif attr_name == "placeholder":
-                        node["_placeholder"] = attr_val
-                    elif attr_name in ("aria-label", "aria_label"):
-                        node["_aria_label"] = attr_val
-                    elif attr_name == "name":
-                        node["_form_name"] = attr_val
-            except Exception:
-                pass
-        for child in node.get("children", []):
-            await _enrich(child)
+    """CDP DOM.describeNode로 snapshot 트리의 모든 노드에 태그/속성 정보를 추가한다.
 
-    await _enrich(snapshot)
+    Playwright snapshot(native)과 CDP snapshot 모두에서 동작:
+    - Playwright: backendDOMNodeId → _backendNodeId로 정규화
+    - CDP: _backendNodeId 직접 보유
+    """
+    # backendDOMNodeId → _backendNodeId 정규화
+    async def _normalize(node):
+        bid = node.get("backendDOMNodeId")
+        if bid:
+            node["_backendNodeId"] = bid
+        for child in node.get("children", []):
+            await _normalize(child)
+
+    async def _enrich_all(node):
+        await _enrich_node(cdp_session, node)
+        for child in node.get("children", []):
+            await _enrich_all(child)
+
+    await _normalize(snapshot)
+    await _enrich_all(snapshot)
+
+
+async def _enrich_node(cdp_session: Any, node: dict[str, Any]) -> None:
+    """단일 노드의 DOM 속성을 CDP describeNode로 채운다."""
+    backend_id = node.get("_backendNodeId")
+    if backend_id:
+        try:
+            desc = await cdp_session.send("DOM.describeNode", {
+                "backendNodeId": backend_id,
+            })
+            dom_node = desc.get("node", {})
+            node["tag"] = dom_node.get("localName", "").lower()
+            attrs = dom_node.get("attributes", [])
+            for i in range(0, len(attrs) - 1, 2):
+                attr_name = attrs[i]
+                attr_val = attrs[i + 1]
+                if attr_name == "id":
+                    node["_id"] = attr_val
+                elif attr_name == "class":
+                    node["_class"] = attr_val
+                elif attr_name == "type":
+                    node["_type"] = attr_val
+                elif attr_name == "placeholder":
+                    node["_placeholder"] = attr_val
+                elif attr_name in ("aria-label", "aria_label"):
+                    node["_aria_label"] = attr_val
+                elif attr_name == "name":
+                    node["_form_name"] = attr_val
+        except Exception:
+            pass
 
 
 # ─── Legacy CDP fallback (getFullAXTree → snapshot) ───
