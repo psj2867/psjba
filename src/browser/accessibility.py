@@ -392,7 +392,7 @@ async def _prune_tree(snapshot: dict[str, Any]) -> Optional[dict[str, Any]]:
     # 순수 레이아웃 컨테이너 — class 유무와 관계없이 자식을 한 단계 끌어올림
     is_pure_container = (
         role in ("none", "None", "generic", "Generic")
-        and not name and not value and not description
+        and not value and not description
         and not snapshot.get("_id")
         and bool(children)
     )
@@ -404,8 +404,9 @@ async def _prune_tree(snapshot: dict[str, Any]) -> Optional[dict[str, Any]]:
         if len(pruned_all) == 1:
             return pruned_all[0]
         if pruned_all:
-            snapshot["role"] = role
+            # pure container는 name 버리고 children만 유지 (role도 유지)
             snapshot["children"] = pruned_all
+            snapshot.pop("name", None)
             snapshot.pop("_class", None)
             snapshot.pop("tag", None)
             return snapshot
@@ -943,7 +944,7 @@ async def _enrich_node(cdp_session: Any, node: dict[str, Any]) -> None:
             outer = html_resp.get("outerHTML", "")
             if outer:
                 import re
-                text = re.sub(r'<[^>]+>', '', outer).strip()
+                text = re.sub(r'<[^>]+>', ' ', outer).strip()  # 태그 → 공백
                 text = ' '.join(text.split())  # 연속 공백 제거
                 if text:
                     node["_text_content"] = text[:200]  # 최대 200자
