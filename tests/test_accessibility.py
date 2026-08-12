@@ -37,7 +37,7 @@ class TestFormatNode:
         node = {"role": "link", "name": "Click here"}
         result = _format_node(node, depth=0)
         assert '[link]' in result
-        assert '→ Click here' in result
+        assert '"Click here"' in result
 
     def test_with_value(self):
         node = {"role": "textbox", "name": "Search", "value": "hello"}
@@ -96,7 +96,7 @@ class TestFormatTree:
         snapshot = {"role": "Root", "name": "page"}
         lines = await format_accessibility_tree(snapshot)
         assert "[Root]" in lines
-        assert "→ page" in lines
+        assert '"page"' in lines
 
     @pytest.mark.asyncio
     async def test_nested_nodes(self):
@@ -110,8 +110,8 @@ class TestFormatTree:
         }
         result = await format_accessibility_tree(snapshot)
         # 리프 노드는 → format
-        assert "→ ok" in result
-        assert "→ here" in result
+        assert '"ok"' in result
+        assert '"here"' in result
 
     @pytest.mark.asyncio
     async def test_deep_nesting(self):
@@ -127,7 +127,7 @@ class TestFormatTree:
             ],
         }
         result = await format_accessibility_tree(snapshot)
-        assert "→ deep" in result
+        assert '"deep"' in result
 
 
 class TestPruneTree:
@@ -145,7 +145,7 @@ class TestPruneTree:
             {"role": "StaticText", "name": "hello", "children": []}
         ]}
         result = await format_accessibility_tree(node)
-        assert "→ hello" in result
+        assert '"hello"' in result
 
     @pytest.mark.asyncio
     async def test_remove_none_role(self):
@@ -175,7 +175,7 @@ class TestPruneTree:
         }
         result = await format_accessibility_tree(node)
         assert "StaticText" not in result
-        assert "→ ok" in result
+        assert '"ok"' in result
 
 
 class TestTokenPrune:
@@ -184,7 +184,7 @@ class TestTokenPrune:
         snapshot = {"role": "Root", "name": "small"}
         result = await format_accessibility_tree(snapshot)
         assert "[Root]" in result
-        assert "→ small" in result
+        assert '"small"' in result
 
     @pytest.mark.asyncio
     async def test_prune_large_tree(self):

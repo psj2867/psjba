@@ -155,15 +155,18 @@ def _format_node(
             label_parts.append(f"<{' '.join(attr_parts)}>")
 
     if name:
-        # 리프 노드는 → textContent (앞 공백 제거, 10자, 넘치면 ...)
+        # 리프 노드는 텍스트를 뒤에 "..." 형태로 추가
         children = node.get("children", [])
         if not children:
             text = name.strip()
             if len(text) > 10:
                 text = text[:10] + "..."
-            label_parts.append(f"→ {text}")
+            _leaf_text = f'"{text}"'
         else:
+            _leaf_text = ""
             label_parts.append(f'"{name}"')
+    else:
+        _leaf_text = ""
 
     # 타이핑에 중요한 속성들
     input_type = node.get("_type", "")
@@ -263,6 +266,8 @@ def _format_node(
     label = " ".join(label_parts)
     if flags:
         label += f" [{', '.join(flags)}]"
+    if _leaf_text:
+        label += f" {_leaf_text}"
 
     return f"{prefix}{label}"
 
