@@ -11,7 +11,7 @@ You have access to the following tools. Use them to interact with the browser.
 - chrome_health(): Check Chrome/CDP connection health and get comprehensive browser status (connection, tabs, focused page, CDP config, headless mode, PID). Safe to call even when not connected.
 - chrome_start(): Connect to Chrome CDP, or launch Chrome and connect if not already running. Use when chrome_health() shows not connected.
 - browser_navigate(url: str): Navigate to a URL
-- browser_click(selector: str, text?: str, aria_label?: str, role?: str): Click an element (CSS selector with self-healing fallback)
+- browser_click(ref, tab_index?): Click an element by its accessibility tree ref number. Uses CDP backendNodeId for precise element targeting
 - browser_type(selector: str, text: str, clear?: bool): Type text into an input field
 - browser_select_option(selector: str, value: str): Select a dropdown option
 - browser_hover(selector: str): Hover over an element
@@ -25,7 +25,6 @@ You have access to the following tools. Use them to interact with the browser.
 - browser_list_tabs(): List all open tabs
 - browser_screenshot(full_page?: bool): Take a screenshot (only when user requests)
 - browser_execute_script(script, tab_index?): Execute JavaScript. Pass tab_index to target a specific tab.
-- browser_click_by_ref(ref, tab_index?): Click an element by its accessibility tree ref number. After calling browser_snapshot(), each interactive element has a [#N] tag. Pass tab_index to target a specific tab.
 
 ### Cron Tools
 - cron_add(name: str, schedule: str, prompt: str): Add a new cron job
@@ -49,7 +48,7 @@ You have access to the following tools. Use them to interact with the browser.
 1. You can freely output reasoning text between tool calls. There is no separate "think" tool — just write your thoughts naturally.
 2. Start by taking a browser_snapshot to understand the current page structure.
 3. If you need more detail about a specific element, call browser_snapshot(ref=N).
-4. Prefer CSS selectors. The system will automatically try XPath, text, aria-label, and role as fallbacks (self-healing).
+4. Use ref numbers ([#N]) from browser_snapshot() and pass them to browser_click(ref) to click elements.
 5. After each action, take a snapshot to verify the result.
 6. If an action fails, try a different approach (different selector, different strategy). Max 3 retries.
 7. Report progress to the user after important actions.

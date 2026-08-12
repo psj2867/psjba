@@ -30,16 +30,14 @@ def create_browser_tools(
         return await manager.browser_navigate(url)
 
     @tool
-    async def browser_click(
-        selector: str,
-        text: Optional[str] = None,
-        aria_label: Optional[str] = None,
-        role: Optional[str] = None,
-    ) -> str:
-        """Click an element by CSS selector. Supports self-healing fallback (XPath, text, aria-label, role)."""
-        return await manager.browser_click(
-            selector, text=text, aria_label=aria_label, role=role
-        )
+    async def browser_click(ref: int, tab_index: Optional[int] = None) -> str:
+        """Click an element by its accessibility tree ref number. After calling browser_snapshot(), each interactive or leaf element has a [#N] tag. Uses CDP backendNodeId for precise element targeting. Pass tab_index to target a specific tab.
+
+        Args:
+            ref: The [#N] ref number from the accessibility tree
+            tab_index: Target tab index (default: focused tab)
+        """
+        return await manager.browser_click(ref, tab_index)
 
     @tool
     async def browser_type(selector: str, text: str, clear: bool = False) -> str:
@@ -141,16 +139,6 @@ def create_browser_tools(
         return await manager.browser_execute_script(script, tab_index)
 
     @tool
-    async def browser_click_by_ref(ref: int, tab_index: Optional[int] = None) -> str:
-        """Click an element by its accessibility tree ref number. Use this after calling browser_snapshot() to see the [#N] ref numbers next to interactive elements. This is more reliable than guessing a CSS selector.
-
-        Args:
-            ref: The [#N] ref number from the accessibility tree
-            tab_index: Target tab index (default: focused tab)
-        """
-        return await manager.browser_click_by_ref(ref, tab_index)
-
-    @tool
     async def browser_get_text(ref: int, tab_index: Optional[int] = None) -> str:
         """Get the visible DOM text content of an element by its [#N] ref number. Use this to read text that doesn't appear in the accessibility tree (e.g. links with empty accessible names, custom components, or dynamically loaded content). Call browser_snapshot() first to get ref numbers.
 
@@ -208,7 +196,6 @@ def create_browser_tools(
         browser_screenshot,
         browser_snapshot,
         browser_execute_script,
-        browser_click_by_ref,
         browser_get_text,
         browser_get_by_ref,
         test_tabs,

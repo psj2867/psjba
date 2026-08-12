@@ -589,37 +589,6 @@ class PlaywrightManager:
 
     # ─── 요소 조작 ──────────────────────────────────────────
 
-    async def browser_click(
-        self,
-        selector: str,
-        text: Optional[str] = None,
-        aria_label: Optional[str] = None,
-        role: Optional[str] = None,
-    ) -> str:
-        logger.info("browser_click: selector=%s", selector)
-        """선택자로 요소를 찾아 클릭한다 (self-healing 포함)."""
-        page = self._ensure_page()
-        healing = SelfHealingSelector(page)
-        locator = await healing.find_element(
-            selector, text=text, aria_label=aria_label, role=role
-        )
-        if locator is None:
-            return f"Click failed: element not found ({selector})"
-
-        try:
-            await locator.click(timeout=5000)
-            await self._tabs[self._focused_tab_index].update_info()
-            tab = self._tabs[self._focused_tab_index]
-            result = f"Clicked: {selector} [url={tab.url}, title={tab.title}]"
-        except Exception as e:
-            result = f"Click error: {e}"
-
-        # dialog 체크
-        d = await tab.check_dialog()
-        if d:
-            result += f"\n⚠️ Dialog recorded: [{d['type']}] {d.get('message','')}"
-        return result
-
     async def browser_type(
         self,
         selector: str,
@@ -1057,7 +1026,7 @@ class PlaywrightManager:
             logger.info("a11y snapshot: %d interactive refs", len(refs))
         return text
 
-    async def browser_click_by_ref(self, ref: int, tab_index: Optional[int] = None) -> str:
+    async def browser_click(self, ref: int, tab_index: Optional[int] = None) -> str:
         """접근성 트리 ref 번호로 요소를 찾아 클릭한다.
 
         backendNodeId → CDP getBoxModel + dispatchMouseEvent 로 정확히 클릭.
@@ -1123,7 +1092,7 @@ class PlaywrightManager:
                         })
                         await self._tabs[idx].update_info()
                         tab = self._tabs[idx]
-                        logger.info("browser_click_by_ref: clicked %s via CDP backendNodeId=%s", click_desc, backend_id)
+                        logger.info("browser_click: clicked %s via CDP backendNodeId=%s", click_desc, backend_id)
                         result = (f"Clicked {click_desc} [CDP] "
                                   f"[url={tab.url}, title={tab.title}]")
                         d = await self._tabs[idx].check_dialog()
@@ -1142,7 +1111,7 @@ class PlaywrightManager:
             await locator.first.click(timeout=5000)
             await self._tabs[idx].update_info()
             tab = self._tabs[idx]
-            logger.info("browser_click_by_ref: clicked %s via Playwright get_by_role", click_desc)
+            logger.info("browser_click: clicked %s via Playwright get_by_role", click_desc)
             result = (f"Clicked {click_desc} [PW] "
                       f"[url={tab.url}, title={tab.title}]")
         except Exception as e:
@@ -1156,7 +1125,7 @@ class PlaywrightManager:
             await locator2.click(timeout=5000)
             await self._tabs[idx].update_info()
             tab = self._tabs[idx]
-            logger.info("browser_click_by_ref: clicked %s via self-healing", click_desc)
+            logger.info("browser_click: clicked %s via self-healing", click_desc)
             result = (f"Clicked {click_desc} [heal] "
                       f"[url={tab.url}, title={tab.title}]")
 
