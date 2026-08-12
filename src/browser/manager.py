@@ -1060,6 +1060,7 @@ class PlaywrightManager:
         click_desc += ")"
 
         # 1차: CDP backendNodeId 기반 정밀 클릭
+        cdp_failed_with_stale_id = False
         if backend_id is not None:
             try:
                 cdp = await page.context.new_cdp_session(page)
@@ -1100,7 +1101,11 @@ class PlaywrightManager:
                             result += f"\n⚠️ Dialog recorded: [{d['type']}] {d.get('message','')}"
                         return result
             except Exception as e:
-                logger.warning("CDP click for %s failed: %s", click_desc, e)
+                if "Invalid parameters" in str(e) or "invalid" in str(e).lower():
+                    cdp_failed_with_stale_id = True
+                    logger.warning("CDP click for %s failed: stale backendNodeId (page may have navigated). Falling back to Playwright/get_by_role.", click_desc)
+                else:
+                    logger.warning("CDP click for %s failed: %s", click_desc, e)
 
         # 2차: Playwright get_by_role 로 찾기
         try:
@@ -1132,6 +1137,9 @@ class PlaywrightManager:
         d = await self._tabs[idx].check_dialog()
         if d:
             result += f"\n⚠️ Dialog recorded: [{d['type']}] {d.get('message','')}"
+        if cdp_failed_with_stale_id:
+            result += ("\n⚠️ CDP backendNodeId가 유효하지 않습니다 (페이지 변경). "
+                       "browser_snapshot()을 다시 호출하여 ref를 갱신하세요.")
         return result
 
     async def browser_get_text(self, ref: int, tab_index: Optional[int] = None) -> str:
