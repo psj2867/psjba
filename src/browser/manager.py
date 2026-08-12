@@ -236,7 +236,7 @@ class PlaywrightManager:
         Chrome을 재시작하여 --load-extension을 적용한다.
 
         Raises:
-            ExtensionError: 확장 프로그램을 로드할 수 없는 경우
+            ExtensionError: Chrome/확장 연결 실패
         """
         if self._connected:
             logger.debug("connect() called but already connected")
@@ -254,12 +254,9 @@ class PlaywrightManager:
                     raise ExtensionError("Chrome을 실행할 수 없습니다. (CDP 연결 실패)")
                 logger.info("Chrome launched successfully, CDP ready")
             else:
-                logger.info("Chrome not connected (launch_if_needed=False)")
                 raise ExtensionError("Chrome이 실행 중이지 않습니다.")
 
-        result = await self._connect_cdp()
-        if result != "Chrome connected":
-            raise ExtensionError(f"CDP 연결 실패: {result}")
+        await self._connect_cdp()
 
         # 확장이 없으면 launcher로 Chrome 재시작
         if not self._ext_available:
@@ -273,56 +270,51 @@ class PlaywrightManager:
                         "Chrome 재시작 후에도 확장 프로그램을 불러올 수 없습니다.\n"
                         "Chrome을 최신 버전으로 업데이트한 후 다시 시도해 주세요."
                     )
-                result = await self._connect_cdp()
+                await self._connect_cdp()
             else:
                 raise ExtensionError(
                     "Chrome 확장 프로그램(PSJBA Focus Tracker)을 불러올 수 없습니다.\n"
                     "Chrome을 최신 버전으로 업데이트한 후 다시 시도해 주세요."
                 )
 
-        return result
+        return "Chrome connected"
 
     async def _connect_cdp(self) -> str:
         """Playwright로 CDP WebSocket에 연결하고 탭/확장을 설정한다."""
-        try:
-            self._playwright = await async_playwright().start()
-            loop = asyncio.get_event_loop()
-            ws_url = await loop.run_in_executor(None, self._launcher.get_cdp_ws_endpoint)
-            logger.info("Connecting to CDP via WebSocket: %s", ws_url)
-            self._browser = await self._playwright.chromium.connect_over_cdp(ws_url)
+        self._playwright = await async_playwright().start()
+        loop = asyncio.get_event_loop()
+        ws_url = await loop.run_in_executor(None, self._launcher.get_cdp_ws_endpoint)
+        logger.info("Connecting to CDP via WebSocket: %s", ws_url)
+        self._browser = await self._playwright.chromium.connect_over_cdp(ws_url)
 
-            contexts = self._browser.contexts
-            if contexts and contexts[0].pages:
-                self._context = contexts[0]
-                self._tabs = [_TabInfo(p) for p in self._context.pages]
-                for tab in self._tabs:
-                    await tab.update_info()
-                self._focused_tab_index = 0
-            else:
-                self._context = (
-                    contexts[0]
-                    if contexts
-                    else await self._browser.new_context()
-                )
-                page = await self._context.new_page()
-                self._tabs = [_TabInfo(page)]
-                self._focused_tab_index = 0
+        contexts = self._browser.contexts
+        if contexts and contexts[0].pages:
+            self._context = contexts[0]
+            self._tabs = [_TabInfo(p) for p in self._context.pages]
+            for tab in self._tabs:
+                await tab.update_info()
+            self._focused_tab_index = 0
+        else:
+            self._context = (
+                contexts[0]
+                if contexts
+                else await self._browser.new_context()
+            )
+            page = await self._context.new_page()
+            self._tabs = [_TabInfo(page)]
+            self._focused_tab_index = 0
 
-            # 모든 페이지에 dialog override init script 주입
-            await self._inject_dialog_override()
-            self._connected = True
+        # 모든 페이지에 dialog override init script 주입
+        await self._inject_dialog_override()
+        self._connected = True
 
-            # 확장 프로그램 로드 (포커스 탭 감지)
-            await self._setup_extension()
+        # 확장 프로그램 로드 (포커스 탭 감지)
+        await self._setup_extension()
 
-            url = self.focused_page.url if self.focused_page else "about:blank"
-            logger.info("CDP connected (%d tabs, url=%s, ext=%s)",
-                        len(self._tabs), url, self._ext_available)
-            return "Chrome connected"
-        except Exception as e:
-            logger.error("CDP connection error: %s", e)
-            self._cleanup_state()
-            return f"Connection error: {e}"
+        url = self.focused_page.url if self.focused_page else "about:blank"
+        logger.info("CDP connected (%d tabs, url=%s, ext=%s)",
+                    len(self._tabs), url, self._ext_available)
+        return "Chrome connected"
 
     async def disconnect(self) -> str:
         """CDP 연결만 해제한다 (Chrome 프로세스는 유지).
