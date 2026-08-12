@@ -240,10 +240,9 @@ def _format_node(
     auto = node.get("_autocomplete", "")
     if detail and auto:
         label_parts.append(f"autocomplete={auto}")
-    if detail:
-        aria_lbl = node.get("_aria_label", "")
-        if aria_lbl and aria_lbl != name:
-            label_parts.append(f"aria={aria_lbl}")
+    aria_lbl = node.get("_aria_label", "")
+    if aria_lbl and aria_lbl != name:
+        label_parts.append(f"aria={aria_lbl}")
 
     # flags
     flags: list[str] = []
@@ -283,6 +282,18 @@ def _format_node(
     aria_pressed = node.get("aria-pressed")
     if aria_pressed is not None and aria_pressed != "":
         flags.append(f"pressed={aria_pressed}")
+
+    # 나머지 _aria_*, aria-* 속성 자동 수집 (위에서 처리 안된 것들)
+    for k, v in node.items():
+        if not v and v is not False and v != 0:
+            continue
+        if k in ("_aria_label", "_aria_current", "aria-pressed",
+                 "checked", "disabled", "focused", "expanded",
+                 "selected", "required", "readonly", "multiline"):
+            continue
+        if k.startswith("_aria_") or k.startswith("aria-"):
+            display = k.removeprefix("_aria_").removeprefix("aria-")
+            flags.append(f"{display}={v}")
 
     level = node.get("level", 0)
     if detail and level > 0:
