@@ -232,7 +232,6 @@ class PlaywrightManager:
                     self._cdp_host, self._cdp_port)
 
         try:
-            # 1차 연결
             quick_ok = await self._launcher.quick_check()
             if not quick_ok:
                 if launch_if_needed:
@@ -245,7 +244,6 @@ class PlaywrightManager:
 
             await self._connect_cdp()
 
-            # 확장이 없으면 launcher로 Chrome 재시작
             if not self._ext_available:
                 if self._launcher.chrome_path:
                     logger.warning("Extension not found — restarting Chrome")
@@ -274,7 +272,7 @@ class PlaywrightManager:
             self._cleanup_state()
             raise ExtensionError(f"Chrome 연결 중 오류 발생: {e}") from e
 
-    async def _connect_cdp(self) -> str:
+    async def _connect_cdp(self) -> None:
         """Playwright로 CDP WebSocket에 연결하고 탭/확장을 설정한다."""
         self._playwright = await async_playwright().start()
         loop = asyncio.get_event_loop()
@@ -299,17 +297,14 @@ class PlaywrightManager:
             self._tabs = [_TabInfo(page)]
             self._focused_tab_index = 0
 
-        # 모든 페이지에 dialog override init script 주입
         await self._inject_dialog_override()
         self._connected = True
-
-        # 확장 프로그램 로드 (포커스 탭 감지)
-        await self._setup_extension()
+        self._ext_id = await self._setup_extension()
+        self._ext_available = self._ext_id is not None
 
         url = self.focused_page.url if self.focused_page else "about:blank"
         logger.info("CDP connected (%d tabs, url=%s, ext=%s)",
                     len(self._tabs), url, self._ext_available)
-        return "Chrome connected"
 
     async def disconnect(self) -> str:
         """CDP 연결만 해제한다 (Chrome 프로세스는 유지).
@@ -355,13 +350,16 @@ class PlaywrightManager:
         self._ext_id = None
         self._ext_available = False
 
-    async def _setup_extension(self) -> None:
+    async def _setup_extension(self) -> Optional[str]:
         """확장 프로그램을 로드하여 포커스 탭 감지를 설정한다.
 
         Fallback 순서:
           1. --load-extension으로 이미 로드된 확장 확인
           2. Extensions.loadUnpacked로 런타임 로드
           3. 둘 다 실패 → 경고 (포커스 탐지 불가)
+
+        Returns:
+            확장 ID (로드 성공) 또는 None (실패)
         """
         ext_path = str(
             Path(__file__).resolve().parent.parent.parent / "chrome" / "extension"
@@ -370,13 +368,13 @@ class PlaywrightManager:
 
         if not os.path.isdir(ext_path):
             logger.warning("Extension directory not found: %s", ext_path)
-            return
+            return None
 
         try:
             browser_cdp = await self._browser.new_browser_cdp_session()
         except Exception as e:
             logger.warning("Extension setup: CDP session unavailable (%s)", e)
-            return
+            return None
 
         # 1) 이미 로드된 unpacked 확장 중에서 찾기
         try:
@@ -384,13 +382,9 @@ class PlaywrightManager:
             for ext in exts.get("extensions", []):
                 ep = os.path.normpath(ext.get("path", ""))
                 if ep == ext_path:
-                    self._ext_id = ext["id"]
-                    self._ext_available = True
-                    logger.info(
-                        "Extension already loaded: id=%s path=%s",
-                        self._ext_id, ext_path,
-                    )
-                    return
+                    ext_id = ext["id"]
+                    logger.info("Extension already loaded: id=%s path=%s", ext_id, ext_path)
+                    return ext_id
         except Exception as e:
             logger.debug("Extensions.getExtensions not available: %s", e)
 
@@ -399,13 +393,12 @@ class PlaywrightManager:
             result = await browser_cdp.send("Extensions.loadUnpacked", {
                 "path": ext_path,
             })
-            self._ext_id = result.get("id")
-            self._ext_available = True
-            logger.info("Extension loaded via loadUnpacked: id=%s", self._ext_id)
+            ext_id = result.get("id")
+            logger.info("Extension loaded via loadUnpacked: id=%s", ext_id)
+            return ext_id
         except Exception as e:
-            logger.warning(
-                "Extension load failed — focus detection disabled: %s", e,
-            )
+            logger.warning("Extension load failed — focus detection disabled: %s", e)
+            return None
 
     def _ensure_connected(self) -> None:
         if not self._connected:
