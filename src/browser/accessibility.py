@@ -139,18 +139,13 @@ def _format_node(
         semantic = _LANDMARK_LABELS.get(role.lower())
         label_parts.append(f"[{semantic or role}]")
 
-    # 태그 정보 (detail 모드 또는 interactive 요소)
+    # 태그 정보
     tag = node.get("tag", "")
     if tag:
-        attr_parts = []
-        if tag:
-            attr_parts.append(tag)
+        attr_parts = [tag]
         nid = node.get("_id", "")
         if nid:
             attr_parts.append(f"#{nid}")
-        cls = node.get("_class", "")
-        if cls:
-            attr_parts.append(f".{cls.replace(' ', '.')}"[:60])
         if attr_parts:
             label_parts.append(f"<{' '.join(attr_parts)}>")
 
