@@ -433,7 +433,6 @@ async def _collapse_tree(
         if _estimate_tokens(text) <= max_tokens:
             return tree
 
-        # collapse 후보 수집: interactive descendant 가 없는 노드
         candidates: list[tuple[int, list[int], dict[str, Any]]] = []
 
         def _find_candidates(
@@ -472,37 +471,6 @@ async def _collapse_tree(
     return tree
 
 
-async def _token_prune(
-    snapshot: dict[str, Any],
-    max_tokens: int = MAX_TOKEN_ESTIMATE,
-    refs: Optional[dict[int, dict[str, Any]]] = None,
-) -> dict[str, Any]:
-    """토큰 제한을 초과하면 반복적으로 불필요한 노드를 제거한다.
-    상호작용 가능한 노드는 최대한 보존한다."""
-    tree = snapshot
-    for _ in range(8):
-        await asyncio.sleep(0)
-        text = "\n".join(await _format_tree(tree, refs=refs))
-        if _estimate_tokens(text) <= max_tokens:
-            return tree
-        pruned = await _prune_tree(tree) or {"role": "Root", "children": []}
-        if pruned is tree:  # 더 이상 _prune_tree가 줄일 게 없으면 collapse 진입
-            tree = await _collapse_tree(tree, max_tokens, refs=refs)
-            break
-        tree = pruned
-    # collapse 후에도 오버일 수 있으니 최종 체크
-    text = "\n".join(await _format_tree(tree, refs=refs))
-    if _estimate_tokens(text) <= max_tokens:
-        return tree
-    for _ in range(10):
-        await asyncio.sleep(0)
-        text = "\n".join(await _format_tree(tree, refs=refs))
-        if _estimate_tokens(text) <= max_tokens:
-            return tree
-        tree = await _collapse_tree(tree, max_tokens, refs=refs) or tree
-    return tree
-
-
 async def format_accessibility_tree(
     snapshot: Optional[dict[str, Any]],
     max_tokens: int = MAX_TOKEN_ESTIMATE,
@@ -530,11 +498,14 @@ async def format_accessibility_tree(
                  _count_descendants(snapshot),
                  _count_descendants(tree))
 
-    tree = await _token_prune(tree, max_tokens, refs=refs)
-    t2 = time.monotonic()
-    logger.debug("token_prune + collapse: %dms (tree: %d nodes)",
-                 int((t2 - t1) * 1000),
-                 _count_descendants(tree))
+    if max_tokens > 0:
+        tree = await _collapse_tree(tree, max_tokens, refs=refs)
+        t2 = time.monotonic()
+        logger.debug("collapse: %dms (tree: %d nodes)",
+                     int((t2 - t1) * 1000),
+                     _count_descendants(tree))
+    else:
+        t2 = t1
 
     lines = await _format_tree(tree, refs=refs, max_depth=10)
     t3 = time.monotonic()
@@ -687,7 +658,7 @@ async def get_accessibility_tree_with_refs(
 async def get_subtree_detail(page: Page, ref: int, refs: dict[int, dict[str, Any]]) -> str:
     """특정 ref의 서브트리를 전체 a11y snapshot 포맷 기준으로 반환한다.
 
-    browser_snapshot()과 동일한 _prune_tree → _token_prune 파이프라인을 태워
+    browser_snapshot()과 동일한 _prune_tree → _collapse_tree 파이프라인을 태워
     토큰 제한 내에서 최대한 많은 정보를 보여준다.
 
     Args:
@@ -738,11 +709,11 @@ async def get_subtree_detail(page: Page, ref: int, refs: dict[int, dict[str, Any
     t1 = time.monotonic()
     logger.debug("get_subtree_detail prune_tree: %dms (ref=%d)",
                  int((t1 - t0) * 1000), ref)
-    result = await _token_prune(pruned, max_tokens=MAX_TOKEN_ESTIMATE)
+    collapsed = await _collapse_tree(pruned, refs=refs)
     t2 = time.monotonic()
-    logger.debug("get_subtree_detail prune_tree: %dms | token_prune: %dms (ref=%d)",
-                 int((t1 - t0) * 1000), int((t2 - t1) * 1000), ref)
-    lines = await _format_tree(result)
+    logger.debug("get_subtree_detail collapse: %dms (ref=%d)",
+                 int((t2 - t1) * 1000), ref)
+    lines = await _format_tree(collapsed, refs=refs) if collapsed else []
     t3 = time.monotonic()
     logger.debug("get_subtree_detail format_tree: %dms (ref=%d)",
                  int((t3 - t2) * 1000), ref)
