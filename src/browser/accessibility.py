@@ -1,6 +1,7 @@
 """접근성 트리 포맷팅 — Playwright accessibility snapshot → 계층 텍스트 (고도화)."""
 
 import asyncio
+import json
 import logging
 import time
 from typing import Any, Optional
@@ -1028,6 +1029,8 @@ def _cdp_nodes_to_snapshot(nodes: list[dict]) -> dict[str, Any]:
         readonly: Optional[bool] = None
         multiline: Optional[bool] = None
         level: int = 0
+        aria_current = ""
+        aria_pressed = ""
 
         for prop in cdp_node.get("properties", []):
             pname = prop.get("name", "")
@@ -1061,15 +1064,15 @@ def _cdp_nodes_to_snapshot(nodes: list[dict]) -> dict[str, Any]:
                 except (ValueError, TypeError):
                     pass
             elif pname == "current":
-                node["_aria_current"] = str(pvalue)
+                aria_current = str(pvalue)
             elif pname == "pressed":
                 pv = str(pvalue)
                 if pv in ("true", True):
-                    node["aria-pressed"] = "true"
+                    aria_pressed = "true"
                 elif pv in ("false", False):
-                    node["aria-pressed"] = "false"
+                    aria_pressed = "false"
                 elif pv == "mixed":
-                    node["aria-pressed"] = "mixed"
+                    aria_pressed = "mixed"
 
         children = []
         for cid in cdp_node.get("childIds", []):
@@ -1103,10 +1106,10 @@ def _cdp_nodes_to_snapshot(nodes: list[dict]) -> dict[str, Any]:
             node["multiline"] = multiline
         if level > 0:
             node["level"] = level
-        if cdp_node.get("_aria_current"):
-            node["_aria_current"] = cdp_node["_aria_current"]
-        if cdp_node.get("aria-pressed"):
-            node["aria-pressed"] = cdp_node["aria-pressed"]
+        if aria_current:
+            node["_aria_current"] = aria_current
+        if aria_pressed:
+            node["aria-pressed"] = aria_pressed
         bid = cdp_node.get("_backendNodeId")
         if bid:
             node["_backendNodeId"] = bid
