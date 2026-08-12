@@ -1242,6 +1242,59 @@ class PlaywrightManager:
         except Exception as e:
             return f"Get text by ref #{ref} failed: {e}"
 
+    async def browser_get_by_ref(self, ref: int, tab_index: Optional[int] = None) -> str:
+        """접근성 트리 ref 번호로 요소의 전체 DOM outerHTML을 가져온다.
+
+        디버깅/테스트 용도: ref가 가리키는 요소의 정확한 DOM 구조를 확인한다.
+        CDP backendNodeId로 정확한 요소를 찾는다.
+
+        Args:
+            ref: browser_snapshot() 결과에 표시된 [#N] 번호
+            tab_index: 대상 탭 인덱스 (None이면 포커스 탭)
+        """
+        session_refs = self._get_session_refs()
+        node = session_refs.get(ref)
+        if node is None:
+            return (f"Get by ref failed: ref #{ref} not found. "
+                    "Call browser_snapshot() first to refresh the tree.")
+
+        page = self._ensure_page(tab_index)
+        role = node.get("role", "")
+        name = node.get("name", "")
+        tag = node.get("tag", "") or node.get("_tag", "")
+        nid = node.get("_id", "")
+        backend_id = node.get("_backendNodeId")
+
+        desc = f"ref #{ref} ({role}"
+        if name:
+            desc += f" \"{name}\""
+        if tag:
+            desc += f" <{tag}>"
+        if nid:
+            desc += f" #{nid}"
+        desc += ")"
+
+        if backend_id is not None:
+            try:
+                cdp = await page.context.new_cdp_session(page)
+                result = await cdp.send("DOM.getOuterHTML", {
+                    "backendNodeId": backend_id,
+                })
+                outer = result.get("outerHTML", "")
+                if outer:
+                    if len(outer) > 10000:
+                        outer = outer[:10000] + "\n... (truncated 10000 chars)"
+                    return f"DOM for {desc}:\n{outer}"
+            except Exception as e:
+                logger.warning("CDP getOuterHTML for ref %d failed: %s", ref, e)
+
+        # fallback: _text_content
+        text_content = node.get("_text_content", "")
+        if text_content:
+            return f"DOM for {desc}: (no outerHTML, _text_content={text_content[:2000]})"
+
+        return f"DOM for {desc}: (no data)"
+
     async def browser_screenshot(
         self,
         full_page: bool = False,

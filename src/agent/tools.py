@@ -161,6 +161,16 @@ def create_browser_tools(
         return await manager.browser_get_text(ref, tab_index)
 
     @tool
+    async def browser_get_by_ref(ref: int, tab_index: Optional[int] = None) -> str:
+        """Get the full DOM outerHTML of an element by its [#N] ref number. Use this to inspect the exact DOM structure of an element (for debugging, testing, or when you need to see the complete HTML of a component). Call browser_snapshot() first to get ref numbers.
+
+        Args:
+            ref: The [#N] ref number from the accessibility tree
+            tab_index: Target tab index (default: focused tab)
+        """
+        return await manager.browser_get_by_ref(ref, tab_index)
+
+    @tool
     async def test_tabs() -> str:
         """[테스트] 여러 방식으로 현재 포커스 탭을 탐지하고 결과를 반환한다."""
         return await manager.test_tabs()
@@ -200,6 +210,7 @@ def create_browser_tools(
         browser_execute_script,
         browser_click_by_ref,
         browser_get_text,
+        browser_get_by_ref,
         test_tabs,
         workspace_write,
         current_datetime,
