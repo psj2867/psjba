@@ -199,6 +199,31 @@ class TestPruneTree:
         assert '"New Chat"' in result
         assert '"Customize"' in result
 
+    @pytest.mark.asyncio
+    async def test_drop_parent_name_duplicated_in_child(self):
+        """non-interactive 컨테이너: name이 자식과 중복되면 드롭"""
+        node = {
+            "role": "Root",
+            "name": "",
+            "children": [{
+                "role": "complementary",
+                "name": "Search commands",
+                "children": [
+                    {"role": "navigation", "name": "Search commands", "children": [
+                        {"role": "button", "name": "New Chat", "children": []},
+                    ]},
+                ],
+            }],
+        }
+        result = await format_accessibility_tree(node)
+        # complementary의 name이 navigation의 name과 중복 → 드롭
+        assert "[Sidebar]" in result
+        assert "[Nav]" in result
+        # Sidebar 라인에는 "Search commands"가 없어야 함 (Nav에만)
+        sidebar_line = [l for l in result.split("\n") if "[Sidebar]" in l][0]
+        assert '"Search commands"' not in sidebar_line
+        assert '"New Chat"' in result
+
 
 class TestTokenPrune:
     @pytest.mark.asyncio

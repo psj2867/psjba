@@ -444,6 +444,17 @@ async def _prune_tree(snapshot: dict[str, Any]) -> Optional[dict[str, Any]]:
     ):
         return None
 
+    # non-interactive 컨테이너: 자식과 중복된 name 제거
+    if name and pruned_children and not _is_interactive(role):
+        if any(
+            name == c.get("name", "") or name.startswith(c.get("name", ""))
+            or c.get("name", "").startswith(name)
+            for c in pruned_children
+        ):
+            snapshot = dict(snapshot)
+            snapshot.pop("name", None)
+            name = ""  # 로컬 변수도 초기화
+
     result = dict(snapshot)
     result["children"] = pruned_children
     return result
