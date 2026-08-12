@@ -171,22 +171,9 @@ def _format_node(
             if not _leaf_text:
                 _leaf_text = ""
         else:
-            # non-leaf: 자식과 중복된 name은 생략 (interactive는 유지)
-            if name and not _is_interactive(role) and any(
-                name == c.get("name", "")
-                or name.startswith(c.get("name", ""))
-                or c.get("name", "").startswith(name)
-                for c in children
-            ):
-                name = ""
-            if name:
+            # non-leaf: interactive만 name 표시 (자식이 내용을 대신함)
+            if _is_interactive(role) and name:
                 label_parts.append(f'"{name}"')
-            else:
-                tc = node.get("_text_content", "").strip()
-                if tc:
-                    if len(tc) > 15:
-                        tc = tc[:15] + "..."
-                    label_parts.append(f'"{tc}"')
             _leaf_text = ""
     else:
         _leaf_text = ""
