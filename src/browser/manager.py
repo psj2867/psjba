@@ -573,6 +573,49 @@ class PlaywrightManager:
         except Exception as e:
             return f"Go back error: {e}"
 
+    # ─── 헬퍼: CDP querySelector 로 노드 재발견 ──────────
+    @staticmethod
+    def _build_click_selector(node: dict[str, Any]) -> str:
+        """ref 노드 정보로 CDP DOM.querySelector용 CSS 선택자를 만든다."""
+        tag = node.get("tag", "") or node.get("_tag", "")
+        nid = node.get("_id", "")
+        aria_label = node.get("_aria_label", "")
+        nclass = node.get("_class", "")
+        ntype = node.get("_type", "")
+        name = node.get("name", "")
+        role = node.get("role", "")
+
+        if not tag:
+            return ""
+
+        # id가 가장 정확
+        if nid:
+            return f"{tag}#{nid}"
+
+        # aria-label
+        if aria_label:
+            escaped = aria_label.replace('"', '\\"').replace("'", "\\'")
+            return f'{tag}[aria-label="{escaped}"]'
+
+        # accessible name → aria-label
+        if name:
+            escaped = name.replace('"', '\\"').replace("'", "\\'")
+            return f'{tag}[aria-label="{escaped}"]'
+
+        # type
+        if ntype:
+            return f'{tag}[type="{ntype}"]'
+
+        # class + role
+        parts = [tag]
+        if nclass:
+            classes = nclass.replace(".", "\\.").split()
+            for c in classes:
+                parts.append(f".{c}")
+        if role:
+            parts.append(f'[role="{role}"]')
+        return "".join(parts)
+
     # ─── 요소 조작 ──────────────────────────────────────────
 
     async def browser_type(
@@ -1046,6 +1089,7 @@ class PlaywrightManager:
         click_desc += ")"
 
         # 1차: CDP backendNodeId 기반 정밀 클릭
+        cdp = None
         cdp_failed_with_stale_id = False
         if backend_id is not None:
             try:
@@ -1089,9 +1133,58 @@ class PlaywrightManager:
             except Exception as e:
                 if "Invalid parameters" in str(e) or "invalid" in str(e).lower():
                     cdp_failed_with_stale_id = True
-                    logger.warning("CDP click for %s failed: stale backendNodeId (page may have navigated). Falling back to Playwright/get_by_role.", click_desc)
+                    logger.warning("CDP click for %s failed: stale backendNodeId (page may have navigated). Trying CDP re-discovery.", click_desc)
                 else:
                     logger.warning("CDP click for %s failed: %s", click_desc, e)
+
+        # 1.5차: CDP DOM.querySelector 로 재발견 → CDP 클릭 재시도
+        if cdp_failed_with_stale_id:
+            try:
+                selector = self._build_click_selector(node)
+                if selector:
+                    if cdp is None:
+                        cdp = await page.context.new_cdp_session(page)
+                    doc = await cdp.send("DOM.getDocument", {})
+                    root_id = doc.get("root", {}).get("nodeId")
+                    if root_id:
+                        found = await cdp.send("DOM.querySelector", {
+                            "nodeId": root_id,
+                            "selector": selector,
+                        })
+                        found_node_id = found.get("nodeId")
+                        if found_node_id and found_node_id != 0:
+                            await cdp.send("DOM.scrollIntoViewIfNeeded", {
+                                "nodeId": found_node_id,
+                            })
+                            box = await cdp.send("DOM.getBoxModel", {
+                                "nodeId": found_node_id,
+                            })
+                            model = box.get("model", {})
+                            content = model.get("content", [])
+                            if len(content) >= 4:
+                                cx = content[0] + content[2] / 2
+                                cy = content[1] + content[3] / 2
+                                await cdp.send("Input.dispatchMouseEvent", {
+                                    "type": "mousePressed",
+                                    "x": cx, "y": cy,
+                                    "button": "left", "clickCount": 1,
+                                })
+                                await cdp.send("Input.dispatchMouseEvent", {
+                                    "type": "mouseReleased",
+                                    "x": cx, "y": cy,
+                                    "button": "left", "clickCount": 1,
+                                })
+                                await self._tabs[idx].update_info()
+                                tab = self._tabs[idx]
+                                logger.info("browser_click: clicked %s via CDP querySelector=%s", click_desc, selector)
+                                result = (f"Clicked {click_desc} [CDP:querySelector] "
+                                          f"[url={tab.url}, title={tab.title}]")
+                                d = await self._tabs[idx].check_dialog()
+                                if d:
+                                    result += f"\n⚠️ Dialog recorded: [{d['type']}] {d.get('message','')}"
+                                return result
+            except Exception as e:
+                logger.warning("CDP re-discovery for %s failed: %s", click_desc, e)
 
         # 2차: Playwright get_by_role 로 찾기
         try:

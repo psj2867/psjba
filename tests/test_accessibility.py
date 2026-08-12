@@ -8,6 +8,7 @@ from src.browser.accessibility import (
     _format_node,
     format_accessibility_tree,
 )
+from src.browser.manager import PlaywrightManager
 
 
 class TestEstimateTokens:
@@ -248,6 +249,42 @@ class TestTokenPrune:
         snapshot = {"role": "Root", "children": children}
         result = await format_accessibility_tree(snapshot)
         assert result is not None
+
+class TestBuildClickSelector:
+    """PlaywrightManager._build_click_selector 단위 테스트."""
+
+    def test_by_id(self):
+        node = {"tag": "button", "_id": "submit-btn"}
+        assert PlaywrightManager._build_click_selector(node) == "button#submit-btn"
+
+    def test_by_aria_label(self):
+        node = {"tag": "button", "_aria_label": "설정"}
+        assert PlaywrightManager._build_click_selector(node) == 'button[aria-label="설정"]'
+
+    def test_by_name(self):
+        node = {"tag": "a", "name": "Click here"}
+        assert PlaywrightManager._build_click_selector(node) == 'a[aria-label="Click here"]'
+
+    def test_by_type(self):
+        node = {"tag": "input", "_type": "submit"}
+        assert PlaywrightManager._build_click_selector(node) == 'input[type="submit"]'
+
+    def test_by_class_role(self):
+        node = {"tag": "div", "_class": "foo bar", "role": "button"}
+        result = PlaywrightManager._build_click_selector(node)
+        assert "div" in result
+        assert ".foo" in result
+        assert ".bar" in result
+        assert '[role="button"]' in result
+
+    def test_no_tag_returns_empty(self):
+        node = {"role": "button"}
+        assert PlaywrightManager._build_click_selector(node) == ""
+
+    def test_id_overrides_aria_label(self):
+        node = {"tag": "button", "_id": "btn-1", "_aria_label": "Save"}
+        assert PlaywrightManager._build_click_selector(node) == "button#btn-1"
+
 
 class TestFormatAccessibilityTree:
     @pytest.mark.asyncio
