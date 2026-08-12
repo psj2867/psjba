@@ -231,6 +231,7 @@ def _format_node(
             "_placeholder": placeholder,
             "_form_name": form_name,
             "_aria_label": node.get("_aria_label", ""),
+            "_backendNodeId": node.get("_backendNodeId"),
         }
 
     # detail 모드에서 추가 정보
