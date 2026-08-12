@@ -1046,6 +1046,9 @@ class PlaywrightManager:
     async def browser_click_by_ref(self, ref: int, tab_index: Optional[int] = None) -> str:
         """접근성 트리 ref 번호로 요소를 찾아 클릭한다.
 
+        backendNodeId → CDP getBoxModel + dispatchMouseEvent 로 정확히 클릭.
+        CDP 실패 시 Playwright get_by_role 로 폴백.
+
         Args:
             ref: browser_snapshot() 결과에 표시된 [#N] 번호
             tab_index: 대상 탭 인덱스 (None이면 포커스 탭)
@@ -1060,38 +1063,88 @@ class PlaywrightManager:
         idx = tab_index if tab_index is not None else self._focused_tab_index
         role = node.get("role", "")
         name = node.get("name", "")
+        tag = node.get("tag", "") or node.get("_tag", "")
+        nid = node.get("_id", "")
+        backend_id = node.get("_backendNodeId")
 
-        # Playwright get_by_role 로 찾기 (name이 있으면 함께 필터)
+        click_desc = f"ref #{ref} ({role}"
+        if name:
+            click_desc += f" \"{name}\""
+        if tag:
+            click_desc += f" <{tag}>"
+        if nid:
+            click_desc += f" #{nid}"
+        click_desc += ")"
+
+        # 1차: CDP backendNodeId 기반 정밀 클릭
+        if backend_id is not None:
+            try:
+                cdp = await page.context.new_cdp_session(page)
+                # backendNodeId → frontend nodeId
+                req = await cdp.send("DOM.requestNode", {
+                    "backendNodeId": backend_id,
+                })
+                node_id = req.get("nodeId")
+                if node_id:
+                    await cdp.send("DOM.scrollIntoViewIfNeeded", {
+                        "nodeId": node_id,
+                    })
+                    box = await cdp.send("DOM.getBoxModel", {
+                        "nodeId": node_id,
+                    })
+                    model = box.get("model", {})
+                    content = model.get("content", [])
+                    if len(content) >= 4:
+                        cx = content[0] + content[2] / 2
+                        cy = content[1] + content[3] / 2
+                        await cdp.send("Input.dispatchMouseEvent", {
+                            "type": "mousePressed",
+                            "x": cx, "y": cy,
+                            "button": "left", "clickCount": 1,
+                        })
+                        await cdp.send("Input.dispatchMouseEvent", {
+                            "type": "mouseReleased",
+                            "x": cx, "y": cy,
+                            "button": "left", "clickCount": 1,
+                        })
+                        await self._tabs[idx].update_info()
+                        tab = self._tabs[idx]
+                        logger.info("browser_click_by_ref: clicked %s via CDP backendNodeId=%s", click_desc, backend_id)
+                        result = (f"Clicked {click_desc} [CDP] "
+                                  f"[url={tab.url}, title={tab.title}]")
+                        d = await self._tabs[idx].check_dialog()
+                        if d:
+                            result += f"\n⚠️ Dialog recorded: [{d['type']}] {d.get('message','')}"
+                        return result
+            except Exception as e:
+                logger.warning("CDP click for %s failed: %s", click_desc, e)
+
+        # 2차: Playwright get_by_role 로 찾기
         try:
             if name:
                 locator = page.get_by_role(role, name=name, exact=False)
             else:
                 locator = page.get_by_role(role)
-        except Exception as e:
-            return f"Click by ref #{ref} ({role} \"{name}\") failed: {e}"
-
-        try:
             await locator.first.click(timeout=5000)
             await self._tabs[idx].update_info()
             tab = self._tabs[idx]
-            result = (f"Clicked ref #{ref} ({role} \"{name}\") "
+            logger.info("browser_click_by_ref: clicked %s via Playwright get_by_role", click_desc)
+            result = (f"Clicked {click_desc} [PW] "
                       f"[url={tab.url}, title={tab.title}]")
         except Exception as e:
-            # fallback: self-healing 으로 name 기반 시도
+            # 3차: self-healing fallback
             healing = SelfHealingSelector(page)
             locator2 = await healing.find_element(
                 "", text=name, role=role, aria_label=name,
             )
             if locator2 is None:
-                return f"Click by ref #{ref} failed: {e}"
-            try:
-                await locator2.click(timeout=5000)
-                await self._tabs[idx].update_info()
-                tab = self._tabs[idx]
-                result = (f"Clicked ref #{ref} ({role} \"{name}\") [fallback] "
-                          f"[url={tab.url}, title={tab.title}]")
-            except Exception as e2:
-                return f"Click by ref #{ref} failed (both): {e2}"
+                return f"Click by {click_desc} failed: {e}"
+            await locator2.click(timeout=5000)
+            await self._tabs[idx].update_info()
+            tab = self._tabs[idx]
+            logger.info("browser_click_by_ref: clicked %s via self-healing", click_desc)
+            result = (f"Clicked {click_desc} [heal] "
+                      f"[url={tab.url}, title={tab.title}]")
 
         d = await self._tabs[idx].check_dialog()
         if d:
