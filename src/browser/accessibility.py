@@ -854,6 +854,8 @@ async def _enrich_cdp_snapshot_with_dom(cdp_session: Any,
                         node["_placeholder"] = attr_val
                     elif attr_name in ("aria-label", "aria_label"):
                         node["_aria_label"] = attr_val
+                    elif attr_name == "name":
+                        node["_form_name"] = attr_val
             except Exception:
                 pass
         for child in node.get("children", []):
