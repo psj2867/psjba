@@ -184,9 +184,9 @@ class ChromeLauncher:
         cmd.append("--no-default-browser-check")
         cmd.append("--disable-blink-features=AutomationControlled")
 
-        # 포커스 감지 확장 프로그램 로드
+        # 포커스 감지 확장 프로그램 로드 (src/chrome/ → ../../chrome/extension)
         ext_path = os.path.normpath(
-            os.path.join(os.path.dirname(__file__), "..", "chrome", "extension")
+            os.path.join(os.path.dirname(__file__), "..", "..", "chrome", "extension")
         )
         if os.path.isdir(ext_path):
             cmd.append(f"--load-extension={ext_path}")
