@@ -27,6 +27,20 @@ _INTERACTIVE_ROLES = {
 # 타이핑 가능한 role
 _TYPE_ROLES = {"textbox", "searchbox", "combobox", "spinbutton"}
 
+# 제거/병합 대상 wrapper role들 (lowercase + 기존 mixed-case 병합)
+_WRAPPER_ROLES = {
+    "none", "None",
+    "generic", "Generic",
+    "presentation",
+    "paragraph",
+    "group",
+    "region", "Region",
+    "section", "Section",
+    "div", "Div",
+    "span", "Span",
+    "StaticText",
+}
+
 # 시맨틱 섹션 라벨 (LLM이 페이지 구조를 빠르게 파악)
 _LANDMARK_LABELS = {
     "navigation": "Nav",
@@ -141,7 +155,13 @@ def _format_node(
             label_parts.append(f"<{' '.join(attr_parts)}>")
 
     if name:
-        label_parts.append(f'"{name}"')
+        # 리프 노드는 → 10자까지 간략 표시
+        children = node.get("children", [])
+        if not children:
+            truncated = name[:10]
+            label_parts.append(f"→ {truncated}")
+        else:
+            label_parts.append(f'"{name}"')
 
     # 타이핑에 중요한 속성들
     input_type = node.get("_type", "")
@@ -276,11 +296,12 @@ async def _format_tree(
 
 
 async def _prune_tree(snapshot: dict[str, Any]) -> Optional[dict[str, Any]]:
-    """불필요한 노드(빈 StaticText, 불필요한 구조 래퍼)를 제거한다.
+    """불필요한 노드를 제거하고 단일-자식 체인을 병합한다.
 
-    Single-child "generic"/"none"/"presentation"/"paragraph"/"group" 노드는
-    interactive한 자식이나 name/description/value가 있는 경우가 아니면
-    자신을 생략하고 자식을 바로 부모에 붙인다.
+    1. 내용 없는 StaticText 제거
+    2. 이름/값/설명이 없고 자식도 없는 wrapper 노드 제거
+    3. 단일 자식만 가진 wrapper는 자식으로 대체 (체인 병합)
+    4. prune 후 빈 wrapper는 재검사하여 제거
     """
     role = snapshot.get("role", "")
     name = snapshot.get("name", "")
@@ -288,25 +309,20 @@ async def _prune_tree(snapshot: dict[str, Any]) -> Optional[dict[str, Any]]:
     description = snapshot.get("description", "")
     children = snapshot.get("children", [])
 
-    # 내용 없는 노드 제거
+    # 내용 없는 StaticText 제거
     if role == "StaticText" and not name.strip():
         return None
 
     # 자식도 없고 이름도 없는 쓸모없는 컨테이너 제거
-    wrapper_roles = {"None", "presentation", "generic", "paragraph", "group",
-                     "Region", "region", "Section", "section",
-                     "Div", "div", "Span", "span"}
-    if role in wrapper_roles and not name and not value and not description:
+    if role in _WRAPPER_ROLES and not name and not value and not description:
         if not children:
             return None
 
-    # 순수 레이아웃 div/span 컨테이너는 자식들을 한 단계 끌어올림
+    # 순수 레이아웃 컨테이너 — class 유무와 관계없이 자식을 한 단계 끌어올림
     is_pure_container = (
         role in ("none", "None", "generic", "Generic")
         and not name and not value and not description
         and not snapshot.get("_id")
-        and not snapshot.get("_class")
-        and snapshot.get("tag", "") in ("div", "span")
         and bool(children)
     )
     if is_pure_container:
@@ -317,17 +333,21 @@ async def _prune_tree(snapshot: dict[str, Any]) -> Optional[dict[str, Any]]:
         if len(pruned_all) == 1:
             return pruned_all[0]
         if pruned_all:
-            return {"role": "none", "children": pruned_all}
+            snapshot["role"] = role
+            snapshot["children"] = pruned_all
+            snapshot.pop("_class", None)
+            snapshot.pop("tag", None)
+            return snapshot
         return None
 
-    # 단일 자식만 가진 구조 래퍼는 펼치기 (interactive 노드면 보존)
+    # 단일 자식만 가진 wrapper 노드는 펼치기 (interactive 자식 없을 때)
     has_interactive_child = any(
         _is_interactive(c.get("role", ""))
         for c in children
     )
 
     if (
-        role in wrapper_roles
+        role in _WRAPPER_ROLES
         and not name and not value and not description
         and len(children) == 1
         and not has_interactive_child
@@ -343,6 +363,14 @@ async def _prune_tree(snapshot: dict[str, Any]) -> Optional[dict[str, Any]]:
         *(_prune_tree(c) for c in children),
     )
     pruned_children = [r for r in results if r is not None]
+
+    # --- post-prune 재검사: 자식이 모두 제거되어 빈 wrapper가 된 경우 제거 ---
+    if (
+        role in _WRAPPER_ROLES
+        and not name and not value and not description
+        and not pruned_children
+    ):
+        return None
 
     result = dict(snapshot)
     result["children"] = pruned_children
@@ -488,7 +516,7 @@ async def format_accessibility_tree(
                  int((t2 - t1) * 1000),
                  _count_descendants(tree))
 
-    lines = await _format_tree(tree, refs=refs, max_depth=30)
+    lines = await _format_tree(tree, refs=refs, max_depth=10)
     t3 = time.monotonic()
     logger.debug("format_tree: %dms (%d lines)",
                  int((t3 - t2) * 1000), len(lines))

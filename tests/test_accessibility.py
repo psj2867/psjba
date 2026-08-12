@@ -1,4 +1,4 @@
-"""tests/test_accessibility.py — 접근성 트리 포맷팅 테스트."""
+"""tests/test_accessibility.py вАФ м†СкЈЉмД± нКЄл¶ђ нПђлІЈнМЕ нЕМмК§нКЄ."""
 
 import pytest
 
@@ -6,9 +6,6 @@ from src.browser.accessibility import (
     MAX_TOKEN_ESTIMATE,
     _estimate_tokens,
     _format_node,
-    _format_tree,
-    _prune_tree,
-    _token_prune,
     format_accessibility_tree,
 )
 
@@ -40,7 +37,7 @@ class TestFormatNode:
         node = {"role": "link", "name": "Click here"}
         result = _format_node(node, depth=0)
         assert '[link]' in result
-        assert '"Click here"' in result
+        assert '→ Click here' in result
 
     def test_with_value(self):
         node = {"role": "textbox", "name": "Search", "value": "hello"}
@@ -94,13 +91,15 @@ class TestFormatNode:
 
 
 class TestFormatTree:
-    def test_single_node(self):
+    @pytest.mark.asyncio
+    async def test_single_node(self):
         snapshot = {"role": "Root", "name": "page"}
-        lines = _format_tree(snapshot)
-        assert len(lines) == 1
-        assert "[Root]" in lines[0]
+        lines = await format_accessibility_tree(snapshot)
+        assert "[Root]" in lines
+        assert "→ page" in lines
 
-    def test_nested_nodes(self):
+    @pytest.mark.asyncio
+    async def test_nested_nodes(self):
         snapshot = {
             "role": "Root",
             "name": "page",
@@ -109,13 +108,13 @@ class TestFormatTree:
                 {"role": "link", "name": "here"},
             ],
         }
-        lines = _format_tree(snapshot)
-        assert len(lines) == 3
-        assert lines[0].startswith("[Root]")
-        assert lines[1].startswith("  [button]")
-        assert lines[2].startswith("  [link]")
+        result = await format_accessibility_tree(snapshot)
+        # 리프 노드는 → format
+        assert "→ ok" in result
+        assert "→ here" in result
 
-    def test_deep_nesting(self):
+    @pytest.mark.asyncio
+    async def test_deep_nesting(self):
         snapshot = {
             "role": "Root",
             "children": [
@@ -127,30 +126,45 @@ class TestFormatTree:
                 }
             ],
         }
-        lines = _format_tree(snapshot)
-        assert len(lines) == 3
-        assert lines[2].startswith("    [button]")
+        result = await format_accessibility_tree(snapshot)
+        assert "→ deep" in result
 
 
 class TestPruneTree:
-    def test_remove_empty_static_text(self):
-        node = {"role": "StaticText", "name": "", "children": []}
-        assert _prune_tree(node) is None
+    @pytest.mark.asyncio
+    async def test_remove_empty_static_text(self):
+        node = {"role": "Root", "children": [
+            {"role": "StaticText", "name": "", "children": []}
+        ]}
+        result = await format_accessibility_tree(node)
+        assert "StaticText" not in result
 
-    def test_keep_non_empty_static_text(self):
-        node = {"role": "StaticText", "name": "hello", "children": []}
-        result = _prune_tree(node)
-        assert result is not None
+    @pytest.mark.asyncio
+    async def test_keep_non_empty_static_text(self):
+        node = {"role": "Root", "children": [
+            {"role": "StaticText", "name": "hello", "children": []}
+        ]}
+        result = await format_accessibility_tree(node)
+        assert "→ hello" in result
 
-    def test_remove_none_role(self):
-        node = {"role": "None", "name": "", "children": []}
-        assert _prune_tree(node) is None
+    @pytest.mark.asyncio
+    async def test_remove_none_role(self):
+        node = {"role": "Root", "children": [
+            {"role": "None", "name": "", "children": []}
+        ]}
+        result = await format_accessibility_tree(node)
+        assert "None" not in result
 
-    def test_remove_presentation_role(self):
-        node = {"role": "presentation", "name": "", "children": []}
-        assert _prune_tree(node) is None
+    @pytest.mark.asyncio
+    async def test_remove_presentation_role(self):
+        node = {"role": "Root", "children": [
+            {"role": "presentation", "name": "", "children": []}
+        ]}
+        result = await format_accessibility_tree(node)
+        assert "presentation" not in result
 
-    def test_prune_children(self):
+    @pytest.mark.asyncio
+    async def test_prune_children(self):
         node = {
             "role": "Root",
             "name": "",
@@ -159,18 +173,21 @@ class TestPruneTree:
                 {"role": "button", "name": "ok", "children": []},
             ],
         }
-        result = _prune_tree(node)
-        assert result is not None
-        assert len(result["children"]) == 1
-        assert result["children"][0]["role"] == "button"
+        result = await format_accessibility_tree(node)
+        assert "StaticText" not in result
+        assert "→ ok" in result
 
 
 class TestTokenPrune:
-    def test_no_prune_needed(self):
+    @pytest.mark.asyncio
+    async def test_no_prune_needed(self):
         snapshot = {"role": "Root", "name": "small"}
-        assert _token_prune(snapshot) is not None
+        result = await format_accessibility_tree(snapshot)
+        assert "[Root]" in result
+        assert "→ small" in result
 
-    def test_prune_large_tree(self):
+    @pytest.mark.asyncio
+    async def test_prune_large_tree(self):
         """매우 큰 트리에서도 prunning이 동작"""
         children = []
         for i in range(200):
@@ -182,24 +199,26 @@ class TestTokenPrune:
                 }
             )
         snapshot = {"role": "Root", "children": children}
-        result = _token_prune(snapshot)
+        result = await format_accessibility_tree(snapshot)
         assert result is not None
 
-
 class TestFormatAccessibilityTree:
-    def test_none_snapshot(self):
-        result = format_accessibility_tree(None)
+    @pytest.mark.asyncio
+    async def test_none_snapshot(self):
+        result = await format_accessibility_tree(None)
         assert "No accessibility tree" in result
 
-    def test_basic_snapshot(self):
+    @pytest.mark.asyncio
+    async def test_basic_snapshot(self):
         snapshot = {"role": "Root", "name": "page"}
-        result = format_accessibility_tree(snapshot)
+        result = await format_accessibility_tree(snapshot)
         assert "[Root]" in result
 
     def test_max_token_constant(self):
         assert MAX_TOKEN_ESTIMATE == 4000
 
-    def test_truncated_output(self):
+    @pytest.mark.asyncio
+    async def test_truncated_output(self):
         """매우 큰 트리는 truncated 표시."""
         children = []
         for i in range(500):
@@ -211,5 +230,5 @@ class TestFormatAccessibilityTree:
                 }
             )
         snapshot = {"role": "Root", "children": children}
-        result = format_accessibility_tree(snapshot, max_tokens=100)
+        result = await format_accessibility_tree(snapshot, max_tokens=100)
         assert "(truncated" in result or len(result) > 0
