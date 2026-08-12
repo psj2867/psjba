@@ -217,11 +217,13 @@ def _format_node(
         else:
             label_parts.append(f"→ {count} children")
 
-    # 상호작용 가능 요소에 ref 번호 부여
-    if refs is not None and _is_interactive(role):
-        ref = _next_ref()
-        label_parts.append(f"[#{ref}]")
-        refs[ref] = {
+    # 모든 노드 중 리프 노드(텍스트 get용)와 interactive(클릭용)에 ref 부여
+    if refs is not None:
+        is_leaf = not node.get("children")
+        if _is_interactive(role) or is_leaf:
+            ref = _next_ref()
+            label_parts.append(f"[#{ref}]")
+            refs[ref] = {
             "role": role,
             "name": name,
             "value": value,
@@ -299,7 +301,10 @@ async def _format_tree(
     detail: bool = False,
     max_depth: int = 999,
 ) -> list[str]:
-    """접근성 스냅샷을 계층적 텍스트 라인 리스트로 변환한다."""
+    """접근성 스냅샷을 계층적 텍스트 라인 리스트로 변환한다.
+
+    연속된 name/alt 없는 image 노드는 [image]×N 으로 접는다.
+    """
     if lines is None:
         lines = []
 
@@ -307,15 +312,44 @@ async def _format_tree(
         lines.append(f"{indent * depth}... (depth {depth})")
         return lines
 
+    # 자기 자신 출력 (루트 포함)
     formatted = _format_node(snapshot, depth, indent, refs=refs, detail=detail)
     if formatted.strip():
         lines.append(formatted)
 
     children = snapshot.get("children", [])
-    for i, child in enumerate(children):
-        if depth > 0 and depth % 4 == 0 and i % 5 == 0:
+    _IMAGE_ROLES = {"image", "img", "graphic", "icon"}
+
+    # 연속 image 그루핑
+    grouped: list[dict[str, Any] | list[dict[str, Any]]] = []
+    pending: list[dict[str, Any]] = []
+    for child in children:
+        role = child.get("role", "").lower()
+        name = child.get("name", "")
+        if role in _IMAGE_ROLES and not name:
+            pending.append(child)
+        else:
+            if pending:
+                grouped.append(pending)
+                pending = []
+            grouped.append(child)
+    if pending:
+        grouped.append(pending)
+
+    for item in grouped:
+        if depth > 0 and depth % 4 == 0 and len(lines) % 5 == 0:
             await asyncio.sleep(0)
-        await _format_tree(child, depth + 1, lines, indent, refs=refs, detail=detail, max_depth=max_depth)
+
+        if isinstance(item, list):
+            # 연속 image 그룹 → "[image] ×N" (depth는 부모+1)
+            img_role = item[0].get("role", "image")
+            n = len(item)
+            if n == 1:
+                lines.append(f"{indent * (depth + 1)}[{img_role}]")
+            else:
+                lines.append(f"{indent * (depth + 1)}[{img_role}] ×{n}")
+        else:
+            await _format_tree(item, depth + 1, lines, indent, refs=refs, detail=detail, max_depth=max_depth)
 
     return lines
 
