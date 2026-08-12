@@ -32,7 +32,6 @@ _WRAPPER_ROLES = {
     "none", "None",
     "generic", "Generic",
     "presentation",
-    "paragraph",
     "group",
     "region", "Region",
     "section", "Section",
@@ -171,9 +170,16 @@ def _format_node(
             if not _leaf_text:
                 _leaf_text = ""
         else:
-            _leaf_text = ""
+            # non-leaf: name이 있으면 표시, 없으면 _text_content로 fallback
             if name:
                 label_parts.append(f'"{name}"')
+            else:
+                tc = node.get("_text_content", "").strip()
+                if tc:
+                    if len(tc) > 15:
+                        tc = tc[:15] + "..."
+                    label_parts.append(f'"{tc}"')
+            _leaf_text = ""
     else:
         _leaf_text = ""
 
@@ -232,6 +238,7 @@ def _format_node(
             "_form_name": form_name,
             "_aria_label": node.get("_aria_label", ""),
             "_backendNodeId": node.get("_backendNodeId"),
+            "_text_content": (node.get("_text_content", "") or "")[:500],
         }
 
     # detail 모드에서 추가 정보
@@ -274,6 +281,13 @@ def _format_node(
         flags.append("readonly")
     if multiline is True:
         flags.append("multiline")
+
+    aria_current = node.get("_aria_current", "")
+    if aria_current:
+        flags.append(f"current={aria_current}")
+    aria_pressed = node.get("aria-pressed")
+    if aria_pressed is not None and aria_pressed != "":
+        flags.append(f"pressed={aria_pressed}")
 
     level = node.get("level", 0)
     if detail and level > 0:
@@ -913,6 +927,12 @@ async def _enrich_node(cdp_session: Any, node: dict[str, Any]) -> None:
                 node["_aria_label"] = attr_val
             elif attr_name == "name":
                 node["_form_name"] = attr_val
+            elif attr_name == "aria-current":
+                node["_aria_current"] = attr_val
+            elif attr_name == "aria-pressed":
+                node["aria-pressed"] = attr_val
+            elif attr_name == "aria-haspopup":
+                node["_aria_haspopup"] = attr_val
 
         # DOM getOuterHTML로 순수 텍스트 추출 (모든 노드 시도)
         try:
@@ -1040,6 +1060,16 @@ def _cdp_nodes_to_snapshot(nodes: list[dict]) -> dict[str, Any]:
                     level = int(pvalue)
                 except (ValueError, TypeError):
                     pass
+            elif pname == "current":
+                node["_aria_current"] = str(pvalue)
+            elif pname == "pressed":
+                pv = str(pvalue)
+                if pv in ("true", True):
+                    node["aria-pressed"] = "true"
+                elif pv in ("false", False):
+                    node["aria-pressed"] = "false"
+                elif pv == "mixed":
+                    node["aria-pressed"] = "mixed"
 
         children = []
         for cid in cdp_node.get("childIds", []):
@@ -1073,6 +1103,10 @@ def _cdp_nodes_to_snapshot(nodes: list[dict]) -> dict[str, Any]:
             node["multiline"] = multiline
         if level > 0:
             node["level"] = level
+        if cdp_node.get("_aria_current"):
+            node["_aria_current"] = cdp_node["_aria_current"]
+        if cdp_node.get("aria-pressed"):
+            node["aria-pressed"] = cdp_node["aria-pressed"]
         bid = cdp_node.get("_backendNodeId")
         if bid:
             node["_backendNodeId"] = bid
