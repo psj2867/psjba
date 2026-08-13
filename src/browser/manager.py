@@ -1121,6 +1121,8 @@ class PlaywrightManager:
             ref: browser_snapshot() 결과에 표시된 [#N] 번호
             tab_index: 대상 탭 인덱스 (None이면 포커스 탭)
         """
+        import time
+        t0 = time.monotonic()
         session_refs = self._get_session_refs()
         node = session_refs.get(ref)
         if node is None:
@@ -1144,42 +1146,51 @@ class PlaywrightManager:
             click_desc += f" #{nid}"
         click_desc += ")"
 
-        # 1차: CDP backendNodeId 기반 정밀 클릭
+        # ─── CDP click helper ──────────────────────────────
+        async def _cdp_dispatch(cdp_session, nid: int) -> tuple[bool, float, float]:
+            """CDP nodeId로 scrollIntoView + getBoxModel + mouse click.
+            Returns (success, cx, cy)."""
+            try:
+                await cdp_session.send("DOM.scrollIntoViewIfNeeded", {"nodeId": nid})
+                box = await cdp_session.send("DOM.getBoxModel", {"nodeId": nid})
+                model = box.get("model", {})
+                content = model.get("content", [])
+                if len(content) < 4:
+                    return False, 0, 0
+                cx = content[0] + content[2] / 2
+                cy = content[1] + content[3] / 2
+                await cdp_session.send("Input.dispatchMouseEvent", {
+                    "type": "mousePressed", "x": cx, "y": cy,
+                    "button": "left", "clickCount": 1,
+                })
+                await cdp_session.send("Input.dispatchMouseEvent", {
+                    "type": "mouseReleased", "x": cx, "y": cy,
+                    "button": "left", "clickCount": 1,
+                })
+                return True, cx, cy
+            except Exception as e:
+                logger.warning("CDP dispatch failed for nodeId=%s: %s", nid, e)
+                return False, 0, 0
+
         cdp = None
         cdp_failed_with_stale_id = False
+
+        # 1차: CDP backendNodeId 기반 정밀 클릭
         if backend_id is not None:
             try:
                 cdp = await page.context.new_cdp_session(page)
-                # backendNodeId → frontend nodeId
                 req = await cdp.send("DOM.requestNode", {
                     "backendNodeId": backend_id,
                 })
                 node_id = req.get("nodeId")
                 if node_id:
-                    await cdp.send("DOM.scrollIntoViewIfNeeded", {
-                        "nodeId": node_id,
-                    })
-                    box = await cdp.send("DOM.getBoxModel", {
-                        "nodeId": node_id,
-                    })
-                    model = box.get("model", {})
-                    content = model.get("content", [])
-                    if len(content) >= 4:
-                        cx = content[0] + content[2] / 2
-                        cy = content[1] + content[3] / 2
-                        await cdp.send("Input.dispatchMouseEvent", {
-                            "type": "mousePressed",
-                            "x": cx, "y": cy,
-                            "button": "left", "clickCount": 1,
-                        })
-                        await cdp.send("Input.dispatchMouseEvent", {
-                            "type": "mouseReleased",
-                            "x": cx, "y": cy,
-                            "button": "left", "clickCount": 1,
-                        })
+                    ok, cx, cy = await _cdp_dispatch(cdp, node_id)
+                    if ok:
                         await self._tabs[idx].update_info()
                         tab = self._tabs[idx]
-                        logger.info("browser_click: clicked %s via CDP backendNodeId=%s", click_desc, backend_id)
+                        elapsed = int((time.monotonic() - t0) * 1000)
+                        logger.info("browser_click: clicked %s via CDP backendNodeId=%s (%.0f,%.0f) %dms",
+                                     click_desc, backend_id, cx, cy, elapsed)
                         result = (f"Clicked {click_desc} [CDP] "
                                   f"[url={tab.url}, title={tab.title}]")
                         d = await self._tabs[idx].check_dialog()
@@ -1189,9 +1200,10 @@ class PlaywrightManager:
             except Exception as e:
                 if "Invalid parameters" in str(e) or "invalid" in str(e).lower():
                     cdp_failed_with_stale_id = True
-                    logger.warning("CDP click for %s failed: stale backendNodeId (page may have navigated). Trying CDP re-discovery.", click_desc)
+                    logger.warning("CDP requestNode for %s failed: stale backendNodeId=%s. → CDP re-discovery",
+                                   click_desc, backend_id)
                 else:
-                    logger.warning("CDP click for %s failed: %s", click_desc, e)
+                    logger.warning("CDP requestNode for %s failed: %s. → fallback", click_desc, e)
 
         # 1.5차: CDP DOM.querySelector 로 재발견 → CDP 클릭 재시도
         if cdp_failed_with_stale_id:
@@ -1204,46 +1216,31 @@ class PlaywrightManager:
                     root_id = doc.get("root", {}).get("nodeId")
                     if root_id:
                         found = await cdp.send("DOM.querySelector", {
-                            "nodeId": root_id,
-                            "selector": selector,
+                            "nodeId": root_id, "selector": selector,
                         })
                         found_node_id = found.get("nodeId")
                         if found_node_id and found_node_id != 0:
-                            await cdp.send("DOM.scrollIntoViewIfNeeded", {
-                                "nodeId": found_node_id,
-                            })
-                            box = await cdp.send("DOM.getBoxModel", {
-                                "nodeId": found_node_id,
-                            })
-                            model = box.get("model", {})
-                            content = model.get("content", [])
-                            if len(content) >= 4:
-                                cx = content[0] + content[2] / 2
-                                cy = content[1] + content[3] / 2
-                                await cdp.send("Input.dispatchMouseEvent", {
-                                    "type": "mousePressed",
-                                    "x": cx, "y": cy,
-                                    "button": "left", "clickCount": 1,
-                                })
-                                await cdp.send("Input.dispatchMouseEvent", {
-                                    "type": "mouseReleased",
-                                    "x": cx, "y": cy,
-                                    "button": "left", "clickCount": 1,
-                                })
+                            ok, cx, cy = await _cdp_dispatch(cdp, found_node_id)
+                            if ok:
                                 await self._tabs[idx].update_info()
                                 tab = self._tabs[idx]
-                                logger.info("browser_click: clicked %s via CDP querySelector=%s", click_desc, selector)
+                                elapsed = int((time.monotonic() - t0) * 1000)
+                                logger.info("browser_click: clicked %s via CDP querySelector=%s (%.0f,%.0f) %dms",
+                                             click_desc, selector, cx, cy, elapsed)
+                                selected_attr = selector
                                 result = (f"Clicked {click_desc} [CDP:querySelector] "
-                                          f"[url={tab.url}, title={tab.title}]")
+                                          f"[url={tab.url}, title={tab.title}"
+                                          f", selector={selector}]")
                                 d = await self._tabs[idx].check_dialog()
                                 if d:
                                     result += f"\n⚠️ Dialog recorded: [{d['type']}] {d.get('message','')}"
                                 return result
             except Exception as e:
-                logger.warning("CDP re-discovery for %s failed: %s", click_desc, e)
+                logger.warning("CDP re-discovery for %s failed: %s. → PW fallback", click_desc, e)
 
         # 2차: Playwright get_by_role 로 찾기
         try:
+            t1 = time.monotonic()
             if name:
                 locator = page.get_by_role(role, name=name, exact=False)
             else:
@@ -1251,21 +1248,33 @@ class PlaywrightManager:
             await locator.first.click(timeout=5000)
             await self._tabs[idx].update_info()
             tab = self._tabs[idx]
-            logger.info("browser_click: clicked %s via Playwright get_by_role", click_desc)
+            pw_elapsed = int((time.monotonic() - t1) * 1000)
+            total_elapsed = int((time.monotonic() - t0) * 1000)
+            logger.info("browser_click: clicked %s via Playwright get_by_role(role=%s, name=%s) (%dms, total=%dms)",
+                         click_desc, role, name, pw_elapsed, total_elapsed)
+            sel = self._build_click_selector(node)
             result = (f"Clicked {click_desc} [PW] "
                       f"[url={tab.url}, title={tab.title}]")
         except Exception as e:
             # 3차: self-healing fallback
+            t1 = time.monotonic()
             healing = SelfHealingSelector(page)
             locator2 = await healing.find_element(
                 "", text=name, role=role, aria_label=name,
             )
             if locator2 is None:
+                total_elapsed = int((time.monotonic() - t0) * 1000)
+                logger.error("browser_click: all strategies failed for %s (%dms): %s",
+                              click_desc, total_elapsed, e)
                 return f"Click by {click_desc} failed: {e}"
             await locator2.click(timeout=5000)
             await self._tabs[idx].update_info()
             tab = self._tabs[idx]
-            logger.info("browser_click: clicked %s via self-healing", click_desc)
+            heal_elapsed = int((time.monotonic() - t1) * 1000)
+            total_elapsed = int((time.monotonic() - t0) * 1000)
+            logger.info("browser_click: clicked %s via self-healing (%dms, total=%dms)",
+                         click_desc, heal_elapsed, total_elapsed)
+            sel = self._build_click_selector(node)
             result = (f"Clicked {click_desc} [heal] "
                       f"[url={tab.url}, title={tab.title}]")
 
