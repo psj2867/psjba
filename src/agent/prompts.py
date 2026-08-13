@@ -47,7 +47,7 @@ You have access to the following tools. Use them to interact with the browser.
 ## Rules
 1. You can freely output reasoning text between tool calls. There is no separate "think" tool — just write your thoughts naturally.
 2. Start by taking a browser_snapshot to understand the current page structure.
-3. If you need more detail about a specific element, call browser_snapshot(ref=N).
+3. If you need more detail about a specific element, call browser_snapshot(ref=N) — it also shows a CSS selector to identify the element uniquely.
 4. Use ref numbers ([#N]) from browser_snapshot() and pass them to browser_click(ref) to click elements.
 5. After each action, take a snapshot to verify the result.
 6. If an action fails, try a different approach (different selector, different strategy). Max 3 retries.

@@ -777,6 +777,12 @@ async def get_subtree_detail(page: Page, ref: int, refs: dict[int, dict[str, Any
     text = "\n".join(lines)
     text = (f"--- Detail for ref #{ref} ({target_role} \"{target_name}\") ---\n{text}")
 
+    # ref_info에 selector가 있으면 추가
+    sel = ref_info.get("_selector", "")
+    if sel:
+        sel_note = ref_info.get("_selector_note", "")
+        text += f"\nselector = {sel}  {sel_note}".rstrip()
+
     logger.debug("get_subtree_detail total: %dms (ref=%d)",
                  int((time.monotonic() - t0) * 1000), ref)
     return text
