@@ -1074,22 +1074,51 @@ class PlaywrightManager:
                     batch[ref] = sel
             if batch:
                 try:
+                    # Phase 1: batch querySelectorAll count
                     js_parts = []
                     for ref, sel in batch.items():
                         escaped = sel.replace("\\", "\\\\").replace("'", "\\'")
                         js_parts.append(f'r{ref}:document.querySelectorAll(\'{escaped}\').length')
                     js = "({" + ",".join(js_parts) + "})"
                     counts = await page.evaluate(js)
+
+                    # Phase 2: non-unique → :nth-of-type fallback
+                    nth_pairs = {}  # ref → sel (non-unique only)
                     for ref, sel in batch.items():
                         cnt = counts.get(f"r{ref}", 0)
                         node = refs[ref]
                         if cnt == 1:
                             node["_selector"] = sel
                         elif cnt > 1:
-                            node["_selector"] = sel
-                            node["_selector_note"] = f"(matched {cnt} elements)"
+                            nth_pairs[ref] = sel
+
+                    if nth_pairs:
+                        nth_js_parts = []
+                        for ref, sel in nth_pairs.items():
+                            escaped = sel.replace("\\", "\\\\").replace("'", "\\'")
+                            nth_js_parts.append(
+                                f'r{ref}:(()=>{{'
+                                f'const e=document.querySelector(\'{escaped}\');'
+                                f'if(!e)return"";'
+                                f'const t=e.tagName.toLowerCase(),p=e.parentElement;'
+                                f'if(!p)return"";'
+                                f'const s=[...p.querySelectorAll(":scope>"+t)],'
+                                f'i=s.indexOf(e)+1,'
+                                f'n=\'{escaped}\'+":nth-of-type("+i+")";'
+                                f'return document.querySelectorAll(n).length===1?n:"";'
+                                f'}})()'
+                            )
+                        nth_js = "({" + ",".join(nth_js_parts) + "})"
+                        nth_results = await page.evaluate(nth_js)
+                        for ref, sel in nth_pairs.items():
+                            node = refs[ref]
+                            nth_sel = nth_results.get(f"r{ref}", "")
+                            if nth_sel:
+                                node["_selector"] = nth_sel
+                            else:
+                                node["_selector"] = sel
+                                node["_selector_note"] = f"(matched {counts.get(f'r{ref}', 0)} elements)"
                 except Exception:
-                    # fallback: verify 없이 저장
                     for ref in batch:
                         refs[ref]["_selector"] = batch[ref]
 
