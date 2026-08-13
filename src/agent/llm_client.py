@@ -11,6 +11,9 @@ logger = logging.getLogger("psjba.agent.llm")
 
 MAX_RETRIES = 3
 
+# config에 model 값이 비어있을 때 사용할 fallback
+DEFAULT_MODEL = "deepseek/deepseek-v4-flash"
+
 
 class LLMClient:
     """ChatOpenAI 인스턴스 생성 및 정리 담당.
@@ -20,11 +23,18 @@ class LLMClient:
 
     def __init__(self, config: Config) -> None:
         api_key = config.api_key
-        model = config.get("llm", "model", "qwen/qwen3.6-27b")
+        model = str(config.get("llm", "model", "") or "").strip()
         base_url = config.get("llm", "url", "https://openrouter.ai/api/v1")
         temperature = config.get("llm", "temperature", 0.0)
         max_tokens = config.get("llm", "max_tokens", 4096)
         timeout = config.get("llm", "timeout", 60)
+
+        # model이 비어있으면 fallback (OpenRouter는 model="" 이면 자동 라우팅 → 다른 모델이 응답함)
+        if not model:
+            logger.warning("LLM model is empty in config — falling back to %s. "
+                           "Set [llm] model in config.ini or settings dialog.",
+                           DEFAULT_MODEL)
+            model = DEFAULT_MODEL
 
         if not api_key:
             logger.warning("API key is empty, LLM calls will fail")

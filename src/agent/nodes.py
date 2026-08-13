@@ -24,6 +24,11 @@ logger = logging.getLogger("psjba.agent.nodes")
 ERROR_KEYWORDS = ("error", "failed", "exception", "not found", "timeout")
 MIN_KEEP_MESSAGES = 10
 
+# 과거 ToolMessage 내용 최대 길이 (token 최적화: 오래된 snapshot 등 대용량 결과 잘라냄)
+MAX_OLD_TOOL_RESULT_CHARS = 1500
+# 이 최근 N개 ToolMessage는 잘라내지 않음 (현재 작업 컨텍스트 보존)
+KEEP_RECENT_TOOL_MSGS = 4
+
 # browser_execute_script no-op 패턴: 실제 JS 문장이 없는 경우
 _NOOP_SCRIPT_RE = re.compile(
     r'^\s*(?:(?:\/\/[^\n]*|/\*[\s\S]*?\*/|<!--[\s\S]*?-->|\s*;)*\s*)*$'
@@ -93,7 +98,32 @@ def _apply_sliding_window(
         return messages
 
     result = system_msgs + trimmed
+    _truncate_old_tool_results(result)
     return result
+
+
+def _truncate_old_tool_results(messages: list[BaseMessage]) -> None:
+    """오래된 ToolMessage의 대용량 결과를 잘라내 token을 절약한다.
+
+    최근 KEEP_RECENT_TOOL_MSGS개는 보존 (현재 작업 컨텍스트), 그 이전 것은
+    MAX_OLD_TOOL_RESULT_CHARS 초과 시 앞부분 유지 + 생략 표시.
+
+    Args:
+        messages: 슬라이딩 윈도우 적용 후 메시지 리스트 (in-place 수정)
+    """
+    if not messages:
+        return
+    tool_msg_indices = [
+        i for i, m in enumerate(messages)
+        if isinstance(m, ToolMessage) and m.content
+    ]
+    for i in tool_msg_indices[:-KEEP_RECENT_TOOL_MSGS] if len(tool_msg_indices) > KEEP_RECENT_TOOL_MSGS else []:
+        content = messages[i].content
+        if isinstance(content, str) and len(content) > MAX_OLD_TOOL_RESULT_CHARS:
+            messages[i].content = (
+                content[:MAX_OLD_TOOL_RESULT_CHARS]
+                + f"\n...[truncated {len(content) - MAX_OLD_TOOL_RESULT_CHARS} chars]"
+            )
 
 
 _TOOL_NAME_PATTERN = re.compile(
@@ -131,6 +161,23 @@ def _extract_finish_reason(response: BaseMessage) -> str:
     meta = getattr(response, "response_metadata", {}) or {}
     finish_reason = meta.get("finish_reason") or meta.get("finish_details", {}).get("type")
     return f"finish_reason={finish_reason}" if finish_reason else ""
+
+
+def _extract_response_model(response: BaseMessage) -> str:
+    """응답을 실제로 처리한 모델명을 추출한다.
+
+    OpenRouter/OpenAI는 응답 body의 "model" 필드에 실제 처리 모델을 담아준다.
+    langchain-openai가 이를 response_metadata["model_name"]으로 넣는다.
+
+    Args:
+        response: LLM 응답 메시지
+
+    Returns:
+        실제 응답 모델명, 또는 요청 모델명/빈 문자열
+    """
+    meta = getattr(response, "response_metadata", {}) or {}
+    model = meta.get("model_name", "") or ""
+    return str(model)
 
 
 def _is_tool_error(result: str) -> bool:
@@ -172,9 +219,10 @@ async def _invoke_llm(
 
     final_messages = [SystemMessage(content=system_prompt)] + messages
 
+    req_model = getattr(llm, "model_name", "") or "?"
     logger.info(
         f"call_model: {len(final_messages)} messages "
-        f"(window: {len(messages)} after sliding)"
+        f"(window: {len(messages)} after sliding) [req_model={req_model}]"
     )
 
     # 마지막 메시지(사용자 입력 or 툴 결과) 요약 로그
@@ -215,6 +263,8 @@ async def _invoke_llm(
 
     call_duration = time.monotonic() - call_start
     finish_str = _extract_finish_reason(response)
+    response_model = _extract_response_model(response)
+    model_str = f"model={response_model}" if response_model else "model=?"
 
     # token usage
     meta = getattr(response, "response_metadata", {}) or {}
@@ -235,7 +285,7 @@ async def _invoke_llm(
     if has_tool_calls:
         tool_names = [tc["name"] for tc in response.tool_calls]
         log_msg = (
-            f"LLM response ({call_duration:.1f}s){tokens_str}: "
+            f"LLM response ({call_duration:.1f}s) [{model_str}]{tokens_str}: "
             f"{len(response.tool_calls)} tool calls "
             f"→ {tool_names}"
         )
@@ -245,7 +295,7 @@ async def _invoke_llm(
     else:
         content = str(response.content or "").strip()
         log_msg = (
-            f"LLM response ({call_duration:.1f}s){tokens_str}: "
+            f"LLM response ({call_duration:.1f}s) [{model_str}]{tokens_str}: "
             f"\"{content[:200]}\""
         )
         if finish_str:
