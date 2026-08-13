@@ -1050,9 +1050,36 @@ class PlaywrightManager:
 
         page = self._ensure_page(tab_index)
         text, refs = await get_accessibility_tree_with_refs(page)
-        self._set_session_refs(refs)
         if refs:
             logger.info("a11y snapshot: %d interactive refs", len(refs))
+            # 각 ref에 unique CSS selector 계산
+            batch = {}  # ref → selector
+            for ref, node in refs.items():
+                sel = self._build_click_selector(node)
+                if sel:
+                    batch[ref] = sel
+            if batch:
+                try:
+                    js_parts = []
+                    for ref, sel in batch.items():
+                        escaped = sel.replace("\\", "\\\\").replace("'", "\\'")
+                        js_parts.append(f'r{ref}:document.querySelectorAll(\'{escaped}\').length')
+                    js = "({" + ",".join(js_parts) + "})"
+                    counts = await page.evaluate(js)
+                    for ref, sel in batch.items():
+                        cnt = counts.get(f"r{ref}", 0)
+                        node = refs[ref]
+                        if cnt == 1:
+                            node["_selector"] = sel
+                        elif cnt > 1:
+                            node["_selector"] = sel
+                            node["_selector_note"] = f"(matched {cnt} elements)"
+                except Exception:
+                    # fallback: verify 없이 저장
+                    for ref in batch:
+                        refs[ref]["_selector"] = batch[ref]
+
+        self._set_session_refs(refs)
         return text
 
     async def browser_click(self, ref: int, tab_index: Optional[int] = None) -> str:
