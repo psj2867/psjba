@@ -616,20 +616,6 @@ class PlaywrightManager:
             parts.append(f'[role="{role}"]')
         return "".join(parts)
 
-    async def _set_oh_ref(self, page: Page, ref: int, role: str, name: str, selector: str) -> None:
-        """클릭/조작 후 전역에 ref 정보를 저장해 LLM이 browser_execute_script로 활용 가능하게 한다."""
-        import json
-        info = json.dumps({
-            "ref": ref,
-            "role": role,
-            "name": name,
-            "selector": selector,
-        })
-        try:
-            await page.evaluate(f"window._oh_ref = {info}")
-        except Exception:
-            pass  # non-fatal
-
     # ─── 요소 조작 ──────────────────────────────────────────
 
     async def browser_type(
@@ -1138,11 +1124,8 @@ class PlaywrightManager:
                         await self._tabs[idx].update_info()
                         tab = self._tabs[idx]
                         logger.info("browser_click: clicked %s via CDP backendNodeId=%s", click_desc, backend_id)
-                        sel = self._build_click_selector(node)
-                        await self._set_oh_ref(page, ref, role, name, sel)
                         result = (f"Clicked {click_desc} [CDP] "
-                                  f"[url={tab.url}, title={tab.title}"
-                                  f"{', selector=' + sel if sel else ''}]")
+                                  f"[url={tab.url}, title={tab.title}]")
                         d = await self._tabs[idx].check_dialog()
                         if d:
                             result += f"\n⚠️ Dialog recorded: [{d['type']}] {d.get('message','')}"
@@ -1194,10 +1177,8 @@ class PlaywrightManager:
                                 await self._tabs[idx].update_info()
                                 tab = self._tabs[idx]
                                 logger.info("browser_click: clicked %s via CDP querySelector=%s", click_desc, selector)
-                                await self._set_oh_ref(page, ref, role, name, selector)
                                 result = (f"Clicked {click_desc} [CDP:querySelector] "
-                                          f"[url={tab.url}, title={tab.title}"
-                                          f", selector={selector}]")
+                                          f"[url={tab.url}, title={tab.title}]")
                                 d = await self._tabs[idx].check_dialog()
                                 if d:
                                     result += f"\n⚠️ Dialog recorded: [{d['type']}] {d.get('message','')}"
@@ -1215,11 +1196,8 @@ class PlaywrightManager:
             await self._tabs[idx].update_info()
             tab = self._tabs[idx]
             logger.info("browser_click: clicked %s via Playwright get_by_role", click_desc)
-            sel = self._build_click_selector(node)
-            await self._set_oh_ref(page, ref, role, name, sel)
             result = (f"Clicked {click_desc} [PW] "
-                      f"[url={tab.url}, title={tab.title}"
-                      f"{', selector=' + sel if sel else ''}]")
+                      f"[url={tab.url}, title={tab.title}]")
         except Exception as e:
             # 3차: self-healing fallback
             healing = SelfHealingSelector(page)
@@ -1232,11 +1210,8 @@ class PlaywrightManager:
             await self._tabs[idx].update_info()
             tab = self._tabs[idx]
             logger.info("browser_click: clicked %s via self-healing", click_desc)
-            sel = self._build_click_selector(node)
-            await self._set_oh_ref(page, ref, role, name, sel)
             result = (f"Clicked {click_desc} [heal] "
-                      f"[url={tab.url}, title={tab.title}"
-                      f"{', selector=' + sel if sel else ''}]")
+                      f"[url={tab.url}, title={tab.title}]")
 
         d = await self._tabs[idx].check_dialog()
         if d:

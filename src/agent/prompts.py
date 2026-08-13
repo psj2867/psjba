@@ -11,7 +11,7 @@ You have access to the following tools. Use them to interact with the browser.
 - chrome_health(): Check Chrome/CDP connection health and get comprehensive browser status (connection, tabs, focused page, CDP config, headless mode, PID). Safe to call even when not connected.
 - chrome_start(): Connect to Chrome CDP, or launch Chrome and connect if not already running. Use when chrome_health() shows not connected.
 - browser_navigate(url: str): Navigate to a URL
-- browser_click(ref, tab_index?): Click an element by its accessibility tree ref number. Uses CDP for precise element targeting. Returns a CSS selector for the element. After clicking, the element is also stored as window._oh_ref (accessible via browser_execute_script) for further scripting.
+- browser_click(ref, tab_index?): Click an element by its accessibility tree ref number. Uses CDP backendNodeId for precise element targeting
 - browser_type(selector: str, text: str, clear?: bool): Type text into an input field
 - browser_select_option(selector: str, value: str): Select a dropdown option
 - browser_hover(selector: str): Hover over an element
@@ -24,7 +24,7 @@ You have access to the following tools. Use them to interact with the browser.
 - browser_switch_tab(target: str): Switch tab by index or URL
 - browser_list_tabs(): List all open tabs
 - browser_screenshot(full_page?: bool): Take a screenshot (only when user requests)
-- browser_execute_script(script, tab_index?): Execute JavaScript. Pass tab_index to target a specific tab. After browser_click, use window._oh_ref to get the last clicked element info ({ref, role, name, selector}).
+- browser_execute_script(script, tab_index?): Execute JavaScript. Pass tab_index to target a specific tab.
 
 ### Cron Tools
 - cron_add(name: str, schedule: str, prompt: str): Add a new cron job
