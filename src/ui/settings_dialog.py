@@ -1422,23 +1422,23 @@ class SettingsDialog(QDialog):
 
     def _load_settings(self) -> None:
         c = self._config
-        self._llm_url.setText(c.get("llm", "url") or "")
-        self._llm_model.setText(c.get("llm", "model") or "")
+        self._llm_url.setText(c.get("llm", "url"))
+        self._llm_model.setText(c.get("llm", "model"))
         self._llm_api_key.setText(c.api_key)
         self._llm_max_tokens.setValue(int(c.get("llm", "max_tokens")))
         self._llm_temperature.setValue(float(c.get("llm", "temperature")))
         self._llm_timeout.setValue(int(c.get("llm", "timeout")))
 
-        self._cdp_host.setText(c.get("cdp", "host") or "")
+        self._cdp_host.setText(c.get("cdp", "host"))
         self._cdp_port.setValue(int(c.get("cdp", "port")))
         self._cdp_timeout.setValue(float(c.get("cdp", "connection_timeout")))
 
-        self._chrome_path.setText(c.get("chrome", "path") or "")
-        self._chrome_user_data.setText(c.get("chrome", "user_data_dir") or "")
+        self._chrome_path.setText(c.get("chrome", "path"))
+        self._chrome_user_data.setText(c.get("chrome", "user_data_dir"))
         self._chrome_headless.setChecked(bool(c.get("chrome", "headless")))
 
-        self._sqlite_path.setText(c.get("sqlite", "path") or "")
-        self._ws_dir.setText(c.get("workspace", "workspace_dir") or "")
+        self._sqlite_path.setText(c.get("sqlite", "path"))
+        self._ws_dir.setText(c.get("workspace", "workspace_dir"))
 
         self._agent_window.setValue(int(c.get("agent", "sliding_window_size")))
         self._agent_cron_timeout.setValue(int(c.get("agent", "cron_timeout")))
@@ -1447,10 +1447,10 @@ class SettingsDialog(QDialog):
         self._ui_font_size.setValue(int(c.get("ui", "font_size")))
         self._ui_max_chat.setValue(int(c.get("ui", "max_chat_lines")))
 
-        log_idx = self._log_level_combo.findData(c.get("logging", "level") or "disabled")
+        log_idx = self._log_level_combo.findData(c.get("logging", "level"))
         if log_idx >= 0:
             self._log_level_combo.setCurrentIndex(log_idx)
-        self._log_path.setText(c.get("logging", "path") or "")
+        self._log_path.setText(c.get("logging", "path"))
 
         self._cron_l1_page = 1
         self._cron_l1_total_pages = 1

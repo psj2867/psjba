@@ -60,6 +60,19 @@ def _show_error_in_ui(window: "MainWindow", title: str, exc: Optional[BaseExcept
 # ─── 크래시 진단 후크 ───────────────────────────────────────
 
 _ORIG_EXCEPTHOOK: object | None = None
+_main_window_ref: Optional["MainWindow"] = None
+
+
+def notify_user_critical(title: str, message: str) -> None:
+    """MainWindow를 통해 사용자에게 치명적 오류를 알린다."""
+    win = _main_window_ref
+    if win is None:
+        return
+    try:
+        msg = f"⚠️ **{title}**\n\n{message[:300]}"
+        win._chat.add_user_message(msg)
+    except Exception:
+        logger.exception("notify_user_critical failed")
 
 
 def _setup_crash_hooks() -> None:
@@ -74,32 +87,13 @@ def _setup_crash_hooks() -> None:
             exc_type.__name__, exc_value,
             "".join(traceback.format_tb(exc_tb)),
         )
+        notify_user_critical(
+            exc_type.__name__, f"{exc_value}"
+        )
         if _ORIG_EXCEPTHOOK:
             _ORIG_EXCEPTHOOK(exc_type, exc_value, exc_tb)
 
     sys.excepthook = excepthook
-
-    # 2. asyncio loop exception handler — Task 내부의 잡히지 않은 예외
-    loop = asyncio.get_event_loop()
-    orig_exc_handler = loop.get_exception_handler()
-
-    def asyncio_exc_handler(loop, context) -> None:
-        logger.critical(
-            "Unhandled asyncio exception: %s",
-            context.get("message", "(no message)"),
-        )
-        exc = context.get("exception")
-        if exc:
-            logger.critical(
-                "%s: %s\n%s",
-                type(exc).__name__, exc,
-                "".join(traceback.format_tb(exc.__traceback__)),
-            )
-        # 원래 핸들러가 있으면 위임
-        if orig_exc_handler:
-            orig_exc_handler(loop, context)
-
-    loop.set_exception_handler(asyncio_exc_handler)
 
 
 def parse_args() -> str:
@@ -116,8 +110,8 @@ def parse_args() -> str:
 
 
 def setup_logging(config: Config) -> None:
-    level_str = config.get("logging", "level") or "disabled"
-    log_path = config.get("logging", "path") or ""
+    level_str = config.get("logging", "level")
+    log_path = config.get("logging", "path")
 
     root_logger = logging.getLogger("psjba")
     level = getattr(logging, level_str.upper(), logging.WARNING)
@@ -164,14 +158,14 @@ async def run(config: Config) -> None:
     logger.info("Step 1/10: Config loaded (path=%s)", CONFIG_PATH)
 
     # DB
-    db_path = config.get("sqlite", "path") or "./browser_agent.db"
+    db_path = config.get("sqlite", "path")
     db = Database(db_path)
     await db.connect()
     await db.initialize()
     logger.info("Step 2/10: Database ready (path=%s)", db_path)
 
     # 워크스페이스
-    workspace_dir = config.get("workspace", "workspace_dir") or "./psjba_temp"
+    workspace_dir = config.get("workspace", "workspace_dir")
     Path(workspace_dir).mkdir(parents=True, exist_ok=True)
     Path(workspace_dir, "screenshots").mkdir(parents=True, exist_ok=True)
     Path(workspace_dir, "downloads").mkdir(parents=True, exist_ok=True)
@@ -180,18 +174,18 @@ async def run(config: Config) -> None:
 
     # PlaywrightManager
     manager = PlaywrightManager(
-        cdp_host=config.get("cdp", "host") or "127.0.0.1",
-        cdp_port=config.get("cdp", "port") or 9222,
-        connection_timeout=config.get("cdp", "connection_timeout") or 1.0,
-        chrome_path=config.get("chrome", "path") or "",
-        user_data_dir=config.get("chrome", "user_data_dir") or "",
-        headless=bool(config.get("chrome", "headless")),
+        cdp_host=config.get("cdp", "host"),
+        cdp_port=config.get("cdp", "port"),
+        connection_timeout=config.get("cdp", "connection_timeout"),
+        chrome_path=config.get("chrome", "path"),
+        user_data_dir=config.get("chrome", "user_data_dir"),
+        headless=config.get("chrome", "headless"),
         workspace_dir=workspace_dir,
     )
     logger.info("Step 4/10: PlaywrightManager created (cdp=%s:%s, headless=%s)",
-                config.get("cdp", "host") or "127.0.0.1",
-                config.get("cdp", "port") or 9222,
-                bool(config.get("chrome", "headless")))
+                config.get("cdp", "host"),
+                config.get("cdp", "port"),
+                config.get("chrome", "headless"))
 
     # Cron
     cron_executor = CronExecutor(config=config, db=db, manager=manager)
@@ -224,6 +218,7 @@ async def run(config: Config) -> None:
 
     # MainWindow
     window = MainWindow(config=config, db=db, manager=manager)
+    _main_window_ref = window
     manager.set_main_window(window)
     logger.info("Step 6/10: MainWindow created")
 
@@ -303,7 +298,7 @@ async def run(config: Config) -> None:
 
     # 필수값 확인
     api_key = config.api_key
-    model = config.get("llm", "model") or ""
+    model = config.get("llm", "model")
     if not api_key or not model:
         logger.warning("Step 10/10: api_key or model not set, prompting user")
         from PySide6.QtWidgets import QMessageBox
@@ -381,7 +376,7 @@ async def _handle_prompt(
     await db.save_message(user_msg)
 
     # 슬라이딩 윈도우: user 프롬프트 단위로 리밋, 사이의 모든 메시지 포함
-    slide_window = config.get("agent", "sliding_window_size") or 5
+    slide_window = config.get("agent", "sliding_window_size")
     history_rows = await db.get_messages(session_id, limit=999999)  # 일단 전체 로드
     # 방금 저장한 현재 user 메시지는 enriched_text 로 대체하므로 제외
     if history_rows and history_rows[-1].role == "user" and history_rows[-1].content == text:
@@ -413,8 +408,8 @@ async def _handle_prompt(
             db=db,
             session_id=session_id,
             llm=llm_client.llm,
-            max_context_messages=int(config.get("agent", "sliding_window_size") or 5),
-            max_tool_calls=int(config.get("agent", "max_tool_calls") or 30),
+            max_context_messages=int(config.get("agent", "sliding_window_size")),
+            max_tool_calls=int(config.get("agent", "max_tool_calls")),
             job_scheduler=job_scheduler,
         )
 
@@ -621,6 +616,15 @@ def main() -> None:
         if isinstance(exc, RuntimeError) and "Cannot enter into task" in str(exc):
             logger.debug("Ignored nested task wakeup collision: %s", exc)
             return
+        # Critical error → log + user notification
+        logger.critical("Unhandled asyncio exception: %s", msg)
+        if exc:
+            tb = "".join(traceback.format_tb(exc.__traceback__))
+            logger.critical("%s: %s\n%s", type(exc).__name__, exc, tb)
+        notify_user_critical(
+            type(exc).__name__ if exc else "AsyncioError",
+            f"{msg}" if not exc else f"{msg}\n\n{exc}",
+        )
         if _original_handler:
             _original_handler(loop, context)
         else:

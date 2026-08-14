@@ -146,7 +146,7 @@ class JobScheduler:
                 "intervention_queue": [],
             }
 
-            timeout = self._config.get("agent", "cron_timeout") or 300
+            timeout = self._config.get("agent", "cron_timeout")
             result = await asyncio.wait_for(
                 graph.ainvoke(state), timeout=timeout
             )
@@ -215,7 +215,7 @@ class JobScheduler:
             db=self._db,
             session_id=session_id,
             max_context_messages=int(
-                self._config.get("agent", "sliding_window_size") or 5
+                self._config.get("agent", "sliding_window_size")
             ),
         )
 

@@ -20,11 +20,11 @@ class LLMClient:
 
     def __init__(self, config: Config) -> None:
         api_key = config.api_key
-        model = str(config.get("llm", "model") or "" or "").strip()
-        base_url = config.get("llm", "url") or "https://openrouter.ai/api/v1"
-        temperature = config.get("llm", "temperature") or 0.0
-        max_tokens = config.get("llm", "max_tokens") or 4096
-        timeout = config.get("llm", "timeout") or 60
+        model = str(config.get("llm", "model")).strip()
+        base_url = config.get("llm", "url")
+        temperature = config.get("llm", "temperature")
+        max_tokens = config.get("llm", "max_tokens")
+        timeout = config.get("llm", "timeout")
 
         if not model:
             raise ValueError(
