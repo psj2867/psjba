@@ -180,6 +180,72 @@ def _extract_response_model(response: BaseMessage) -> str:
     return str(model)
 
 
+def _format_usage_info(usage: dict, headers: Optional[dict] = None) -> str:
+    """OpenRouter/OpenAI token usage + cost + cache 정보를 로그 문자열로 만든다.
+
+    OpenRouter는 usage 객체에 cost 필드를 함께 준다:
+    - total_cost / prompt_cost / completion_cost (USD)
+    - prompt_cache_hit_tokens / prompt_cache_miss_tokens
+    - prompt_tokens_details.cached_tokens / completion_tokens_details.reasoning_tokens
+    또한 헤더에 X-Request-Costs-Usd, X-Total-Credits-Used/Limit 제공.
+
+    Args:
+        usage: response_metadata["token_usage"] (원시 response.usage dict)
+        headers: response_metadata["headers"] (있는 경우)
+
+    Returns:
+        "[in=100, out=50, total=150, cache_hit=60, cost=$0.0003]" 형태
+    """
+    parts: list[str] = []
+    if usage.get("prompt_tokens") is not None:
+        parts.append(f"in={usage['prompt_tokens']}")
+    if usage.get("completion_tokens") is not None:
+        parts.append(f"out={usage['completion_tokens']}")
+    if usage.get("total_tokens") is not None:
+        parts.append(f"total={usage['total_tokens']}")
+
+    cache_hit = usage.get("prompt_cache_hit_tokens")
+    if cache_hit is None:
+        details = usage.get("prompt_tokens_details") or {}
+        cache_hit = details.get("cached_tokens")
+    if cache_hit:
+        parts.append(f"cache_hit={cache_hit}")
+    cache_miss = usage.get("prompt_cache_miss_tokens")
+    if cache_miss:
+        parts.append(f"cache_miss={cache_miss}")
+
+    reasoning = (usage.get("completion_tokens_details") or {}).get("reasoning_tokens")
+    if reasoning:
+        parts.append(f"reasoning={reasoning}")
+
+    cost = usage.get("total_cost")
+    if cost is None:
+        cost_details = usage.get("cost_details") or {}
+        cost = cost_details.get("total_cost")
+    if cost is None and headers:
+        # OpenRouter 헤더의 요청 비용 fallback
+        try:
+            header_cost = headers.get("x-request-costs-usd")
+            if header_cost is not None:
+                cost = float(header_cost)
+        except (TypeError, ValueError):
+            cost = None
+    if cost is not None:
+        parts.append(f"cost=${float(cost):.6f}")
+
+    credits_str = ""
+    if headers:
+        used = headers.get("x-total-credits-used")
+        limit = headers.get("x-total-credits-limit")
+        if used is not None:
+            credits_str = f", credits_used={used}"
+            if limit is not None:
+                credits_str += f"/{limit}"
+
+    body = ", ".join(parts)
+    return f"[{body}]{credits_str}" if body or credits_str else ""
+
+
 def _is_tool_error(result: str) -> bool:
     """도구 실행 결과가 오류인지 판단한다."""
     lower = result.lower()
@@ -266,20 +332,14 @@ async def _invoke_llm(
     response_model = _extract_response_model(response)
     model_str = f"model={response_model}" if response_model else "model=?"
 
-    # token usage
+    # token usage + cost + cache (OpenRouter)
     meta = getattr(response, "response_metadata", {}) or {}
     usage = meta.get("token_usage", {}) or {}
-    tokens_str = ""
-    if usage:
-        parts = []
-        if "prompt_tokens" in usage:
-            parts.append(f"in={usage['prompt_tokens']}")
-        if "completion_tokens" in usage:
-            parts.append(f"out={usage['completion_tokens']}")
-        if "total_tokens" in usage:
-            parts.append(f"total={usage['total_tokens']}")
-        if parts:
-            tokens_str = " [" + ", ".join(parts) + "]"
+    headers = meta.get("headers") or {}
+    usage_str = _format_usage_info(usage, headers)
+    tokens_str = f" {usage_str}" if usage_str else ""
+    if headers:
+        logger.debug("LLM response headers: %s", dict(headers))
 
     has_tool_calls = hasattr(response, "tool_calls") and response.tool_calls
     if has_tool_calls:
