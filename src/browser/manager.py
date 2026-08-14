@@ -1173,7 +1173,6 @@ class PlaywrightManager:
                 return False, 0, 0
 
         cdp = None
-        cdp_failed_with_stale_id = False
 
         # 1차: CDP backendNodeId 기반 정밀 클릭
         if backend_id is not None:
@@ -1198,75 +1197,84 @@ class PlaywrightManager:
                             result += f"\n⚠️ Dialog recorded: [{d['type']}] {d.get('message','')}"
                         return result
             except Exception as e:
-                if "Invalid parameters" in str(e) or "invalid" in str(e).lower():
-                    cdp_failed_with_stale_id = True
-                    logger.warning("CDP requestNode for %s failed: stale backendNodeId=%s. → CDP re-discovery",
-                                   click_desc, backend_id)
-                else:
-                    logger.warning("CDP requestNode for %s failed: %s. → fallback", click_desc, e)
+                logger.warning("CDP requestNode for %s failed: %s. → CDP re-discovery", click_desc, e)
 
-        # 1.5차: CDP DOM.querySelector 로 재발견 → CDP 클릭 재시도
-        if cdp_failed_with_stale_id:
-            try:
-                selector = self._build_click_selector(node)
-                if selector:
-                    if cdp is None:
-                        cdp = await page.context.new_cdp_session(page)
-                    doc = await cdp.send("DOM.getDocument", {})
-                    root_id = doc.get("root", {}).get("nodeId")
-                    if root_id:
-                        found = await cdp.send("DOM.querySelector", {
-                            "nodeId": root_id, "selector": selector,
-                        })
-                        found_node_id = found.get("nodeId")
-                        if found_node_id and found_node_id != 0:
-                            ok, cx, cy = await _cdp_dispatch(cdp, found_node_id)
-                            if ok:
-                                await self._tabs[idx].update_info()
-                                tab = self._tabs[idx]
-                                elapsed = int((time.monotonic() - t0) * 1000)
-                                logger.info("browser_click: clicked %s via CDP querySelector=%s (%.0f,%.0f) %dms",
-                                             click_desc, selector, cx, cy, elapsed)
-                                selected_attr = selector
-                                result = (f"Clicked {click_desc} [CDP:querySelector] "
-                                          f"[url={tab.url}, title={tab.title}"
-                                          f", selector={selector}]")
-                                d = await self._tabs[idx].check_dialog()
-                                if d:
-                                    result += f"\n⚠️ Dialog recorded: [{d['type']}] {d.get('message','')}"
-                                return result
-            except Exception as e:
-                logger.warning("CDP re-discovery for %s failed: %s. → PW fallback", click_desc, e)
+        # 1.5차: CSS selector로 CDP 재발견 → CDP 클릭 (backendNodeId=null or stale 모두)
+        try:
+            selector = self._build_click_selector(node)
+            if selector:
+                if cdp is None:
+                    cdp = await page.context.new_cdp_session(page)
+                doc = await cdp.send("DOM.getDocument", {})
+                root_id = doc.get("root", {}).get("nodeId")
+                if root_id:
+                    found = await cdp.send("DOM.querySelector", {
+                        "nodeId": root_id, "selector": selector,
+                    })
+                    found_node_id = found.get("nodeId")
+                    if found_node_id and found_node_id != 0:
+                        ok, cx, cy = await _cdp_dispatch(cdp, found_node_id)
+                        if ok:
+                            await self._tabs[idx].update_info()
+                            tab = self._tabs[idx]
+                            elapsed = int((time.monotonic() - t0) * 1000)
+                            logger.info("browser_click: clicked %s via CDP querySelector=%s (%.0f,%.0f) %dms",
+                                         click_desc, selector, cx, cy, elapsed)
+                            result = (f"Clicked {click_desc} [CDP:querySelector] "
+                                      f"[url={tab.url}, title={tab.title}"
+                                      f", selector={selector}]")
+                            d = await self._tabs[idx].check_dialog()
+                            if d:
+                                result += f"\n⚠️ Dialog recorded: [{d['type']}] {d.get('message','')}"
+                            return result
+        except Exception as e:
+            logger.warning("CDP re-discovery for %s failed: %s. → PW fallback", click_desc, e)
 
-        # 2차: Playwright get_by_role 로 찾기
+        # 2차: Playwright locator (CSS selector 먼저, 없으면 get_by_role)
         try:
             t1 = time.monotonic()
-            if name:
+            locator = None
+            # selector가 있으면 정확한 요소 지정 가능
+            if selector:
+                locator = page.locator(selector)
+            elif name:
                 locator = page.get_by_role(role, name=name, exact=False)
-            else:
-                locator = page.get_by_role(role)
-            await locator.first.click(timeout=5000)
-            await self._tabs[idx].update_info()
-            tab = self._tabs[idx]
-            pw_elapsed = int((time.monotonic() - t1) * 1000)
-            total_elapsed = int((time.monotonic() - t0) * 1000)
-            logger.info("browser_click: clicked %s via Playwright get_by_role(role=%s, name=%s) (%dms, total=%dms)",
-                         click_desc, role, name, pw_elapsed, total_elapsed)
-            sel = self._build_click_selector(node)
-            result = (f"Clicked {click_desc} [PW] "
-                      f"[url={tab.url}, title={tab.title}]")
+            if locator is not None:
+                await locator.first.click(timeout=5000)
+                await self._tabs[idx].update_info()
+                tab = self._tabs[idx]
+                pw_elapsed = int((time.monotonic() - t1) * 1000)
+                total_elapsed = int((time.monotonic() - t0) * 1000)
+                pw_method = "PW:locator" if selector else "PW:get_by_role"
+                logger.info("browser_click: clicked %s via %s (%dms, total=%dms)",
+                             click_desc, pw_method, pw_elapsed, total_elapsed)
+                result = (f"Clicked {click_desc} [{pw_method}] "
+                          f"[url={tab.url}, title={tab.title}]")
+                d = await self._tabs[idx].check_dialog()
+                if d:
+                    result += f"\n⚠️ Dialog recorded: [{d['type']}] {d.get('message','')}"
+                return result
         except Exception as e:
-            # 3차: self-healing fallback
+            pass  # fallthrough
+
+        # 3차: SelfHealingSelector (name이 있어야 의미 있음)
+        try:
             t1 = time.monotonic()
             healing = SelfHealingSelector(page)
-            locator2 = await healing.find_element(
-                "", text=name, role=role, aria_label=name,
-            )
+            locator2 = None
+            if name:
+                locator2 = await healing.find_element(
+                    "", text=name, role=role, aria_label=name,
+                )
+            elif selector:
+                locator2 = await healing.find_element(selector)
             if locator2 is None:
                 total_elapsed = int((time.monotonic() - t0) * 1000)
-                logger.error("browser_click: all strategies failed for %s (%dms): %s",
-                              click_desc, total_elapsed, e)
-                return f"Click by {click_desc} failed: {e}"
+                logger.error("browser_click: all strategies failed for %s (%dms)",
+                              click_desc, total_elapsed)
+                return (f"Click by {click_desc} failed: could not uniquely identify element "
+                        f"(role={role!r}, name={name!r}). "
+                        "Try browser_snapshot() again to get a fresh ref.")
             await locator2.click(timeout=5000)
             await self._tabs[idx].update_info()
             tab = self._tabs[idx]
@@ -1274,17 +1282,17 @@ class PlaywrightManager:
             total_elapsed = int((time.monotonic() - t0) * 1000)
             logger.info("browser_click: clicked %s via self-healing (%dms, total=%dms)",
                          click_desc, heal_elapsed, total_elapsed)
-            sel = self._build_click_selector(node)
             result = (f"Clicked {click_desc} [heal] "
                       f"[url={tab.url}, title={tab.title}]")
-
-        d = await self._tabs[idx].check_dialog()
-        if d:
-            result += f"\n⚠️ Dialog recorded: [{d['type']}] {d.get('message','')}"
-        if cdp_failed_with_stale_id:
-            result += ("\n⚠️ CDP backendNodeId가 유효하지 않습니다 (페이지 변경). "
-                       "browser_snapshot()을 다시 호출하여 ref를 갱신하세요.")
-        return result
+            d = await self._tabs[idx].check_dialog()
+            if d:
+                result += f"\n⚠️ Dialog recorded: [{d['type']}] {d.get('message','')}"
+            return result
+        except Exception as e:
+            total_elapsed = int((time.monotonic() - t0) * 1000)
+            logger.error("browser_click: self-healing failed for %s (%dms): %s",
+                          click_desc, total_elapsed, e)
+            return f"Click by {click_desc} failed: {e}"
 
     async def browser_get_text(self, ref: int, tab_index: Optional[int] = None) -> str:
         """접근성 트리 ref 번호로 요소의 DOM 텍스트를 가져온다.
@@ -1331,34 +1339,33 @@ class PlaywrightManager:
             return (f"Text for ref #{ref} ({role} \"{name}\"):\n"
                     f"{text_content.strip()[:5000]}")
 
-        # fallback 2: page.evaluate 로 DOM textContent 직접 추출 (querySelector)
+        # fallback 2: page.evaluate 로 DOM textContent 직접 추출 (CSS selector)
         try:
-            tag = node.get("tag", "")
-            nid = node.get("_id", "")
-            if tag and nid:
+            selector = self._build_click_selector(node)
+            if selector:
                 script = (
-                    f"(document.querySelector('{tag}#{nid}')"
+                    f"(document.querySelector('{selector}')"
                     f"?.textContent || '').trim().substring(0, 5000)"
                 )
                 text = await page.evaluate(script)
                 if text:
                     return f"Text for ref #{ref} ({role} \"{name}\"):\n{text}"
 
-            # 최후: CSS selector fallback
-            escaped_role = role.replace("'", "\\'")
-            selector = f'[role="{escaped_role}"]'
+            # 최후: role+name 기반 selector (name이 있을 때만)
             if name:
+                escaped_role = role.replace("'", "\\'")
                 escaped_name = name.replace("'", "\\'")
-                selector += f'[aria-label="{escaped_name}"]'
-            if tag:
-                selector = tag + selector
-            script = (
-                f"(document.querySelector('{selector}')"
-                f"?.textContent || '').trim().substring(0, 5000)"
-            )
-            text = await page.evaluate(script)
-            if text:
-                return f"Text for ref #{ref} ({role} \"{name}\"):\n{text}"
+                if tag:
+                    sel = f'{tag}[role="{escaped_role}"][aria-label="{escaped_name}"]'
+                else:
+                    sel = f'[role="{escaped_role}"][aria-label="{escaped_name}"]'
+                script = (
+                    f"(document.querySelector('{sel}')"
+                    f"?.textContent || '').trim().substring(0, 5000)"
+                )
+                text = await page.evaluate(script)
+                if text:
+                    return f"Text for ref #{ref} ({role} \"{name}\"):\n{text}"
             return f"Text for ref #{ref} ({role} \"{name}\"): (no text found)"
         except Exception as e:
             return f"Get text by ref #{ref} failed: {e}"
@@ -1409,12 +1416,22 @@ class PlaywrightManager:
             except Exception as e:
                 logger.warning("CDP getOuterHTML for ref %d failed: %s", ref, e)
 
-        # fallback: _text_content
-        text_content = node.get("_text_content", "")
-        if text_content:
-            return f"DOM for {desc}: (no outerHTML, _text_content={text_content[:2000]})"
+        # fallback: CSS selector로 outerHTML 추출
+        try:
+            selector = self._build_click_selector(node)
+            if selector:
+                script = (
+                    f"(document.querySelector('{selector}')?.outerHTML || '')"
+                )
+                outer = await page.evaluate(script)
+                if outer:
+                    if len(outer) > 10000:
+                        outer = outer[:10000] + "\n... (truncated 10000 chars)"
+                    return f"DOM for {desc} (via selector):\n{outer}"
+        except Exception as e:
+            logger.warning("Selector fallback for ref %d failed: %s", ref, e)
 
-        return f"DOM for {desc}: (no data)"
+        return f"DOM for {desc}: (element not found)"
 
     async def browser_screenshot(
         self,
