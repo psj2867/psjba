@@ -62,7 +62,7 @@ DEFAULTS: dict[str, dict[str, Any]] = {
         "path": "./browser_agent.db",
     },
     "agent": {
-        "sliding_window_size": 10,
+        "sliding_window_size": 5,
         "cron_timeout": 300,
         "max_tool_calls": 30,
         "cron_tool_calls": 50,
@@ -128,9 +128,25 @@ class Config:
         return self._path
 
     def get(self, section: str, key: str, default: Any = None) -> Any:
+        """설정 값을 반환한다. 기본값은 config.py의 DEFAULTS를 우선 사용한다.
+
+        load()가 호출되면 _data가 DEFAULTS로 채워지므로, 일반적으로
+        default 인자는 사용되지 않는다. load() 전이나 DEFAULTS에 없는 키라면
+        default 인자로 폴백한다.
+
+        Args:
+            section: 설정 섹션명 (예: "llm", "agent")
+            key: 설정 키 (예: "model", "sliding_window_size")
+            default: _data에 값이 없을 때 사용할 폴백 (기본 None)
+
+        Returns:
+            설정 값 또는 폴백
+        """
         try:
             return self._data[section][key]
         except KeyError:
+            if section in DEFAULTS and key in DEFAULTS[section]:
+                return DEFAULTS[section][key]
             return default
 
     def set(self, section: str, key: str, value: Any) -> None:

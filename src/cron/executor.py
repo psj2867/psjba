@@ -50,7 +50,7 @@ class CronExecutor:
         self._running[job.id] = task
 
     async def _run(self, job: CronJob) -> None:
-        cron_timeout = self._config.get("agent", "cron_timeout", DEFAULT_CRON_TIMEOUT)
+        cron_timeout = self._config.get("agent", "cron_timeout") or DEFAULT_CRON_TIMEOUT
         session: Optional[Session] = None
 
         try:
@@ -177,10 +177,10 @@ class CronExecutor:
             db=self._db,
             session_id=session_id,
             max_context_messages=self._config.get(
-                "agent", "sliding_window_size", 30
-            ),
+                "agent", "sliding_window_size"
+            ) or 5,
             cron_job_id=cron_job_id,
-            max_tool_calls=self._config.get("agent", "cron_tool_calls", 50),
+            max_tool_calls=self._config.get("agent", "cron_tool_calls") or 50,
         )
 
     async def _save_message(

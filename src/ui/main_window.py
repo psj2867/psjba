@@ -142,7 +142,7 @@ class MainWindow(QMainWindow):
     # ─── 폰트 크기 ──────────────────────────────────────────────
 
     def _apply_font_size(self) -> None:
-        size = int(self._config.get("ui", "font_size", 14))
+        size = int(self._config.get("ui", "font_size") or 14)
         font = QFont()
         font.setPointSize(size)
         self.setFont(font)
@@ -257,12 +257,12 @@ class MainWindow(QMainWindow):
     def _on_config_saved(self) -> None:
         logger.debug("Config saved")
         self._manager.update_config(
-            cdp_host=self._config.get("cdp", "host", "127.0.0.1"),
-            cdp_port=self._config.get("cdp", "port", 9222),
-            chrome_path=self._config.get("chrome", "path", ""),
-            user_data_dir=self._config.get("chrome", "user_data_dir", ""),
-            headless=self._config.get("chrome", "headless", False),
-            workspace_dir=self._config.get("workspace", "workspace_dir", "./psjba_temp"),
+            cdp_host=self._config.get("cdp", "host") or "127.0.0.1",
+            cdp_port=self._config.get("cdp", "port") or 9222,
+            chrome_path=self._config.get("chrome", "path") or "",
+            user_data_dir=self._config.get("chrome", "user_data_dir") or "",
+            headless=bool(self._config.get("chrome", "headless")),
+            workspace_dir=self._config.get("workspace", "workspace_dir") or "./psjba_temp",
         )
         # 설정 저장 후 Chrome 연결 재시도 (API 키가 이제 설정됨)
         if not self._manager.is_connected:
