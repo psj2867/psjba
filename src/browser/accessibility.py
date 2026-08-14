@@ -718,6 +718,10 @@ async def get_subtree_detail(page: Page, ref: int, refs: dict[int, dict[str, Any
     browser_snapshot()과 동일한 _prune_tree → _collapse_tree 파이프라인을 태워
     토큰 제한 내에서 최대한 많은 정보를 보여준다.
 
+    Priority:
+    1. CSS selector (_selector) → document.querySelector → accessibility.snapshot(root=)
+    2. (role, name) match → full tree scan / fallback
+
     Args:
         page: Playwright Page
         ref: 대상 ref 번호
@@ -734,35 +738,49 @@ async def get_subtree_detail(page: Page, ref: int, refs: dict[int, dict[str, Any
 
     target_role = ref_info.get("role", "")
     target_name = ref_info.get("name", "")
+    target_selector = ref_info.get("_selector", "")
 
-    # Fresh snapshot + enrich
-    try:
-        snapshot = await page.accessibility.snapshot()
-    except (AttributeError, PlaywrightError):
-        snapshot = None
-    except Exception as e:
-        logger.warning("get_subtree_detail accessibility.snapshot() failed: %s", e)
-        snapshot = None
-
-    if snapshot is None:
+    # Priority 1: CSS selector로 정확한 요소 찾기
+    snapshot = None
+    if target_selector:
         try:
-            snapshot = await _get_cdp_snapshot(page)
-        except Exception as e:
-            return f"Subtree detail error: {e}"
+            element = await page.query_selector(target_selector)
+            if element:
+                snapshot = await page.accessibility.snapshot(root=element)
+                if snapshot is None:
+                    logger.debug("get_subtree_detail: a11y snapshot(root=%s) returned None", target_selector)
+        except (PlaywrightError, AttributeError, Exception) as e:
+            logger.debug("get_subtree_detail: selector path failed: %s", e)
 
+    # Priority 2: (role, name) match → full tree scan
     if snapshot is None:
-        return "(No accessibility tree available)"
+        logger.debug("get_subtree_detail: selector fallback, using (role=%r, name=%r) match", target_role, target_name)
+        try:
+            full_snapshot = await page.accessibility.snapshot()
+        except (AttributeError, PlaywrightError):
+            full_snapshot = None
+        except Exception as e:
+            logger.warning("get_subtree_detail accessibility.snapshot() failed: %s", e)
+            full_snapshot = None
 
-    # ref에 해당하는 서브트리 찾기
-    subtree = _find_ref_subtree(snapshot, target_role, target_name)
-    if subtree is None:
-        return (f"Subtree detail: could not locate ref #{ref} "
-                f"({target_role} \"{target_name}\") in current snapshot. "
-                "Try calling browser_snapshot() again.")
+        if full_snapshot is None:
+            try:
+                full_snapshot = await _get_cdp_snapshot(page)
+            except Exception as e:
+                return f"Subtree detail error: {e}"
+
+        if full_snapshot is None:
+            return "(No accessibility tree available)"
+
+        snapshot = _find_ref_subtree(full_snapshot, target_role, target_name)
+        if snapshot is None:
+            return (f"Subtree detail: could not locate ref #{ref} "
+                    f"({target_role} \"{target_name}\") in current snapshot. "
+                    "Try calling browser_snapshot() again.")
 
     # 동일한 포맷 파이프라인 적용 (refs 미할당 — detail view는 참고용)
     t0 = time.monotonic()
-    pruned = (await _prune_tree(subtree)) or subtree
+    pruned = (await _prune_tree(snapshot)) or snapshot
     t1 = time.monotonic()
     logger.debug("get_subtree_detail prune_tree: %dms (ref=%d)",
                  int((t1 - t0) * 1000), ref)
@@ -780,8 +798,7 @@ async def get_subtree_detail(page: Page, ref: int, refs: dict[int, dict[str, Any
     # ref_info에 selector가 있으면 추가
     sel = ref_info.get("_selector", "")
     if sel:
-        sel_note = ref_info.get("_selector_note", "")
-        text += f"\nselector = {sel}  {sel_note}".rstrip()
+        text += f"\nselector = {sel}"
 
     logger.debug("get_subtree_detail total: %dms (ref=%d)",
                  int((time.monotonic() - t0) * 1000), ref)
