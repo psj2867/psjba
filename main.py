@@ -116,8 +116,8 @@ def parse_args() -> str:
 
 
 def setup_logging(config: Config) -> None:
-    level_str = config.get("logging", "level", "warning")
-    log_path = config.get("logging", "path", "")
+    level_str = config.get("logging", "level") or "disabled"
+    log_path = config.get("logging", "path") or ""
 
     root_logger = logging.getLogger("psjba")
     level = getattr(logging, level_str.upper(), logging.WARNING)
@@ -164,14 +164,14 @@ async def run(config: Config) -> None:
     logger.info("Step 1/10: Config loaded (path=%s)", CONFIG_PATH)
 
     # DB
-    db_path = config.get("sqlite", "path", "./browser_agent.db")
+    db_path = config.get("sqlite", "path") or "./browser_agent.db"
     db = Database(db_path)
     await db.connect()
     await db.initialize()
     logger.info("Step 2/10: Database ready (path=%s)", db_path)
 
     # 워크스페이스
-    workspace_dir = config.get("workspace", "workspace_dir", "./psjba_temp")
+    workspace_dir = config.get("workspace", "workspace_dir") or "./psjba_temp"
     Path(workspace_dir).mkdir(parents=True, exist_ok=True)
     Path(workspace_dir, "screenshots").mkdir(parents=True, exist_ok=True)
     Path(workspace_dir, "downloads").mkdir(parents=True, exist_ok=True)
@@ -180,18 +180,18 @@ async def run(config: Config) -> None:
 
     # PlaywrightManager
     manager = PlaywrightManager(
-        cdp_host=config.get("cdp", "host", "127.0.0.1"),
-        cdp_port=config.get("cdp", "port", 9222),
-        connection_timeout=config.get("cdp", "connection_timeout", 1.0),
-        chrome_path=config.get("chrome", "path", ""),
-        user_data_dir=config.get("chrome", "user_data_dir", ""),
-        headless=config.get("chrome", "headless", False),
+        cdp_host=config.get("cdp", "host") or "127.0.0.1",
+        cdp_port=config.get("cdp", "port") or 9222,
+        connection_timeout=config.get("cdp", "connection_timeout") or 1.0,
+        chrome_path=config.get("chrome", "path") or "",
+        user_data_dir=config.get("chrome", "user_data_dir") or "",
+        headless=bool(config.get("chrome", "headless")),
         workspace_dir=workspace_dir,
     )
     logger.info("Step 4/10: PlaywrightManager created (cdp=%s:%s, headless=%s)",
-                config.get("cdp", "host", "127.0.0.1"),
-                config.get("cdp", "port", 9222),
-                config.get("chrome", "headless", False))
+                config.get("cdp", "host") or "127.0.0.1",
+                config.get("cdp", "port") or 9222,
+                bool(config.get("chrome", "headless")))
 
     # Cron
     cron_executor = CronExecutor(config=config, db=db, manager=manager)
@@ -303,7 +303,7 @@ async def run(config: Config) -> None:
 
     # 필수값 확인
     api_key = config.api_key
-    model = config.get("llm", "model", "")
+    model = config.get("llm", "model") or ""
     if not api_key or not model:
         logger.warning("Step 10/10: api_key or model not set, prompting user")
         from PySide6.QtWidgets import QMessageBox
@@ -381,7 +381,7 @@ async def _handle_prompt(
     await db.save_message(user_msg)
 
     # 슬라이딩 윈도우: user 프롬프트 단위로 리밋, 사이의 모든 메시지 포함
-    slide_window = config.get("agent", "sliding_window_size", 10)
+    slide_window = config.get("agent", "sliding_window_size") or 5
     history_rows = await db.get_messages(session_id, limit=999999)  # 일단 전체 로드
     # 방금 저장한 현재 user 메시지는 enriched_text 로 대체하므로 제외
     if history_rows and history_rows[-1].role == "user" and history_rows[-1].content == text:
@@ -413,8 +413,8 @@ async def _handle_prompt(
             db=db,
             session_id=session_id,
             llm=llm_client.llm,
-            max_context_messages=int(config.get("agent", "sliding_window_size", 10)),
-            max_tool_calls=int(config.get("agent", "max_tool_calls", 30)),
+            max_context_messages=int(config.get("agent", "sliding_window_size") or 5),
+            max_tool_calls=int(config.get("agent", "max_tool_calls") or 30),
             job_scheduler=job_scheduler,
         )
 
