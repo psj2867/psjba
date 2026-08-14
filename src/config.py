@@ -127,27 +127,28 @@ class Config:
     def path(self) -> Path:
         return self._path
 
-    def get(self, section: str, key: str, default: Any = None) -> Any:
-        """설정 값을 반환한다. 기본값은 config.py의 DEFAULTS를 우선 사용한다.
+    def get(self, section: str, key: str) -> Any:
+        """설정 값을 반환한다.
 
-        load()가 호출되면 _data가 DEFAULTS로 채워지므로, 일반적으로
-        default 인자는 사용되지 않는다. load() 전이나 DEFAULTS에 없는 키라면
-        default 인자로 폴백한다.
+        load() 후에는 DEFAULTS에 있는 모든 키가 _data에 채워져 있다.
+        DEFAULTS에 없는 키를 요청하면 KeyError가 발생한다.
 
         Args:
             section: 설정 섹션명 (예: "llm", "agent")
             key: 설정 키 (예: "model", "sliding_window_size")
-            default: _data에 값이 없을 때 사용할 폴백 (기본 None)
 
         Returns:
-            설정 값 또는 폴백
+            설정 값 (DEFAULTS 또는 config.ini에서 로드한 값)
+
+        Raises:
+            KeyError: DEFAULTS에 없는 섹션/키일 때
         """
+        if section not in DEFAULTS or key not in DEFAULTS[section]:
+            raise KeyError(f"Unknown config key: {section}.{key}")
         try:
             return self._data[section][key]
         except KeyError:
-            if section in DEFAULTS and key in DEFAULTS[section]:
-                return DEFAULTS[section][key]
-            return default
+            return DEFAULTS[section][key]
 
     def set(self, section: str, key: str, value: Any) -> None:
         if section not in self._data:
@@ -175,8 +176,9 @@ class Config:
             for key in DEFAULTS[section]:
                 if self._parser.has_option(section, key):
                     raw = self._parser.get(section, key)
-                    target_type = TYPE_MAP.get(key, str)
-                    self._data[section][key] = _cast(raw, target_type)
+                    if raw.strip():  # 빈 값이면 DEFAULTS 유지
+                        target_type = TYPE_MAP.get(key, str)
+                        self._data[section][key] = _cast(raw, target_type)
 
         encrypted = self._data.get("llm", {}).get("api_key", "")
         if encrypted:
