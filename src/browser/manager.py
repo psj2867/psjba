@@ -1173,6 +1173,26 @@ class PlaywrightManager:
                     return False, 0, 0
                 cx = content[0] + content[2] / 2
                 cy = content[1] + content[3] / 2
+
+                # 디버그: 누르려는 노드 vs 실제 (cx,cy) 위치의 노드 비교
+                if logger.isEnabledFor(logging.DEBUG):
+                    try:
+                        target = await cdp_session.send("DOM.describeNode", {"nodeId": nid})
+                        hit = await cdp_session.send("DOM.getNodeForLocation", {
+                            "x": int(cx), "y": int(cy),
+                            "includeUserAgentShadowDOM": True,
+                            "ignorePointerEventsNone": False,
+                        })
+                        hit_desc = await cdp_session.send("DOM.describeNode", {
+                            "nodeId": hit.get("nodeId")
+                        }) if hit.get("nodeId") else {"node": {"nodeName": "(none)"}}
+                        logger.debug("_cdp_dispatch: target=%s at (%.0f,%.0f) hit=%s",
+                                     target.get("node", {}).get("nodeName", "?"),
+                                     cx, cy,
+                                     hit_desc.get("node", {}).get("nodeName", "?"))
+                    except Exception as e:
+                        logger.debug("_cdp_dispatch debug check failed: %s", e)
+
                 await cdp_session.send("Input.dispatchMouseEvent", {
                     "type": "mousePressed", "x": cx, "y": cy,
                     "button": "left", "clickCount": 1,
