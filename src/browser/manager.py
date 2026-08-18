@@ -1186,9 +1186,11 @@ class PlaywrightManager:
                         hit_desc = await cdp_session.send("DOM.describeNode", {
                             "nodeId": hit.get("nodeId")
                         }) if hit.get("nodeId") else {"node": {"nodeName": "(none)"}}
-                        logger.debug("_cdp_dispatch: target=%s at (%.0f,%.0f) hit=%s",
+                        logger.debug("_cdp_dispatch: target=%s raw_content=%s center=(%.0f,%.0f) viewport=(%s,%s) hit=%s",
                                      target.get("node", {}).get("nodeName", "?"),
+                                     content,
                                      cx, cy,
+                                     model.get("width", "?"), model.get("height", "?"),
                                      hit_desc.get("node", {}).get("nodeName", "?"))
                     except Exception as e:
                         logger.debug("_cdp_dispatch debug check failed: %s", e)
