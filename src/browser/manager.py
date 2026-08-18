@@ -1157,8 +1157,8 @@ class PlaywrightManager:
                 content = model.get("content", [])
                 if len(content) < 4:
                     return False, 0, 0
-                cx = content[0] + content[2] / 2
-                cy = content[1] + content[3] / 2
+                cx = (content[0] + content[4]) / 2 if len(content) >= 8 else content[0] + content[2] / 2
+                cy = (content[1] + content[5]) / 2 if len(content) >= 8 else content[1] + content[3] / 2
 
                 # 디버그: 누르려는 노드 vs 실제 (cx,cy) 위치의 노드 비교
                 if logger.isEnabledFor(logging.DEBUG):
