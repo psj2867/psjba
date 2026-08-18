@@ -598,6 +598,8 @@ class PlaywrightManager:
         ntype = node.get("_type", "")
         name = node.get("name", "")
         role = node.get("role", "")
+        placeholder = node.get("_placeholder", "")
+        form_name = node.get("_form_name", "")
 
         if not tag:
             return ""
@@ -606,15 +608,18 @@ class PlaywrightManager:
         if nid:
             return f"{tag}#{nid}"
 
-        # aria-label
+        # HTML aria-label 속성
         if aria_label:
             escaped = aria_label.replace('"', '\\"').replace("'", "\\'")
             return f'{tag}[aria-label="{escaped}"]'
 
-        # accessible name → aria-label
-        if name:
-            escaped = name.replace('"', '\\"').replace("'", "\\'")
-            return f'{tag}[aria-label="{escaped}"]'
+        # placeholder
+        if placeholder:
+            return f'{tag}[placeholder="{placeholder}"]'
+
+        # form name
+        if form_name:
+            return f'{tag}[name="{form_name}"]'
 
         # type
         if ntype:
@@ -628,7 +633,83 @@ class PlaywrightManager:
                 parts.append(f".{c}")
         if role:
             parts.append(f'[role="{role}"]')
-        return "".join(parts)
+        base = "".join(parts)
+
+        # name이 HTML aria-label이 아닌 텍스트 기반이면 → querySelectorAll로 체크
+        if name and not aria_label:
+            return _SelectorRefiner._make(base, name, tag)
+
+        return base
+
+    # ─── 셀렉터 중복 해소 ──────────────────────────────
+
+    class _SelectorRefiner:
+        """CSS 선택자 중복 시 name(textContent)으로 유일한 선택자를 만든다."""
+        _cache: dict[str, str] = {}
+
+        @staticmethod
+        def _make(selector: str, name: str, tag: str) -> str:
+            """중복 가능성 있는 selector → (사용X, page.evaluate에서 동적 처리).
+            반환값은 selector 문자열이며, 실제 중복 해소는 refine_unique_selector()에서 한다.
+            """
+            key = f"{selector}|{name}"
+            if key in _SelectorRefiner._cache:
+                return _SelectorRefiner._cache[key]
+            # :has-text() CSS pseudo selector는 브라우저 네이티브 CSS가 아니므로
+            # selector 자체는 기본 selector를 반환하고, refine 함수가 처리한다.
+            _SelectorRefiner._cache[key] = selector
+            return selector
+
+    @staticmethod
+    async def refine_unique_selector(
+        page: Any, selector: str, name: str, tag: str, role: str
+    ) -> str:
+        """querySelectorAll 중복 시 name(textContent)으로 유일한 선택자로 좁힌다.
+        반환: (selector, index_js_expr).
+          - selector: page.locator()용 최종 CSS 선택자
+          - index_js_expr: CDP querySelector가 첫 번째만 반환하므로,
+            JS 평가 시 index가 필요하면 f"${{expr}}[${idx}]" 형태를 반환
+        """
+        count = await page.evaluate(f"document.querySelectorAll('{selector}').length")
+        if count <= 1:
+            return selector
+
+        # name으로 unique textContent 매치 시도
+        escaped_name = name.replace("'", "\\'").replace('"', '\\"')
+        js = f"""(() => {{
+            const nodes = document.querySelectorAll('{selector}');
+            for (let i = 0; i < nodes.length; i++) {{
+                const t = (nodes[i].textContent || '').trim();
+                if (t === '{escaped_name}') return i;
+            }}
+            // textContent에 포함
+            for (let i = 0; i < nodes.length; i++) {{
+                const t = (nodes[i].textContent || '').trim();
+                if (t.includes('{escaped_name}')) return i;
+            }}
+            return -1;
+        }})()"""
+        idx = await page.evaluate(js)
+        if idx >= 0:
+            return f"{selector}:nth-of-type({idx + 1})"  # 1-indexed
+
+        # name으로 실패 → parent + :nth-child 경로 시도
+        try:
+            idx = await page.evaluate(f"""(() => {{
+                const nodes = document.querySelectorAll('{selector}');
+                const target = nodes[{idx if idx >= 0 else 0}];
+                if (!target) return -1;
+                const parent = target.parentElement;
+                if (!parent) return -1;
+                const siblings = [...parent.querySelectorAll(':scope > {tag}')];
+                return siblings.indexOf(target);
+            }})()""")
+            if idx >= 0:
+                return f"{selector}:nth-of-type({idx + 1})"
+        except Exception:
+            pass
+
+        return selector  # 최후의 선택
 
     # ─── 요소 조작 ──────────────────────────────────────────
 
@@ -1246,6 +1327,14 @@ class PlaywrightManager:
         # 1.5차: CSS selector로 CDP 재발견 → CDP 클릭 (backendNodeId=null or stale 모두)
         try:
             selector = self._build_click_selector(node)
+            # 중복 선택자 해소 (name/textContent 기반)
+            if selector and name:
+                try:
+                    selector = await self.refine_unique_selector(
+                        page, selector, name, tag, role
+                    )
+                except Exception:
+                    pass
             if selector:
                 if cdp is None:
                     cdp = await page.context.new_cdp_session(page)
