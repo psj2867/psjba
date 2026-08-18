@@ -1498,6 +1498,12 @@ class SettingsDialog(QDialog):
         c.set("logging", "level", self._log_level_combo.currentData())
         c.set("logging", "path", self._log_path.text())
 
+        # 로그 레벨 즉시 반영
+        level_name = self._log_level_combo.currentData()
+        logging.getLogger("psjba").setLevel(
+            getattr(logging, level_name.upper(), logging.WARNING)
+        )
+
         c.save()
         self.config_saved.emit()
         self.accept()
