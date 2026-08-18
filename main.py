@@ -12,6 +12,7 @@ import os
 import signal
 import sys
 import traceback
+from contextlib import aclosing
 from pathlib import Path
 from typing import Any, AsyncIterator, Optional
 
@@ -457,33 +458,37 @@ async def _handle_prompt(
             # astream 사용 + 타임아웃 (메인 세션도 무한 대기 방지)
             # 각 이벤트 대기를 asyncio.wait_for 로 감싸 도구/LLM hang 시
             # 무기한 대기하지 않고 타임아웃으로 복구한다.
+            # aclosing으로 break 시에도 generator 정리 보장
             final_state = None
-            async for event in _async_iter_timeout(
-                graph.astream(state, stream_mode="values"),
-                timeout=_DEFAULT_AGENT_TIMEOUT,
-                timeout_msg="Agent graph execution timed out",
-            ):
-                final_state = event
-                # 실시간 AI content 표시 (툴 콜 없이 알려주는 텍스트)
-                try:
-                    event_msgs = event.get("messages", [])
-                    if event_msgs and len(event_msgs) > input_msg_count:
-                        # 이번 입력 이후에 추가된 메시지만 고려
-                        new_msgs = event_msgs[input_msg_count:]
-                        for m in reversed(new_msgs):
-                            if m.type != "ai":
-                                continue
-                            content = str(m.content or "").strip()
-                            if content:
-                                window._chat.update_ai_content(content)
-                            break
-                except Exception as e:
-                    logger.debug("Real-time content update failed: %s", e)
-                await asyncio.sleep(0)  # Qt 이벤트 루프에 명시적 양보
-                # stop 플래그 체크 (CancelledError 가 안 먹히는 엔진 대비)
-                if window.stop_requested:
-                    logger.warning("Stop requested during agent execution, breaking loop")
-                    break
+            async with aclosing(
+                _async_iter_timeout(
+                    graph.astream(state, stream_mode="values"),
+                    timeout=_DEFAULT_AGENT_TIMEOUT,
+                    timeout_msg="Agent graph execution timed out",
+                )
+            ) as stream:
+                async for event in stream:
+                    final_state = event
+                    # 실시간 AI content 표시 (툴 콜 없이 알려주는 텍스트)
+                    try:
+                        event_msgs = event.get("messages", [])
+                        if event_msgs and len(event_msgs) > input_msg_count:
+                            # 이번 입력 이후에 추가된 메시지만 고려
+                            new_msgs = event_msgs[input_msg_count:]
+                            for m in reversed(new_msgs):
+                                if m.type != "ai":
+                                    continue
+                                content = str(m.content or "").strip()
+                                if content:
+                                    window._chat.update_ai_content(content)
+                                break
+                    except Exception as e:
+                        logger.debug("Real-time content update failed: %s", e)
+                    await asyncio.sleep(0)  # Qt 이벤트 루프에 명시적 양보
+                    # stop 플래그 체크 (CancelledError 가 안 먹히는 엔진 대비)
+                    if window.stop_requested:
+                        logger.warning("Stop requested during agent execution, breaking loop")
+                        break
             input_count = len(state["messages"])
             final_messages = final_state.get("messages", []) if final_state else []
         except asyncio.TimeoutError:
