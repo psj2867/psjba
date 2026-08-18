@@ -76,7 +76,7 @@ DEFAULTS: dict[str, dict[str, Any]] = {
     },
     "logging": {
         "level": "disabled",
-        "path": "./psjba.log",
+        "path": "",
     },
 }
 
@@ -176,9 +176,11 @@ class Config:
             for key in DEFAULTS[section]:
                 if self._parser.has_option(section, key):
                     raw = self._parser.get(section, key)
-                    if raw.strip():  # 빈 값이면 DEFAULTS 유지
-                        target_type = TYPE_MAP.get(key, str)
+                    target_type = TYPE_MAP.get(key, str)
+                    try:
                         self._data[section][key] = _cast(raw, target_type)
+                    except (ValueError, TypeError):
+                        pass  # 형변환 실패 시 DEFAULTS 유지
 
         encrypted = self._data.get("llm", {}).get("api_key", "")
         if encrypted:
