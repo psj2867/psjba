@@ -1178,6 +1178,16 @@ class PlaywrightManager:
                 if logger.isEnabledFor(logging.DEBUG):
                     try:
                         target = await cdp_session.send("DOM.describeNode", {"nodeId": nid})
+                        # raw_content는 getNodeForLocation 실패와 무관하게 먼저 로그
+                        logger.debug("_cdp_dispatch: target=%s raw_content=%s center=(%.0f,%.0f) viewport=(%s,%s)",
+                                     target.get("node", {}).get("nodeName", "?"),
+                                     content,
+                                     cx, cy,
+                                     model.get("width", "?"), model.get("height", "?"))
+                    except Exception as e:
+                        logger.debug("_cdp_dispatch describeNode failed: %s", e)
+                    # 별도 try: getNodeForLocation은 실패할 수 있음 (뷰포트 밖 좌표 등)
+                    try:
                         hit = await cdp_session.send("DOM.getNodeForLocation", {
                             "x": int(cx), "y": int(cy),
                             "includeUserAgentShadowDOM": True,
@@ -1186,14 +1196,12 @@ class PlaywrightManager:
                         hit_desc = await cdp_session.send("DOM.describeNode", {
                             "nodeId": hit.get("nodeId")
                         }) if hit.get("nodeId") else {"node": {"nodeName": "(none)"}}
-                        logger.debug("_cdp_dispatch: target=%s raw_content=%s center=(%.0f,%.0f) viewport=(%s,%s) hit=%s",
-                                     target.get("node", {}).get("nodeName", "?"),
-                                     content,
+                        logger.debug("_cdp_dispatch: hit at (%.0f,%.0f) = %s",
                                      cx, cy,
-                                     model.get("width", "?"), model.get("height", "?"),
                                      hit_desc.get("node", {}).get("nodeName", "?"))
                     except Exception as e:
-                        logger.debug("_cdp_dispatch debug check failed: %s", e)
+                        logger.debug("_cdp_dispatch: getNodeForLocation at (%.0f,%.0f) failed: %s",
+                                     cx, cy, e)
 
                 await cdp_session.send("Input.dispatchMouseEvent", {
                     "type": "mousePressed", "x": cx, "y": cy,
