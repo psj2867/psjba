@@ -17,7 +17,7 @@ from langchain_core.language_models import BaseChatModel
 
 from src.agent.prompts import build_system_prompt
 from src.agent.state import AgentState
-from src.browser.manager import set_session_id as _set_current_session
+from src.browser.manager import set_a11y_session_id as _set_current_session
 
 logger = logging.getLogger("psjba.agent.nodes")
 

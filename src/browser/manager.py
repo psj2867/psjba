@@ -33,8 +33,8 @@ SCREENSHOT_DATE_FMT = "%Y%m%d-%H%M%S"
 _current_session_id: contextvars.ContextVar[str] = contextvars.ContextVar("session_id", default="")
 
 
-def set_session_id(sid: str) -> None:
-    """현재 asyncio task에 세션 ID를 설정한다 (a11y refs 격리용)."""
+def set_a11y_session_id(sid: str) -> None:
+    """현재 asyncio task에 a11y session ID를 설정한다 (refs 격리용)."""
     _current_session_id.set(sid)
 
 
@@ -433,13 +433,11 @@ class PlaywrightManager:
         self._ensure_connected()
         assert self._context is not None
         page = await self._context.new_page()
-        await self._inject_dialog_override()
         if url:
             await page.goto(url, wait_until="domcontentloaded")
-        tab = _TabInfo(page, url or "about:blank")
-        await tab.update_info()
-        self._tabs.append(tab)
+        await self._refresh_tabs()
         self._focused_tab_index = len(self._tabs) - 1
+        tab = self._tabs[self._focused_tab_index]
         return f"New tab opened: {tab.url} ({tab.title})"
 
     async def browser_close_tab(self, target: str = "") -> str:
@@ -473,20 +471,13 @@ class PlaywrightManager:
         except Exception as e:
             logger.debug("close_tab: page close failed for tab %s: %s", idx, e)
 
-        self._tabs.pop(idx)
+        await self._refresh_tabs()
 
         if not self._tabs:
             page = await self._context.new_page()
-            self._tabs.append(_TabInfo(page))
-            self._focused_tab_index = 0
-        elif idx <= self._focused_tab_index and self._focused_tab_index > 0:
-            self._focused_tab_index -= 1
-        elif self._focused_tab_index >= len(self._tabs):
-            self._focused_tab_index = len(self._tabs) - 1
+            await self._refresh_tabs()
 
-        focused = self._tabs[self._focused_tab_index]
-        await focused.update_info()
-        return f"Closed tab: {url}. Now on: {focused.url} ({focused.title})"
+        return f"Tab closed: {url}"
 
     async def browser_switch_tab(self, target: str) -> str:
         logger.info("browser_switch_tab: target=%s", target)
@@ -575,18 +566,6 @@ class PlaywrightManager:
             return f"Navigated to {tab.url} (status: {status}, title: {tab.title})"
         except Exception as e:
             return f"Navigation error: {e}"
-
-    async def browser_go_back(self) -> str:
-        logger.info("browser_go_back called")
-        """브라우저 뒤로 가기."""
-        page = self._ensure_page()
-        try:
-            await page.go_back(wait_until="domcontentloaded")
-            tab = self._tabs[self._focused_tab_index]
-            await tab.update_info()
-            return f"Went back to {tab.url} ({tab.title})"
-        except Exception as e:
-            return f"Go back error: {e}"
 
     # ─── 헬퍼: CDP querySelector 로 노드 재발견 ──────────
     @staticmethod
