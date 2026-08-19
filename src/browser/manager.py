@@ -594,10 +594,10 @@ class PlaywrightManager:
         """ref 노드 정보로 CDP DOM.querySelector용 CSS 선택자를 만든다.
 
         Fallback chain (높은 정확도 순):
-          1. tag#id                — id가 가장 정확
-          2. tag[attr="val"]        — aria-label, placeholder, name, type
-          3. tag[role="X"]:nth-of-type(N) — nth-of-type으로 unique
-          4. tag.safe-class[role="X"]     — 위험 문자 없는 클래스만
+          1. tag#id                        — id가 가장 정확
+          2. tag[role="X"]:nth-of-type(N)  — role + nth-of-type으로 unique
+          3. tag[attr="val"]                — aria-label, placeholder, name, type (중복 많음)
+          4. tag.safe-class[role="X"]       — 위험 문자 없는 클래스만
         """
         tag = node.get("tag", "") or node.get("_tag", "")
         nid = node.get("_id", "")
@@ -617,22 +617,7 @@ class PlaywrightManager:
         if nid:
             return f"{tag}#{nid}"
 
-        # 2차: HTML attribute
-        if aria_label:
-            escaped = aria_label.replace('"', '\\"').replace("'", "\\'")
-            return f'{tag}[aria-label="{escaped}"]'
-        if placeholder:
-            return f'{tag}[placeholder="{placeholder}"]'
-        if form_name:
-            return f'{tag}[name="{form_name}"]'
-        if name:
-            escaped = name.replace('"', '\\"').replace("'", "\\'")
-            return f'{tag}[aria-label="{escaped}"]'
-        if ntype:
-            return f'{tag}[type="{ntype}"]'
-
-        # 3차: tag + role + nth-of-type + safe class (class 없이 nth로 uniquify)
-        # nth-of-type(N)이 있으면 unique하므로 safe class도 포함해 정확도 향상
+        # 2차: role + nth-of-type (aria/name/type보다 nth가 더 unique)
         if role:
             parts = [tag]
             if nclass:
@@ -647,7 +632,21 @@ class PlaywrightManager:
                 parts.append(f":nth-of-type({nth})")
             return "".join(parts)
 
-        # 4차: tag + safe class만 (role 없음)
+        # 3차: HTML attribute (중복 가능성 높음, selector 검증 시 refined)
+        if aria_label:
+            escaped = aria_label.replace('"', '\\"').replace("'", "\\'")
+            return f'{tag}[aria-label="{escaped}"]'
+        if placeholder:
+            return f'{tag}[placeholder="{placeholder}"]'
+        if form_name:
+            return f'{tag}[name="{form_name}"]'
+        if name:
+            escaped = name.replace('"', '\\"').replace("'", "\\'")
+            return f'{tag}[aria-label="{escaped}"]'
+        if ntype:
+            return f'{tag}[type="{ntype}"]'
+
+        # 4차: tag + safe class만 (role 없음, attr 없음)
         parts = [tag]
         if nclass:
             safe_classes = [
