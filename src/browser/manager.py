@@ -1211,7 +1211,7 @@ class PlaywrightManager:
 
         # 1.5차: CSS selector로 CDP 재발견 → CDP 클릭 (backendNodeId=null or stale 모두)
         try:
-            selector = self._build_click_selector(node)
+            selector = node.get("_selector", "")
             if selector:
                 if cdp is None:
                     cdp = await page.context.new_cdp_session(page)
@@ -1359,7 +1359,7 @@ class PlaywrightManager:
 
         # fallback 2: page.evaluate 로 DOM textContent 직접 추출 (CSS selector)
         try:
-            selector = self._build_click_selector(node)
+            selector = node.get("_selector", "")
             if selector:
                 script = (
                     f"(document.querySelector('{selector}')"
@@ -1436,7 +1436,7 @@ class PlaywrightManager:
 
         # fallback: CSS selector로 outerHTML 추출
         try:
-            selector = self._build_click_selector(node)
+            selector = node.get("_selector", "")
             if selector:
                 script = (
                     f"(document.querySelector('{selector}')?.outerHTML || '')"
