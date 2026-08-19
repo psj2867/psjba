@@ -2,7 +2,7 @@
 
 import logging
 import re
-from typing import Optional
+from typing import Any, Optional
 
 from playwright.async_api import Locator, Page
 
@@ -66,6 +66,56 @@ class SelfHealingSelector:
 
     def should_give_up(self) -> bool:
         return self._consecutive_failures >= MAX_CONSECUTIVE_FAILURES
+
+    async def make_unique_selector(
+        self,
+        cdp: Any,
+        root_id: int,
+        selector: str,
+        name: str,
+    ) -> str:
+        """중복 CSS 선택자를 unique하게 만든다.
+
+        CDP DOM.querySelectorAll 로 개수 체크 (eval 없음),
+        1개 초과 시에만 1회 page.evaluate 로 textContent 비교.
+
+        Args:
+            cdp: CDP 세션
+            root_id: DOM.getDocument 의 root nodeId
+            selector: 중복 가능성이 있는 CSS 선택자
+            name: 접근성 트리의 name (textContent 비교 기준)
+
+        Returns:
+            unique CSS 선택자 (중복이 없으면 원본 그대로)
+        """
+        try:
+            qr = await cdp.send("DOM.querySelectorAll", {
+                "nodeId": root_id, "selector": selector,
+            })
+            nids = qr.get("nodeIds", [])
+        except Exception:
+            return selector
+        if len(nids) <= 1:
+            return selector
+
+        if not name:
+            return selector
+
+        try:
+            escaped = name.replace("'", "\\'").replace("\\", "\\\\")
+            idx = await self._page.evaluate(f"""(() => {{
+                const t = '{escaped}';
+                const nodes = document.querySelectorAll('{selector}');
+                for (let i = 0; i < nodes.length; i++)
+                    if ((nodes[i].textContent || '').trim() === t) return i;
+                return -1;
+            }})()""")
+            if idx >= 0:
+                return f"{selector}:nth-of-type({idx + 1})"
+        except Exception:
+            pass
+
+        return selector
 
     async def find_element(
         self,

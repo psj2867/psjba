@@ -628,44 +628,6 @@ class PlaywrightManager:
         base = "".join(parts)
         return base
 
-    # ─── 셀렉터 중복 해소 ──────────────────────────────
-
-    @staticmethod
-    async def refine_unique_selector(
-        cdp: Any, root_id: int, selector: str, name: str, page: Any = None
-    ) -> str:
-        """querySelectorAll 중복 시 name(textContent)으로 유일한 선택자로 좁힌다.
-        CDP DOM.querySelectorAll로 먼저 개수 체크 (eval 없음),
-        1개 초과 시에만 1회 page.evaluate로 textContent 매칭.
-        """
-        try:
-            qr = await cdp.send("DOM.querySelectorAll", {
-                "nodeId": root_id, "selector": selector,
-            })
-            nids = qr.get("nodeIds", [])
-        except Exception:
-            return selector
-        if len(nids) <= 1:
-            return selector
-
-        # 중복 시: 1회 evaluate로 textContent 매칭 인덱스 찾기
-        if name and page is not None:
-            try:
-                escaped = name.replace("'", "\\'").replace("\\", "\\\\")
-                idx = await page.evaluate(f"""(() => {{
-                    const t = '{escaped}';
-                    const nodes = document.querySelectorAll('{selector}');
-                    for (let i = 0; i < nodes.length; i++)
-                        if ((nodes[i].textContent || '').trim() === t) return i;
-                    return -1;
-                }})()""")
-                if idx >= 0:
-                    return f"{selector}:nth-of-type({idx + 1})"
-            except Exception:
-                pass
-
-        return selector  # 최후의 선택
-
     # ─── 요소 조작 ──────────────────────────────────────────
 
     async def browser_type(
@@ -1291,8 +1253,8 @@ class PlaywrightManager:
                     # 중복 선택자 해소 (CDP DOM.querySelectorAll 로 eval 없이)
                     if selector and name:
                         try:
-                            selector = await self.refine_unique_selector(
-                                cdp, root_id, selector, name, page=page,
+                            selector = await SelfHealingSelector(page).make_unique_selector(
+                                cdp, root_id, selector, name,
                             )
                         except Exception:
                             pass
