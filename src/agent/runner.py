@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import time
 from contextlib import aclosing
 from typing import Any, AsyncIterator, Optional
 
@@ -52,6 +53,7 @@ async def handle_prompt(
 ) -> None:
     """사용자 프롬프트를 LangGraph 에이전트로 실행하고 결과를 UI/DB에 반영한다."""
     logger.info("User prompt: %s", text[:80])
+    _t = time.monotonic()
 
     session_id = await db.get_current_session_id()
     if not session_id:
@@ -63,11 +65,16 @@ async def handle_prompt(
 
     user_msg = Message(session_id=session_id, role="user", content=text)
     await db.save_message(user_msg)
+    logger.debug("[TIMING] session/DB: %.3fs", time.monotonic() - _t)
 
     # LLMClient 로 httpx 세션 관리 (Python 3.14 GeneratorExit 방지)
     llm_client = None
     try:
+        _t2 = time.monotonic()
         llm_client = LLMClient(config)
+        logger.debug("[TIMING] LLMClient(): %.3fs", time.monotonic() - _t2)
+
+        _t3 = time.monotonic()
         graph = create_agent_graph(
             config=config,
             manager=manager,
@@ -78,8 +85,11 @@ async def handle_prompt(
             max_tool_calls=int(config.get("agent", "max_tool_calls")),
             job_scheduler=job_scheduler,
         )
+        logger.debug("[TIMING] create_agent_graph: %.3fs", time.monotonic() - _t3)
 
+        _t4 = time.monotonic()
         browser_context = await manager.get_browser_context()
+        logger.debug("[TIMING] get_browser_context: %.3fs", time.monotonic() - _t4)
         logger.info("Browser context:\n%s", browser_context)
 
         state = {
@@ -96,6 +106,7 @@ async def handle_prompt(
             "tool_call_count": 0,
         }
 
+        _t5 = time.monotonic()
         window.show_ai_thinking("🤖 응답 대기 중...")
 
         try:
@@ -108,6 +119,8 @@ async def handle_prompt(
                 )
             ) as stream:
                 async for event in stream:
+                    if final_state is None:
+                        logger.debug("[TIMING] first astream event: %.3fs", time.monotonic() - _t5)
                     final_state = event
                     try:
                         event_msgs = event.get("messages", [])
