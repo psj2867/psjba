@@ -10,6 +10,9 @@ logger = logging.getLogger("psjba.browser.self_healing")
 
 MAX_CONSECUTIVE_FAILURES = 3
 
+# CSS 클래스명으로 안전한 문자만: [a-zA-Z0-9_-]
+_SAFE_CLASS_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
+
 
 def _css_to_possible_xpath(css_selector: str) -> str:
     """간단한 CSS 선택자를 XPath로 변환."""

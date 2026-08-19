@@ -22,7 +22,7 @@ from src.browser.accessibility import (
     get_accessibility_tree_with_refs,
     get_subtree_detail,
 )
-from src.browser.self_healing import SelfHealingSelector
+from src.browser.self_healing import SelfHealingSelector, _SAFE_CLASS_RE
 from src.chrome.launcher import ChromeLauncher
 
 logger = logging.getLogger("psjba.browser.manager")
@@ -576,7 +576,14 @@ class PlaywrightManager:
     # ─── 헬퍼: CDP querySelector 로 노드 재발견 ──────────
     @staticmethod
     def _build_click_selector(node: dict[str, Any]) -> str:
-        """ref 노드 정보로 CDP DOM.querySelector용 CSS 선택자를 만든다."""
+        """ref 노드 정보로 CDP DOM.querySelector용 CSS 선택자를 만든다.
+
+        Fallback chain (높은 정확도 순):
+          1. tag#id                — id가 가장 정확
+          2. tag[attr="val"]        — aria-label, placeholder, name, type
+          3. tag[role="X"]:nth-of-type(N) — nth-of-type으로 unique
+          4. tag.safe-class[role="X"]     — 위험 문자 없는 클래스만
+        """
         tag = node.get("tag", "") or node.get("_tag", "")
         nid = node.get("_id", "")
         aria_label = node.get("_aria_label", "")
@@ -586,47 +593,55 @@ class PlaywrightManager:
         role = node.get("role", "")
         placeholder = node.get("_placeholder", "")
         form_name = node.get("_form_name", "")
+        nth = node.get("_nth_of_type", 0)
 
         if not tag:
             return ""
 
-        # id가 가장 정확
+        # 1차: id
         if nid:
             return f"{tag}#{nid}"
 
-        # HTML aria-label 속성
+        # 2차: HTML attribute
         if aria_label:
             escaped = aria_label.replace('"', '\\"').replace("'", "\\'")
             return f'{tag}[aria-label="{escaped}"]'
-
-        # placeholder
         if placeholder:
             return f'{tag}[placeholder="{placeholder}"]'
-
-        # form name
         if form_name:
             return f'{tag}[name="{form_name}"]'
-
-        # name (accessible name) → aria-label selector로 우선 시도
-        # 실제로 aria-label 속성이 없으면 refinement 단계에서 textContent 매칭으로 대체
         if name:
             escaped = name.replace('"', '\\"').replace("'", "\\'")
             return f'{tag}[aria-label="{escaped}"]'
-
-        # type
         if ntype:
             return f'{tag}[type="{ntype}"]'
 
-        # class + role
+        # 3차: tag + role + nth-of-type + safe class (class 없이 nth로 uniquify)
+        # nth-of-type(N)이 있으면 unique하므로 safe class도 포함해 정확도 향상
+        if role:
+            parts = [tag]
+            if nclass:
+                safe_classes = [
+                    c for c in nclass.split()
+                    if _SAFE_CLASS_RE.match(c)
+                ]
+                if safe_classes:
+                    parts.append("." + ".".join(safe_classes))
+            parts.append(f'[role="{role}"]')
+            if nth > 0:
+                parts.append(f":nth-of-type({nth})")
+            return "".join(parts)
+
+        # 4차: tag + safe class만 (role 없음)
         parts = [tag]
         if nclass:
-            classes = nclass.replace(".", "\\.").split()
-            for c in classes:
-                parts.append(f".{c}")
-        if role:
-            parts.append(f'[role="{role}"]')
-        base = "".join(parts)
-        return base
+            safe_classes = [
+                c for c in nclass.split()
+                if _SAFE_CLASS_RE.match(c)
+            ]
+            if safe_classes:
+                parts.append("." + ".".join(safe_classes))
+        return "".join(parts)
 
     # ─── 요소 조작 ──────────────────────────────────────────
 
