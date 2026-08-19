@@ -51,8 +51,8 @@ class _TabInfo:
         try:
             self.url = self.page.url
             self.title = await self.page.title()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("TabInfo.update_info failed: %s", e)
 
     async def check_dialog(self, timeout: float = 2.0) -> Optional[dict]:
         """Override된 dialog 정보를 page에서 읽어온다.
@@ -76,16 +76,16 @@ class _TabInfo:
                 )
                 self.dialog = d
                 return d
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("TabInfo.check_dialog failed: %s", e)
         return None
 
     async def clear_dialog(self) -> None:
         self.dialog = None
         try:
             await self.page.evaluate("window.__psjba_dialog = null")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("TabInfo.clear_dialog failed: %s", e)
 
 
 class ExtensionError(RuntimeError):
@@ -226,8 +226,8 @@ class PlaywrightManager:
         for tab in self._tabs:
             try:
                 await tab.page.evaluate(script)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("_inject_init_script_to_all_tabs failed for tab %s: %s", tab.index, e)
 
     async def connect(self, launch_if_needed: bool = False) -> str:
         """CDP에 연결하고 확장 프로그램을 설정한다.
@@ -470,8 +470,8 @@ class PlaywrightManager:
         url = tab.url
         try:
             await tab.page.close()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("close_tab: page close failed for tab %s: %s", idx, e)
 
         self._tabs.pop(idx)
 
@@ -543,7 +543,8 @@ class PlaywrightManager:
                     if active == "true":
                         self._focused_tab_index = i
                         break
-                except Exception:
+                except Exception as e:
+                    logger.debug("_get_all_tabs_cdp: tab %d eval failed: %s", i, e)
                     continue
 
     async def browser_list_tabs(self) -> str:
@@ -1093,61 +1094,12 @@ class PlaywrightManager:
         text, refs = await get_accessibility_tree_with_refs(page)
         if refs:
             logger.info("a11y snapshot: %d interactive refs", len(refs))
-            # 각 ref에 unique CSS selector 계산
-            batch = {}  # ref → selector
+            # selector는 _build_click_selector로 동기 계산 (page.evaluate 없음)
+            # 중복 해소는 browser_click 등 사용 시점에 CDP로 refined
             for ref, node in refs.items():
                 sel = self._build_click_selector(node)
                 if sel:
-                    batch[ref] = sel
-            if batch:
-                try:
-                    # Phase 1: batch querySelectorAll count
-                    js_parts = []
-                    for ref, sel in batch.items():
-                        escaped = sel.replace("\\", "\\\\").replace("'", "\\'")
-                        js_parts.append(f'r{ref}:document.querySelectorAll(\'{escaped}\').length')
-                    js = "({" + ",".join(js_parts) + "})"
-                    counts = await page.evaluate(js)
-
-                    # Phase 2: non-unique → :nth-of-type fallback
-                    nth_pairs = {}  # ref → sel (non-unique only)
-                    for ref, sel in batch.items():
-                        cnt = counts.get(f"r{ref}", 0)
-                        node = refs[ref]
-                        if cnt == 1:
-                            node["_selector"] = sel
-                        elif cnt > 1:
-                            nth_pairs[ref] = sel
-
-                    if nth_pairs:
-                        nth_js_parts = []
-                        for ref, sel in nth_pairs.items():
-                            escaped = sel.replace("\\", "\\\\").replace("'", "\\'")
-                            nth_js_parts.append(
-                                f'r{ref}:(()=>{{'
-                                f'const e=document.querySelector(\'{escaped}\');'
-                                f'if(!e)return"";'
-                                f'const t=e.tagName.toLowerCase(),p=e.parentElement;'
-                                f'if(!p)return"";'
-                                f'const s=[...p.querySelectorAll(":scope>"+t)],'
-                                f'i=s.indexOf(e)+1,'
-                                f'n=\'{escaped}\'+":nth-of-type("+i+")";'
-                                f'return document.querySelectorAll(n).length===1?n:"";'
-                                f'}})()'
-                            )
-                        nth_js = "({" + ",".join(nth_js_parts) + "})"
-                        nth_results = await page.evaluate(nth_js)
-                        for ref, sel in nth_pairs.items():
-                            node = refs[ref]
-                            nth_sel = nth_results.get(f"r{ref}", "")
-                            if nth_sel:
-                                node["_selector"] = nth_sel
-                            else:
-                                node["_selector"] = sel
-                                node["_selector_note"] = f"(matched {counts.get(f'r{ref}', 0)} elements)"
-                except Exception:
-                    for ref in batch:
-                        refs[ref]["_selector"] = batch[ref]
+                    node["_selector"] = sel
 
         self._set_session_refs(refs)
         return text
@@ -1287,8 +1239,8 @@ class PlaywrightManager:
                             selector = await SelfHealingSelector(page).make_unique_selector(
                                 cdp, root_id, selector, name,
                             )
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug("browser_click: make_unique_selector failed: %s", e)
                     found = await cdp.send("DOM.querySelector", {
                         "nodeId": root_id, "selector": selector,
                     })
