@@ -259,18 +259,8 @@ async def _invoke_llm(
     injected_msgs: Optional[list[BaseMessage]] = None,
     state: Optional[AgentState] = None,
 ) -> dict[str, Any]:
-    """LLM 호출 공통 코어: 슬라이딩 윈도우 → 시스템 프롬프트 → 호출 → 응답.
-
-    Args:
-        messages: 컨텍스트 메시지 (슬라이딩 윈도우 적용 전)
-        llm: 바인딩된 ChatOpenAI 인스턴스
-        max_context_messages: 슬라이딩 윈도우 크기
-        injected_msgs: intervention 등 추가로 붙일 메시지
-        state: 현재 상태 (에러 카운트 증가용, 없으면 0)
-
-    Returns:
-        상태 업데이트 딕셔너리 (messages + 추가)
-    """
+    """LLM 호출 공통 코어: 슬라이딩 윈도우 → 시스템 프롬프트 → 호출 → 응답."""
+    _t = time.monotonic()
     messages = _apply_sliding_window(messages, max_context_messages)
 
     injected_msgs = injected_msgs or []
@@ -284,6 +274,7 @@ async def _invoke_llm(
     system_prompt = build_system_prompt(include_tools=include_tools)
 
     final_messages = [SystemMessage(content=system_prompt)] + messages
+    logger.debug("[TIMING] _invoke_llm prep (window+sysprompt): %.3fs", time.monotonic() - _t)
 
     req_model = getattr(llm, "model_name", "") or "?"
     logger.info(
@@ -313,6 +304,7 @@ async def _invoke_llm(
             logger.info(f"LLM request >> ai{hints}: {last.content[:120]}")
 
     call_start = time.monotonic()
+    logger.debug("[TIMING] _invoke_llm → ainvoke (%.3fs prep)", time.monotonic() - _t)
     logger.debug("LLM call starting...")
 
     try:
@@ -395,6 +387,7 @@ async def call_model_user(
     messages = list(state.get("messages", []))
 
     # ── 첫 호출: DB에서 history 로드 + user_text/browser_context 로 메시지 구성 ──
+    _t_load = time.monotonic()
     if not messages and db is not None:
         session_id = state.get("session_id", "")
         user_text = state.get("user_text", "")
@@ -430,6 +423,7 @@ async def call_model_user(
 
         # 현재 user text
         messages.append(HumanMessage(content=user_text))
+        logger.debug("[TIMING] call_model_user history load: %.3fs", time.monotonic() - _t_load)
 
     # ── intervention 큐 확인: 실행 중 사용자 입력을 메시지로 주입 ──
     queue = state.get("intervention_queue")
@@ -477,8 +471,6 @@ async def call_model_user(
             ],
             "is_final": True,
         }
-
-    messages = list(state.get("messages", []))
 
     # ── 툴콜 한도 경고: max_tool_calls - 5 이하 남았을 때 system role 로 안내 ──
     remaining = max_tool_calls - current_count
