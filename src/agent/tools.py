@@ -2,7 +2,7 @@
 
 import json
 import logging
-from typing import Optional
+from typing import Any, Optional
 
 from langchain_core.tools import tool
 
@@ -30,16 +30,14 @@ def create_browser_tools(
         return await manager.browser_navigate(url)
 
     @tool
-    async def browser_click(
-        selector: str,
-        text: Optional[str] = None,
-        aria_label: Optional[str] = None,
-        role: Optional[str] = None,
-    ) -> str:
-        """Click an element by CSS selector. Supports self-healing fallback (XPath, text, aria-label, role)."""
-        return await manager.browser_click(
-            selector, text=text, aria_label=aria_label, role=role
-        )
+    async def browser_click(ref: int, tab_index: Optional[int] = None) -> str:
+        """Click an element by its accessibility tree ref number. After calling browser_snapshot(), each interactive or leaf element has a [#N] tag. Uses CDP backendNodeId for precise element targeting. Pass tab_index to target a specific tab.
+
+        Args:
+            ref: The [#N] ref number from the accessibility tree
+            tab_index: Target tab index (default: focused tab)
+        """
+        return await manager.browser_click(ref, tab_index)
 
     @tool
     async def browser_type(selector: str, text: str, clear: bool = False) -> str:
@@ -92,9 +90,9 @@ def create_browser_tools(
         return await manager.browser_switch_tab(target)
 
     @tool
-    async def browser_list_tabs() -> str:
-        """List all open browser tabs with index, URL, and title."""
-        return await manager.browser_list_tabs()
+    async def browser_infos() -> str:
+        """Check browser connection health and list all open tabs. Returns connection status, CDP config, tab list (with focused marker), and Chrome PID. Safe to call even when not connected."""
+        return await manager.browser_infos()
 
     @tool
     async def browser_screenshot(full_page: bool = False, tab_index: Optional[int] = None) -> str:
@@ -121,13 +119,8 @@ def create_browser_tools(
         return await manager.browser_snapshot(tab_index, ref=ref)
 
     @tool
-    async def chrome_health() -> str:
-        """Check Chrome/CDP connection health and get comprehensive browser status. Returns connection status, tab count, focused tab info, CDP settings, headless mode, and Chrome PID if available. Safe to call even when not connected."""
-        return await manager.chrome_health()
-
-    @tool
     async def chrome_start() -> str:
-        """Connect to Chrome CDP, or launch Chrome and connect if not already running. Use this when you need to interact with the browser but chrome_health() shows not connected. Returns connection result with health info on success."""
+        """Connect to Chrome CDP, or launch Chrome and connect if not already running. Use this when you need to interact with the browser but browser_infos() shows not connected. Returns connection result with health info on success."""
         return await manager.chrome_start()
 
     @tool
@@ -141,16 +134,6 @@ def create_browser_tools(
         return await manager.browser_execute_script(script, tab_index)
 
     @tool
-    async def browser_click_by_ref(ref: int, tab_index: Optional[int] = None) -> str:
-        """Click an element by its accessibility tree ref number. Use this after calling browser_snapshot() to see the [#N] ref numbers next to interactive elements. This is more reliable than guessing a CSS selector.
-
-        Args:
-            ref: The [#N] ref number from the accessibility tree
-            tab_index: Target tab index (default: focused tab)
-        """
-        return await manager.browser_click_by_ref(ref, tab_index)
-
-    @tool
     async def browser_get_text(ref: int, tab_index: Optional[int] = None) -> str:
         """Get the visible DOM text content of an element by its [#N] ref number. Use this to read text that doesn't appear in the accessibility tree (e.g. links with empty accessible names, custom components, or dynamically loaded content). Call browser_snapshot() first to get ref numbers.
 
@@ -161,9 +144,14 @@ def create_browser_tools(
         return await manager.browser_get_text(ref, tab_index)
 
     @tool
-    async def test_tabs() -> str:
-        """[테스트] 여러 방식으로 현재 포커스 탭을 탐지하고 결과를 반환한다."""
-        return await manager.test_tabs()
+    async def browser_get_by_ref(ref: int, tab_index: Optional[int] = None) -> str:
+        """Get the full DOM outerHTML of an element by its [#N] ref number. Use this to inspect the exact DOM structure of an element (for debugging, testing, or when you need to see the complete HTML of a component). Call browser_snapshot() first to get ref numbers.
+
+        Args:
+            ref: The [#N] ref number from the accessibility tree
+            tab_index: Target tab index (default: focused tab)
+        """
+        return await manager.browser_get_by_ref(ref, tab_index)
 
     @tool
     async def workspace_write(filename: str, content: str) -> str:
@@ -180,7 +168,7 @@ def create_browser_tools(
         return datetime.now().strftime(f"%Y-%m-%d %H:%M:%S ({tz_name})")
 
     return [
-        chrome_health,
+        browser_infos,
         chrome_start,
         browser_navigate,
         browser_click,
@@ -194,13 +182,11 @@ def create_browser_tools(
         browser_new_tab,
         browser_close_tab,
         browser_switch_tab,
-        browser_list_tabs,
         browser_screenshot,
         browser_snapshot,
         browser_execute_script,
-        browser_click_by_ref,
         browser_get_text,
-        test_tabs,
+        browser_get_by_ref,
         workspace_write,
         current_datetime,
     ]

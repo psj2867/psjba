@@ -184,9 +184,9 @@ class ChromeLauncher:
         cmd.append("--no-default-browser-check")
         cmd.append("--disable-blink-features=AutomationControlled")
 
-        # 포커스 감지 확장 프로그램 로드
+        # 포커스 감지 확장 프로그램 로드 (src/chrome/ → ../../chrome/extension)
         ext_path = os.path.normpath(
-            os.path.join(os.path.dirname(__file__), "..", "chrome", "extension")
+            os.path.join(os.path.dirname(__file__), "..", "..", "chrome", "extension")
         )
         if os.path.isdir(ext_path):
             cmd.append(f"--load-extension={ext_path}")
@@ -220,6 +220,21 @@ class ChromeLauncher:
         if self._process and self._process.poll() is None:
             return self._process.pid
         return None
+
+    def kill_chrome(self) -> None:
+        """Chrome 프로세스를 종료한다."""
+        if self._process and self._process.poll() is None:
+            try:
+                self._process.terminate()
+                self._process.wait(timeout=5)
+                logger.info("Chrome process terminated: PID=%s", self._process.pid)
+            except Exception:
+                try:
+                    self._process.kill()
+                    self._process.wait(timeout=3)
+                except Exception:
+                    pass
+            self._process = None
 
     def is_chrome_process_alive(self) -> bool:
         """Chrome 프로세스가 아직 살아있는지 확인."""

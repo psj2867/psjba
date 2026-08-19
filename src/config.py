@@ -62,7 +62,7 @@ DEFAULTS: dict[str, dict[str, Any]] = {
         "path": "./browser_agent.db",
     },
     "agent": {
-        "sliding_window_size": 10,
+        "sliding_window_size": 5,
         "cron_timeout": 300,
         "max_tool_calls": 30,
         "cron_tool_calls": 50,
@@ -76,7 +76,7 @@ DEFAULTS: dict[str, dict[str, Any]] = {
     },
     "logging": {
         "level": "disabled",
-        "path": "./psjba.log",
+        "path": "",
     },
 }
 
@@ -127,11 +127,28 @@ class Config:
     def path(self) -> Path:
         return self._path
 
-    def get(self, section: str, key: str, default: Any = None) -> Any:
+    def get(self, section: str, key: str) -> Any:
+        """설정 값을 반환한다.
+
+        load() 후에는 DEFAULTS에 있는 모든 키가 _data에 채워져 있다.
+        DEFAULTS에 없는 키를 요청하면 KeyError가 발생한다.
+
+        Args:
+            section: 설정 섹션명 (예: "llm", "agent")
+            key: 설정 키 (예: "model", "sliding_window_size")
+
+        Returns:
+            설정 값 (DEFAULTS 또는 config.ini에서 로드한 값)
+
+        Raises:
+            KeyError: DEFAULTS에 없는 섹션/키일 때
+        """
+        if section not in DEFAULTS or key not in DEFAULTS[section]:
+            raise KeyError(f"Unknown config key: {section}.{key}")
         try:
             return self._data[section][key]
         except KeyError:
-            return default
+            return DEFAULTS[section][key]
 
     def set(self, section: str, key: str, value: Any) -> None:
         if section not in self._data:
@@ -160,7 +177,10 @@ class Config:
                 if self._parser.has_option(section, key):
                     raw = self._parser.get(section, key)
                     target_type = TYPE_MAP.get(key, str)
-                    self._data[section][key] = _cast(raw, target_type)
+                    try:
+                        self._data[section][key] = _cast(raw, target_type)
+                    except (ValueError, TypeError):
+                        pass  # 형변환 실패 시 DEFAULTS 유지
 
         encrypted = self._data.get("llm", {}).get("api_key", "")
         if encrypted:

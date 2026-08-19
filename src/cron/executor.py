@@ -9,7 +9,7 @@ from uuid import uuid4
 from src.config import Config
 from src.database import Database
 from src.models.schemas import CronJob, Message, Session
-from src.browser.manager import set_session_id as _set_session_context
+from src.browser.manager import set_a11y_session_id as _set_session_context
 
 logger = logging.getLogger("psjba.cron.executor")
 
@@ -50,7 +50,7 @@ class CronExecutor:
         self._running[job.id] = task
 
     async def _run(self, job: CronJob) -> None:
-        cron_timeout = self._config.get("agent", "cron_timeout", DEFAULT_CRON_TIMEOUT)
+        cron_timeout = self._config.get("agent", "cron_timeout")
         session: Optional[Session] = None
 
         try:
@@ -88,7 +88,7 @@ class CronExecutor:
                 await self._db.update_cron_job(job)
 
             graph = self._create_graph(session.id, job.id)
-            _set_session_context.set(session.id)
+            _set_session_context(session.id)
             from langchain_core.messages import HumanMessage, SystemMessage
 
             state_messages: list = [HumanMessage(content=job.prompt)]
@@ -177,10 +177,10 @@ class CronExecutor:
             db=self._db,
             session_id=session_id,
             max_context_messages=self._config.get(
-                "agent", "sliding_window_size", 30
+                "agent", "sliding_window_size"
             ),
             cron_job_id=cron_job_id,
-            max_tool_calls=self._config.get("agent", "cron_tool_calls", 50),
+            max_tool_calls=self._config.get("agent", "cron_tool_calls"),
         )
 
     async def _save_message(

@@ -22,7 +22,7 @@ from src.browser.accessibility import (
     get_accessibility_tree_with_refs,
     get_subtree_detail,
 )
-from src.browser.self_healing import SelfHealingSelector
+from src.browser.self_healing import SelfHealingSelector, _SAFE_CLASS_RE
 from src.chrome.launcher import ChromeLauncher
 
 logger = logging.getLogger("psjba.browser.manager")
@@ -33,8 +33,8 @@ SCREENSHOT_DATE_FMT = "%Y%m%d-%H%M%S"
 _current_session_id: contextvars.ContextVar[str] = contextvars.ContextVar("session_id", default="")
 
 
-def set_session_id(sid: str) -> None:
-    """현재 asyncio task에 세션 ID를 설정한다 (a11y refs 격리용)."""
+def set_a11y_session_id(sid: str) -> None:
+    """현재 asyncio task에 a11y session ID를 설정한다 (refs 격리용)."""
     _current_session_id.set(sid)
 
 
@@ -51,8 +51,8 @@ class _TabInfo:
         try:
             self.url = self.page.url
             self.title = await self.page.title()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("TabInfo.update_info failed: %s", e)
 
     async def check_dialog(self, timeout: float = 2.0) -> Optional[dict]:
         """Override된 dialog 정보를 page에서 읽어온다.
@@ -76,17 +76,21 @@ class _TabInfo:
                 )
                 self.dialog = d
                 return d
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("TabInfo.check_dialog failed: %s", e)
         return None
 
     async def clear_dialog(self) -> None:
         self.dialog = None
         try:
             await self.page.evaluate("window.__psjba_dialog = null")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("TabInfo.clear_dialog failed: %s", e)
 
+
+class ExtensionError(RuntimeError):
+    """확장 프로그램 관련 오류."""
+    pass
 
 class PlaywrightManager:
     """Playwright를 통한 브라우저 제어를 담당하는 서비스 클래스.
@@ -222,96 +226,123 @@ class PlaywrightManager:
         for tab in self._tabs:
             try:
                 await tab.page.evaluate(script)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("_inject_init_script_to_all_tabs failed for tab %s: %s", tab.index, e)
 
     async def connect(self, launch_if_needed: bool = False) -> str:
-        """CDP에 연결한다.
+        """CDP에 연결하고 확장 프로그램을 설정한다.
 
-        Args:
-            launch_if_needed: 연결 실패 시 Chrome을 자동 실행할지 여부
+        확장 프로그램이 로드되지 않았으면 launcher가 설정된 경우
+        Chrome을 재시작하여 --load-extension을 적용한다.
 
-        Returns:
-            상태 메시지
+        Raises:
+            ExtensionError: Chrome/확장 연결 실패
         """
         if self._connected:
             logger.debug("connect() called but already connected")
             return "Already connected"
 
-        logger.info("Connecting to Chrome CDP (host=%s, port=%s)...", self._cdp_host, self._cdp_port)
-        quick_ok = await self._launcher.quick_check()
-        logger.info("CDP quick check result: %s (launch_if_needed=%s)",
-                    quick_ok, launch_if_needed)
-        if not quick_ok:
-            if launch_if_needed:
-                logger.info("Chrome not detected on port %s, launching...", self._cdp_port)
-                launched = await self._launcher.launch_chrome()
-                if not launched:
-                    logger.error("Chrome launch failed: CDP not available after launch")
-                    return "Chrome connection failed"
-                logger.info("Chrome launched successfully, CDP ready")
-            else:
-                logger.info("Chrome not connected (launch_if_needed=False)")
-                return "Chrome not connected"
+        logger.info("Connecting to Chrome CDP (host=%s, port=%s)...",
+                    self._cdp_host, self._cdp_port)
 
         try:
-            self._playwright = await async_playwright().start()
-            # /json/version → webSocketDebuggerUrl 조회 (동기, run_in_executor)
-            loop = asyncio.get_event_loop()
-            ws_url = await loop.run_in_executor(None, self._launcher.get_cdp_ws_endpoint)
-            logger.info("Connecting to CDP via WebSocket: %s", ws_url)
-            self._browser = await self._playwright.chromium.connect_over_cdp(ws_url)
+            quick_ok = await self._launcher.quick_check()
+            if not quick_ok:
+                if launch_if_needed:
+                    logger.info("Chrome not detected, launching...")
+                    launched = await self._launcher.launch_chrome()
+                    if not launched:
+                        raise ExtensionError("Chrome을 실행할 수 없습니다.")
+                else:
+                    raise ExtensionError("Chrome이 실행 중이지 않습니다.")
 
-            contexts = self._browser.contexts
-            if contexts and contexts[0].pages:
-                self._context = contexts[0]
-                self._tabs = [_TabInfo(p) for p in self._context.pages]
-                for tab in self._tabs:
-                    await tab.update_info()
-                self._focused_tab_index = 0
-            else:
-                self._context = (
-                    contexts[0]
-                    if contexts
-                    else await self._browser.new_context()
-                )
-                page = await self._context.new_page()
-                self._tabs = [_TabInfo(page)]
-                self._focused_tab_index = 0
+            await self._connect_cdp()
 
-            # 모든 페이지에 dialog override init script 주입
-            await self._inject_dialog_override()
-
-            self._connected = True
-            
-            # 확장 프로그램 로드 (포커스 탭 감지)
-            await self._setup_extension()
             if not self._ext_available:
-                logger.warning(
-                    "Focus detection extension not loaded — "
-                    "tab switch tracking will be incomplete. "
-                    "Ensure --load-extension=chrome/extension or "
-                    "enable the Extensions CDP domain."
-                )
+                if self._launcher.chrome_path:
+                    logger.warning("Extension not found — restarting Chrome")
+                    await self.disconnect()
+                    await self._launcher.kill_chrome()
+                    launched = await self._launcher.launch_chrome()
+                    if not launched:
+                        raise ExtensionError(
+                            "Chrome 재시작 후에도 확장 프로그램을 불러올 수 없습니다.\n"
+                            "Chrome을 최신 버전으로 업데이트한 후 다시 시도해 주세요."
+                        )
+                    await self._connect_cdp()
+                else:
+                    raise ExtensionError(
+                        "Chrome 확장 프로그램(PSJBA Focus Tracker)을 불러올 수 없습니다.\n"
+                        "Chrome을 최신 버전으로 업데이트한 후 다시 시도해 주세요."
+                    )
 
-            url = self.focused_page.url if self.focused_page else "about:blank"
-            logger.info("Chrome CDP connected (%d tabs, url=%s)", len(self._tabs), url)
             return "Chrome connected"
-        except Exception as e:
-            logger.error("CDP connection error: %s", e)
+
+        except ExtensionError:
             self._cleanup_state()
-            return f"Connection error: {e}"
+            raise
+        except Exception as e:
+            logger.error("Chrome connection error: %s [%s]", e, type(e).__name__)
+            self._cleanup_state()
+            raise ExtensionError(f"Chrome 연결 중 오류 발생: {e}") from e
+
+    async def _connect_cdp(self) -> None:
+        """Playwright로 CDP WebSocket에 연결하고 탭/확장을 설정한다."""
+        self._playwright = await async_playwright().start()
+        loop = asyncio.get_event_loop()
+        ws_url = await loop.run_in_executor(None, self._launcher.get_cdp_ws_endpoint)
+        logger.info("Connecting to CDP via WebSocket: %s", ws_url)
+        self._browser = await self._playwright.chromium.connect_over_cdp(ws_url)
+
+        contexts = self._browser.contexts
+        if contexts and contexts[0].pages:
+            self._context = contexts[0]
+            self._tabs = [_TabInfo(p) for p in self._context.pages]
+            for tab in self._tabs:
+                await tab.update_info()
+            self._focused_tab_index = 0
+        else:
+            self._context = (
+                contexts[0]
+                if contexts
+                else await self._browser.new_context()
+            )
+            page = await self._context.new_page()
+            self._tabs = [_TabInfo(page)]
+            self._focused_tab_index = 0
+
+        await self._inject_dialog_override()
+        self._connected = True
+        self._ext_id = await self._setup_extension()
+        self._ext_available = self._ext_id is not None
+
+        url = self.focused_page.url if self.focused_page else "about:blank"
+        logger.info("CDP connected (%d tabs, url=%s, ext=%s)",
+                    len(self._tabs), url, self._ext_available)
 
     async def disconnect(self) -> str:
-        """CDP 연결만 해제한다 (Chrome 프로세스는 유지)."""
+        """CDP 연결만 해제한다 (Chrome 프로세스는 유지).
+
+        연결 종료 시 --load-extension으로 로드된 확장도 제거한다.
+        """
         if not self._connected:
             logger.debug("disconnect() called but not connected")
             return "Not connected"
 
+        # 연결 종료 전에 --load-extension으로 로드된 확장 제거
+        if self._ext_available and self._ext_id:
+            try:
+                browser_cdp = await self._browser.new_browser_cdp_session()
+                await browser_cdp.send("Extensions.uninstall", {
+                    "id": self._ext_id,
+                })
+                logger.info("Extension uninstalled: id=%s", self._ext_id)
+            except Exception as e:
+                logger.debug("Extensions.uninstall failed: %s", e)
+
         logger.info("Disconnecting from Chrome CDP...")
         try:
             if self._browser:
-                # CDP 연결된 브라우저는 close()로 모든 페이지 정리
                 await self._browser.close()
             if self._playwright:
                 await self._playwright.stop()
@@ -333,13 +364,16 @@ class PlaywrightManager:
         self._ext_id = None
         self._ext_available = False
 
-    async def _setup_extension(self) -> None:
+    async def _setup_extension(self) -> Optional[str]:
         """확장 프로그램을 로드하여 포커스 탭 감지를 설정한다.
 
         Fallback 순서:
           1. --load-extension으로 이미 로드된 확장 확인
           2. Extensions.loadUnpacked로 런타임 로드
           3. 둘 다 실패 → 경고 (포커스 탐지 불가)
+
+        Returns:
+            확장 ID (로드 성공) 또는 None (실패)
         """
         ext_path = str(
             Path(__file__).resolve().parent.parent.parent / "chrome" / "extension"
@@ -348,13 +382,13 @@ class PlaywrightManager:
 
         if not os.path.isdir(ext_path):
             logger.warning("Extension directory not found: %s", ext_path)
-            return
+            return None
 
         try:
             browser_cdp = await self._browser.new_browser_cdp_session()
         except Exception as e:
             logger.warning("Extension setup: CDP session unavailable (%s)", e)
-            return
+            return None
 
         # 1) 이미 로드된 unpacked 확장 중에서 찾기
         try:
@@ -362,13 +396,9 @@ class PlaywrightManager:
             for ext in exts.get("extensions", []):
                 ep = os.path.normpath(ext.get("path", ""))
                 if ep == ext_path:
-                    self._ext_id = ext["id"]
-                    self._ext_available = True
-                    logger.info(
-                        "Extension already loaded: id=%s path=%s",
-                        self._ext_id, ext_path,
-                    )
-                    return
+                    ext_id = ext["id"]
+                    logger.info("Extension already loaded: id=%s path=%s", ext_id, ext_path)
+                    return ext_id
         except Exception as e:
             logger.debug("Extensions.getExtensions not available: %s", e)
 
@@ -377,13 +407,12 @@ class PlaywrightManager:
             result = await browser_cdp.send("Extensions.loadUnpacked", {
                 "path": ext_path,
             })
-            self._ext_id = result.get("id")
-            self._ext_available = True
-            logger.info("Extension loaded via loadUnpacked: id=%s", self._ext_id)
+            ext_id = result.get("id")
+            logger.info("Extension loaded via loadUnpacked: id=%s", ext_id)
+            return ext_id
         except Exception as e:
-            logger.warning(
-                "Extension load failed — focus detection disabled: %s", e,
-            )
+            logger.warning("Extension load failed — focus detection disabled: %s", e)
+            return None
 
     def _ensure_connected(self) -> None:
         if not self._connected:
@@ -404,19 +433,18 @@ class PlaywrightManager:
         self._ensure_connected()
         assert self._context is not None
         page = await self._context.new_page()
-        await self._inject_dialog_override()
         if url:
             await page.goto(url, wait_until="domcontentloaded")
-        tab = _TabInfo(page, url or "about:blank")
-        await tab.update_info()
-        self._tabs.append(tab)
+        await self._refresh_tabs()
         self._focused_tab_index = len(self._tabs) - 1
+        tab = self._tabs[self._focused_tab_index]
         return f"New tab opened: {tab.url} ({tab.title})"
 
     async def browser_close_tab(self, target: str = "") -> str:
         logger.info("browser_close_tab: target=%s", target)
         """탭을 닫는다. target이 없으면 현재 탭. target은 인덱스(0-base) 또는 URL."""
         self._ensure_connected()
+        assert self._context is not None
         if not self._tabs:
             return "No tabs to close"
 
@@ -441,23 +469,16 @@ class PlaywrightManager:
         url = tab.url
         try:
             await tab.page.close()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("close_tab: page close failed for tab %s: %s", idx, e)
 
-        self._tabs.pop(idx)
+        await self._refresh_tabs()
 
         if not self._tabs:
             page = await self._context.new_page()
-            self._tabs.append(_TabInfo(page))
-            self._focused_tab_index = 0
-        elif idx <= self._focused_tab_index and self._focused_tab_index > 0:
-            self._focused_tab_index -= 1
-        elif self._focused_tab_index >= len(self._tabs):
-            self._focused_tab_index = len(self._tabs) - 1
+            await self._refresh_tabs()
 
-        focused = self._tabs[self._focused_tab_index]
-        await focused.update_info()
-        return f"Closed tab: {url}. Now on: {focused.url} ({focused.title})"
+        return f"Tab closed: {url}"
 
     async def browser_switch_tab(self, target: str) -> str:
         logger.info("browser_switch_tab: target=%s", target)
@@ -513,31 +534,40 @@ class PlaywrightManager:
                     )
                     if active == "true":
                         self._focused_tab_index = i
-                        logger.debug("Focus detected via extension: tab %d", i)
                         break
                 except Exception as e:
-                    logger.debug("Focus check tab %d: %s", i, e)
+                    logger.debug("_refresh_tabs: tab %d ext attribute eval failed: %s", i, e)
+                    continue
 
-        # TODO: 디버그 로그 — 탭 상태 확인용, 안정화 후 제거
-        lines = [
-            f"  Tab {i}: {t.page.url}{' ◀ FOCUSED' if i == self._focused_tab_index else ''}"
-            for i, t in enumerate(self._tabs)
-        ]
-        logger.debug("Tabs refreshed (%d):\n%s", len(self._tabs), "\n".join(lines))
+    async def browser_infos(self) -> str:
+        """브라우저 연결 상태, 탭 목록, Chrome 정보를 종합해서 반환한다."""
+        info: dict[str, Any] = {
+            "connected": self._connected,
+            "cdp_host": self._cdp_host,
+            "cdp_port": self._cdp_port,
+            "headless": self._launcher._headless,
+        }
 
-    async def browser_list_tabs(self) -> str:
-        logger.info("browser_list_tabs called")
-        """현재 열린 탭 목록을 반환한다."""
-        self._ensure_connected()
-        await self._refresh_tabs()
-        lines: list[str] = []
-        for i, tab in enumerate(self._tabs):
-            await tab.update_info()
-            if i == self._focused_tab_index:
-                lines.append(f"  [{i}] {tab.url} - {tab.title} ◀ FOCUSED")
-            else:
-                lines.append(f"  [{i}] {tab.url} - {tab.title}")
-        return "Open tabs:\n" + "\n".join(lines) if lines else "No tabs open"
+        if self._connected:
+            await self._refresh_tabs()
+            info["tab_count"] = len(self._tabs)
+
+            tabs_list = []
+            for i, tab in enumerate(self._tabs):
+                await tab.update_info()
+                tabs_list.append({
+                    "index": i,
+                    "url": tab.url,
+                    "title": tab.title,
+                    "focused": i == self._focused_tab_index,
+                })
+            info["tabs"] = tabs_list
+
+        chrome_pid = self._launcher.get_chrome_pid()
+        if chrome_pid is not None:
+            info["chrome_pid"] = chrome_pid
+
+        return json.dumps(info, indent=2, ensure_ascii=False)
 
     # ─── 네비게이션 ──────────────────────────────────────────
 
@@ -554,50 +584,76 @@ class PlaywrightManager:
         except Exception as e:
             return f"Navigation error: {e}"
 
-    async def browser_go_back(self) -> str:
-        logger.info("browser_go_back called")
-        """브라우저 뒤로 가기."""
-        page = self._ensure_page()
-        try:
-            await page.go_back(wait_until="domcontentloaded")
-            tab = self._tabs[self._focused_tab_index]
-            await tab.update_info()
-            return f"Went back to {tab.url} ({tab.title})"
-        except Exception as e:
-            return f"Go back error: {e}"
+    # ─── 헬퍼: CDP querySelector 로 노드 재발견 ──────────
+    @staticmethod
+    def _build_click_selector(node: dict[str, Any]) -> str:
+        """ref 노드 정보로 CDP DOM.querySelector용 CSS 선택자를 만든다.
+
+        Fallback chain (높은 정확도 순):
+          1. tag#id                        — id가 가장 정확
+          2. tag[role="X"]:nth-of-type(N)  — role + nth-of-type으로 unique
+          3. tag[attr="val"]                — aria-label, placeholder, name, type (중복 많음)
+          4. tag.safe-class[role="X"]       — 위험 문자 없는 클래스만
+        """
+        tag = node.get("tag", "") or node.get("_tag", "")
+        nid = node.get("_id", "")
+        aria_label = node.get("_aria_label", "")
+        nclass = node.get("_class", "")
+        ntype = node.get("_type", "")
+        name = node.get("name", "")
+        role = node.get("role", "")
+        placeholder = node.get("_placeholder", "")
+        form_name = node.get("_form_name", "")
+        nth = node.get("_nth_of_type", 0)
+
+        if not tag:
+            return ""
+
+        # 1차: id
+        if nid:
+            return f"{tag}#{nid}"
+
+        # 2차: role + nth-of-type (aria/name/type보다 nth가 더 unique)
+        if role:
+            parts = [tag]
+            if nclass:
+                safe_classes = [
+                    c for c in nclass.split()
+                    if _SAFE_CLASS_RE.match(c)
+                ]
+                if safe_classes:
+                    parts.append("." + ".".join(safe_classes))
+            parts.append(f'[role="{role}"]')
+            if nth > 0:
+                parts.append(f":nth-of-type({nth})")
+            return "".join(parts)
+
+        # 3차: HTML attribute (중복 가능성 높음, selector 검증 시 refined)
+        if aria_label:
+            escaped = aria_label.replace('"', '\\"').replace("'", "\\'")
+            return f'{tag}[aria-label="{escaped}"]'
+        if placeholder:
+            return f'{tag}[placeholder="{placeholder}"]'
+        if form_name:
+            return f'{tag}[name="{form_name}"]'
+        if name:
+            escaped = name.replace('"', '\\"').replace("'", "\\'")
+            return f'{tag}[aria-label="{escaped}"]'
+        if ntype:
+            return f'{tag}[type="{ntype}"]'
+
+        # 4차: tag + safe class만 (role 없음, attr 없음)
+        parts = [tag]
+        if nclass:
+            safe_classes = [
+                c for c in nclass.split()
+                if _SAFE_CLASS_RE.match(c)
+            ]
+            if safe_classes:
+                parts.append("." + ".".join(safe_classes))
+        return "".join(parts)
 
     # ─── 요소 조작 ──────────────────────────────────────────
-
-    async def browser_click(
-        self,
-        selector: str,
-        text: Optional[str] = None,
-        aria_label: Optional[str] = None,
-        role: Optional[str] = None,
-    ) -> str:
-        logger.info("browser_click: selector=%s", selector)
-        """선택자로 요소를 찾아 클릭한다 (self-healing 포함)."""
-        page = self._ensure_page()
-        healing = SelfHealingSelector(page)
-        locator = await healing.find_element(
-            selector, text=text, aria_label=aria_label, role=role
-        )
-        if locator is None:
-            return f"Click failed: element not found ({selector})"
-
-        try:
-            await locator.click(timeout=5000)
-            await self._tabs[self._focused_tab_index].update_info()
-            tab = self._tabs[self._focused_tab_index]
-            result = f"Clicked: {selector} [url={tab.url}, title={tab.title}]"
-        except Exception as e:
-            result = f"Click error: {e}"
-
-        # dialog 체크
-        d = await tab.check_dialog()
-        if d:
-            result += f"\n⚠️ Dialog recorded: [{d['type']}] {d.get('message','')}"
-        return result
 
     async def browser_type(
         self,
@@ -747,47 +803,6 @@ class PlaywrightManager:
 
     # ─── 정보 조회 ──────────────────────────────────────────
 
-    async def chrome_health(self) -> str:
-        """Chrome/CDP 연결 상태 및 브라우저 종합 정보를 반환한다.
-
-        연결 여부, 탭 개수, 포커스된 탭 정보, CDP 설정,
-        Chrome 경로 등 브라우저 상태를 한 번에 파악할 수 있다.
-        연결이 안 된 상태에서도 안전하게 호출 가능하다.
-        """
-        info: dict[str, Any] = {
-            "connected": self._connected,
-            "cdp_host": self._cdp_host,
-            "cdp_port": self._cdp_port,
-            "headless": self._launcher._headless,
-        }
-
-        if self._connected:
-            info["tab_count"] = len(self._tabs)
-
-            focused = self._tabs[self._focused_tab_index]
-            await focused.update_info()
-            info["focused_tab"] = {
-                "index": self._focused_tab_index,
-                "url": focused.url,
-                "title": focused.title,
-            }
-
-            tabs_list = []
-            for i, tab in enumerate(self._tabs):
-                await tab.update_info()
-                tabs_list.append({
-                    "index": i,
-                    "url": tab.url,
-                    "title": tab.title,
-                    "focused": i == self._focused_tab_index,
-                })
-            info["tabs"] = tabs_list
-
-        chrome_pid = self._launcher.get_chrome_pid()
-        if chrome_pid is not None:
-            info["chrome_pid"] = chrome_pid
-
-        return json.dumps(info, indent=2, ensure_ascii=False)
 
     async def get_browser_context(self) -> str:
         """현재 브라우저 상태를 사람이 읽기 쉬운 문자열로 반환한다.
@@ -810,185 +825,6 @@ class PlaywrightManager:
                 parts.append(f"       ⚠️ Dialog: [{d.get('type')}] {d.get('message', '')}")
         return "\n".join(parts)
 
-    async def test_tabs(self) -> str:
-        """[테스트용] 여러 방식으로 포커스 탭 탐지 시도 결과를 반환한다."""
-        if not self._connected or not self._tabs:
-            return "[Browser: not connected]"
-
-        await self._refresh_tabs()
-        lines: list[str] = []
-        total = len(self._tabs)
-
-        # ── JS 기반 탐지 ──
-        line = f"Tabs: {total}, focused_index={self._focused_tab_index}"
-        lines.append(line)
-        logger.info("test_tabs: %s", line)
-
-        for i, tab in enumerate(self._tabs):
-            await tab.update_info()
-            page = tab.page
-            url = tab.url
-            title = tab.title
-            heading = f"\n[Tab {i}] {title} ({url})"
-            lines.append(heading)
-            logger.info("test_tabs: Tab %d url=%s", i, url)
-
-            checks: list[tuple[str, str]] = []
-
-            # 1-5: JS 기반
-            js_checks = [
-                ("document.hasFocus()", "document.hasFocus()"),
-                ("document.visibilityState", "document.visibilityState"),
-                ("document.hidden", "document.hidden"),
-                ("document.webkitHidden", "document.webkitHidden"),
-                ("document.webkitVisibilityState", "document.webkitVisibilityState"),
-                ("matchMedia(display-mode:browser)", "window.matchMedia('(display-mode: browser)').matches"),
-                ("matchMedia(display-mode:standalone)",
-                 "window.matchMedia('(display-mode: standalone)').matches"),
-                ("document.hasFocus + visState",
-                 "JSON.stringify({f: document.hasFocus(), v: document.visibilityState, h: document.hidden})"),
-            ]
-            for label, expr in js_checks:
-                try:
-                    val = await page.evaluate(expr)
-                    checks.append((label, str(val)))
-                except Exception as e:
-                    checks.append((label, f"ERR:{e}"))
-
-            for label, val in checks:
-                lines.append(f"  {label}: {val}")
-                logger.debug("test_tabs Tab%d %s: %s", i, label, val)
-
-        # ── CDP 기반 탐지 ──
-        try:
-            browser_cdp = await self._browser.new_browser_cdp_session()
-        except Exception as e:
-            lines.append(f"\n[CDP new_browser_cdp_session] ERR: {e}")
-            logger.info("test_tabs CDP session error: %s", e)
-            browser_cdp = None
-
-        if browser_cdp:
-            # a) Target.getTargets (모든 target 정보 저장)
-            target_infos: list[dict] = []
-            try:
-                targets_resp = await browser_cdp.send("Target.getTargets")
-                target_infos = targets_resp.get("targetInfos", targets_resp.get("targets", []))
-                lines.append(f"\n[CDP Target.getTargets] ({len(target_infos)} targets)")
-                logger.info("test_tabs Target.getTargets: %d targets", len(target_infos))
-                for ti in target_infos:
-                    lines.append(f"  targetId={ti.get('targetId','')[:8]}... "
-                                 f"type={ti.get('type')} url={ti.get('url','')[:80]}")
-            except Exception as e:
-                lines.append(f"\n[CDP Target.getTargets] ERR: {e}")
-                logger.info("test_tabs Target.getTargets error: %s", e)
-
-            # b) 페이지 target → tab 매핑 후 Browser.getWindowForTarget
-            lines.append("\n[CDP Browser.getWindowForTarget]")
-            page_targets = [ti for ti in target_infos if ti.get("type") == "page"]
-            for i, tab in enumerate(self._tabs):
-                try:
-                    # URL로 target 매칭 (완전 일치 → 부분 일치)
-                    target_id = None
-                    for ti in page_targets:
-                        if ti.get("url") == tab.url:
-                            target_id = ti.get("targetId")
-                            break
-                    if target_id is None:
-                        for ti in page_targets:
-                            if tab.url and ti.get("url", "").startswith(tab.url[:60]):
-                                target_id = ti.get("targetId")
-                                break
-                    if target_id is None:
-                        lines.append(f"  Tab {i}: target not matched (url={tab.url[:60]})")
-                        continue
-                    win = await browser_cdp.send(
-                        "Browser.getWindowForTarget", {"targetId": target_id}
-                    )
-                    lines.append(f"  Tab {i}: windowId={win.get('windowId')} "
-                                 f"bounds={win.get('bounds')}")
-                except Exception as e:
-                    lines.append(f"  Tab {i}: ERR: {e}")
-
-            # b2) Target.getTargetInfo (attached / openerId / canAccessOpener)
-            lines.append("\n[CDP Target.getTargetInfo]")
-            for i, tab in enumerate(self._tabs):
-                try:
-                    target_id = None
-                    for ti in page_targets:
-                        if ti.get("url") == tab.url:
-                            target_id = ti.get("targetId")
-                            break
-                    if target_id is None:
-                        lines.append(f"  Tab {i}: target not matched")
-                        continue
-                    info = await browser_cdp.send(
-                        "Target.getTargetInfo", {"targetId": target_id}
-                    )
-                    ti = info.get("targetInfo", {})
-                    lines.append(
-                        f"  Tab {i}: attached={ti.get('attached')} "
-                        f"canAccessOpener={ti.get('canAccessOpener')} "
-                        f"openerId={str(ti.get('openerId'))[:8]}"
-                    )
-                except Exception as e:
-                    lines.append(f"  Tab {i}: ERR: {e}")
-
-            # b3) Page.getNavigationHistory (history index/길이 차이?)
-            lines.append("\n[CDP Page.getNavigationHistory]")
-            for i, tab in enumerate(self._tabs):
-                try:
-                    page_cdp = await self._context.new_cdp_session(tab.page)
-                    hist = await page_cdp.send("Page.getNavigationHistory")
-                    idx = hist.get("currentIndex", -1)
-                    entries = hist.get("entries", [])
-                    lines.append(f"  Tab {i}: currentIndex={idx} entries={len(entries)}")
-                except Exception as e:
-                    lines.append(f"  Tab {i}: ERR: {e}")
-
-            # c) Page.getLayoutMetrics per tab
-            lines.append("\n[CDP Page.getLayoutMetrics]")
-            for i, tab in enumerate(self._tabs):
-                try:
-                    page_cdp = await self._context.new_cdp_session(tab.page)
-                    metrics = await page_cdp.send("Page.getLayoutMetrics")
-                    lv = metrics.get("layoutViewport", {})
-                    cv = metrics.get("contentSize", {})
-                    lines.append(f"  Tab {i}: layout=({lv.get('clientWidth')}, {lv.get('clientHeight')}) "
-                                 f"content=({cv.get('width')}, {cv.get('height')})")
-                except Exception as e:
-                    lines.append(f"  Tab {i}: ERR: {e}")
-
-            # d) Page.getAppManifest
-            lines.append("\n[CDP Page.getAppManifest]")
-            for i, tab in enumerate(self._tabs):
-                try:
-                    page_cdp = await self._context.new_cdp_session(tab.page)
-                    manifest = await page_cdp.send("Page.getAppManifest")
-                    lines.append(f"  Tab {i}: {manifest.get('url', 'N/A')}")
-                except Exception as e:
-                    lines.append(f"  Tab {i}: ERR: {e}")
-
-            # e) Page.getFrameTree (depth 차이?)
-            lines.append("\n[CDP Page.getFrameTree]")
-            for i, tab in enumerate(self._tabs):
-                try:
-                    page_cdp = await self._context.new_cdp_session(tab.page)
-                    ft = await page_cdp.send("Page.getFrameTree")
-                    tree = ft.get("frameTree", {})
-                    # 재귀적으로 frame 수 계산
-                    def _count(tree_node: dict) -> int:
-                        n = 1
-                        for c in tree_node.get("childFrames", []):
-                            n += _count(c)
-                        return n
-                    lines.append(f"  Tab {i}: frames={_count(tree)}")
-                except Exception as e:
-                    lines.append(f"  Tab {i}: ERR: {e}")
-
-        text = "\n".join(lines)
-        logger.info("test_tabs result:\n%s", text)
-        return text
-
     async def chrome_start(self) -> str:
         """Chrome/CDP에 연결을 시도하고, 연결이 안 되어 있으면 Chrome을 실행한 후 연결한다.
 
@@ -1000,7 +836,7 @@ class PlaywrightManager:
 
         result = await self.connect(launch_if_needed=True)
         if self._connected:
-            return f"Chrome started and connected successfully.\n{await self.chrome_health()}"
+            return f"Chrome started and connected successfully.\n{await self.browser_infos()}"
         else:
             return f"Failed to start Chrome: {result}"
 
@@ -1031,18 +867,30 @@ class PlaywrightManager:
 
         page = self._ensure_page(tab_index)
         text, refs = await get_accessibility_tree_with_refs(page)
-        self._set_session_refs(refs)
         if refs:
             logger.info("a11y snapshot: %d interactive refs", len(refs))
+            # selector는 _build_click_selector로 동기 계산 (page.evaluate 없음)
+            # 중복 해소는 browser_click 등 사용 시점에 CDP로 refined
+            for ref, node in refs.items():
+                sel = self._build_click_selector(node)
+                if sel:
+                    node["_selector"] = sel
+
+        self._set_session_refs(refs)
         return text
 
-    async def browser_click_by_ref(self, ref: int, tab_index: Optional[int] = None) -> str:
+    async def browser_click(self, ref: int, tab_index: Optional[int] = None) -> str:
         """접근성 트리 ref 번호로 요소를 찾아 클릭한다.
+
+        backendNodeId → CDP getBoxModel + dispatchMouseEvent 로 정확히 클릭.
+        CDP 실패 시 Playwright get_by_role 로 폴백.
 
         Args:
             ref: browser_snapshot() 결과에 표시된 [#N] 번호
             tab_index: 대상 탭 인덱스 (None이면 포커스 탭)
         """
+        import time
+        t0 = time.monotonic()
         session_refs = self._get_session_refs()
         node = session_refs.get(ref)
         if node is None:
@@ -1053,49 +901,216 @@ class PlaywrightManager:
         idx = tab_index if tab_index is not None else self._focused_tab_index
         role = node.get("role", "")
         name = node.get("name", "")
+        tag = node.get("tag", "") or node.get("_tag", "")
+        nid = node.get("_id", "")
+        backend_id = node.get("_backendNodeId")
 
-        # Playwright get_by_role 로 찾기 (name이 있으면 함께 필터)
-        try:
-            if name:
-                locator = page.get_by_role(role, name=name, exact=False)
-            else:
-                locator = page.get_by_role(role)
-        except Exception as e:
-            return f"Click by ref #{ref} ({role} \"{name}\") failed: {e}"
+        click_desc = f"ref #{ref} ({role}"
+        if name:
+            click_desc += f" \"{name}\""
+        if tag:
+            click_desc += f" <{tag}>"
+        if nid:
+            click_desc += f" #{nid}"
+        click_desc += ")"
 
-        try:
-            await locator.first.click(timeout=5000)
-            await self._tabs[idx].update_info()
-            tab = self._tabs[idx]
-            result = (f"Clicked ref #{ref} ({role} \"{name}\") "
-                      f"[url={tab.url}, title={tab.title}]")
-        except Exception as e:
-            # fallback: self-healing 으로 name 기반 시도
-            healing = SelfHealingSelector(page)
-            locator2 = await healing.find_element(
-                "", text=name, role=role, aria_label=name,
-            )
-            if locator2 is None:
-                return f"Click by ref #{ref} failed: {e}"
+        # ─── CDP click helper ──────────────────────────────
+        async def _cdp_dispatch(cdp_session, nid: int) -> tuple[bool, float, float]:
+            """CDP nodeId로 scrollIntoView + getBoxModel + mouse click.
+            Returns (success, cx, cy)."""
             try:
-                await locator2.click(timeout=5000)
+                await cdp_session.send("DOM.scrollIntoViewIfNeeded", {"nodeId": nid})
+                box = await cdp_session.send("DOM.getBoxModel", {"nodeId": nid})
+                model = box.get("model", {})
+                content = model.get("content", [])
+                if len(content) < 4:
+                    return False, 0, 0
+                cx = (content[0] + content[4]) / 2 if len(content) >= 8 else content[0] + content[2] / 2
+                cy = (content[1] + content[5]) / 2 if len(content) >= 8 else content[1] + content[3] / 2
+
+                # 디버그: 누르려는 노드 vs 실제 (cx,cy) 위치의 노드 비교
+                if logger.isEnabledFor(logging.DEBUG):
+                    try:
+                        target = await cdp_session.send("DOM.describeNode", {"nodeId": nid})
+                        # raw_content는 getNodeForLocation 실패와 무관하게 먼저 로그
+                        logger.debug("_cdp_dispatch: target=%s raw_content=%s center=(%.0f,%.0f) viewport=(%s,%s)",
+                                     target.get("node", {}).get("nodeName", "?"),
+                                     content,
+                                     cx, cy,
+                                     model.get("width", "?"), model.get("height", "?"))
+                    except Exception as e:
+                        logger.debug("_cdp_dispatch describeNode failed: %s", e)
+                    # 별도 try: getNodeForLocation은 실패할 수 있음 (뷰포트 밖 좌표 등)
+                    try:
+                        hit = await cdp_session.send("DOM.getNodeForLocation", {
+                            "x": int(cx), "y": int(cy),
+                            "includeUserAgentShadowDOM": True,
+                            "ignorePointerEventsNone": False,
+                        })
+                        hit_desc = await cdp_session.send("DOM.describeNode", {
+                            "nodeId": hit.get("nodeId")
+                        }) if hit.get("nodeId") else {"node": {"nodeName": "(none)"}}
+                        logger.debug("_cdp_dispatch: hit at (%.0f,%.0f) = %s",
+                                     cx, cy,
+                                     hit_desc.get("node", {}).get("nodeName", "?"))
+                    except Exception as e:
+                        logger.debug("_cdp_dispatch: getNodeForLocation at (%.0f,%.0f) failed: %s",
+                                     cx, cy, e)
+
+                await cdp_session.send("Input.dispatchMouseEvent", {
+                    "type": "mousePressed", "x": cx, "y": cy,
+                    "button": "left", "clickCount": 1,
+                })
+                await cdp_session.send("Input.dispatchMouseEvent", {
+                    "type": "mouseReleased", "x": cx, "y": cy,
+                    "button": "left", "clickCount": 1,
+                })
+                return True, cx, cy
+            except Exception as e:
+                logger.warning("CDP dispatch failed for nodeId=%s: %s", nid, e)
+                return False, 0, 0
+
+        cdp = None
+
+        # 1차: CDP backendNodeId 기반 정밀 클릭
+        if backend_id is not None:
+            try:
+                cdp = await page.context.new_cdp_session(page)
+                # pushNodesByBackendIdsToFrontend는 DOM document 필요
+                await cdp.send("DOM.getDocument", {})
+                pn = await cdp.send("DOM.pushNodesByBackendIdsToFrontend", {
+                    "backendNodeIds": [backend_id],
+                })
+                nids = pn.get("nodeIds", [])
+                node_id = nids[0] if nids else None
+                if node_id:
+                    ok, cx, cy = await _cdp_dispatch(cdp, node_id)
+                    if ok:
+                        await self._tabs[idx].update_info()
+                        tab = self._tabs[idx]
+                        elapsed = int((time.monotonic() - t0) * 1000)
+                        logger.info("browser_click: clicked %s via CDP backendNodeId=%s (%.0f,%.0f) %dms",
+                                     click_desc, backend_id, cx, cy, elapsed)
+                        result = (f"Clicked {click_desc} [CDP] "
+                                  f"[url={tab.url}, title={tab.title}]")
+                        d = await self._tabs[idx].check_dialog()
+                        if d:
+                            result += f"\n⚠️ Dialog recorded: [{d['type']}] {d.get('message','')}"
+                        return result
+            except Exception as e:
+                logger.warning("CDP pushNodesByBackendIdsToFrontend for %s failed: %s. → CDP re-discovery", click_desc, e)
+
+        # 1.5차: CSS selector로 CDP 재발견 → CDP 클릭 (backendNodeId=null or stale 모두)
+        try:
+            selector = node.get("_selector", "")
+            if selector:
+                if cdp is None:
+                    cdp = await page.context.new_cdp_session(page)
+                doc = await cdp.send("DOM.getDocument", {})
+                root_id = doc.get("root", {}).get("nodeId")
+                if root_id:
+                    # 중복 선택자 해소 (CDP DOM.querySelectorAll 로 eval 없이)
+                    if selector:
+                        try:
+                            selector = await SelfHealingSelector(page).make_unique_selector(
+                                cdp, root_id, selector, node,
+                            )
+                        except Exception as e:
+                            logger.debug("browser_click: make_unique_selector failed: %s", e)
+                    found = await cdp.send("DOM.querySelector", {
+                        "nodeId": root_id, "selector": selector,
+                    })
+                    found_node_id = found.get("nodeId")
+                    if found_node_id and found_node_id != 0:
+                        ok, cx, cy = await _cdp_dispatch(cdp, found_node_id)
+                        if ok:
+                            await self._tabs[idx].update_info()
+                            tab = self._tabs[idx]
+                            elapsed = int((time.monotonic() - t0) * 1000)
+                            logger.info("browser_click: clicked %s via CDP querySelector=%s (%.0f,%.0f) %dms",
+                                         click_desc, selector, cx, cy, elapsed)
+                            result = (f"Clicked {click_desc} [CDP:querySelector] "
+                                      f"[url={tab.url}, title={tab.title}"
+                                      f", selector={selector}]")
+                            d = await self._tabs[idx].check_dialog()
+                            if d:
+                                result += f"\n⚠️ Dialog recorded: [{d['type']}] {d.get('message','')}"
+                            return result
+        except Exception as e:
+            logger.warning("CDP re-discovery for %s failed: %s. → PW fallback", click_desc, e)
+
+        # 2차: Playwright locator (CSS selector 먼저, 없으면 get_by_role)
+        try:
+            t1 = time.monotonic()
+            locator = None
+            # selector가 있으면 정확한 요소 지정 가능
+            if selector:
+                locator = page.locator(selector)
+            elif name:
+                locator = page.get_by_role(role, name=name, exact=False)
+            if locator is not None:
+                await locator.first.click(timeout=5000)
                 await self._tabs[idx].update_info()
                 tab = self._tabs[idx]
-                result = (f"Clicked ref #{ref} ({role} \"{name}\") [fallback] "
+                pw_elapsed = int((time.monotonic() - t1) * 1000)
+                total_elapsed = int((time.monotonic() - t0) * 1000)
+                pw_method = "PW:locator" if selector else "PW:get_by_role"
+                logger.info("browser_click: clicked %s via %s (%dms, total=%dms)",
+                             click_desc, pw_method, pw_elapsed, total_elapsed)
+                result = (f"Clicked {click_desc} [{pw_method}] "
                           f"[url={tab.url}, title={tab.title}]")
-            except Exception as e2:
-                return f"Click by ref #{ref} failed (both): {e2}"
+                d = await self._tabs[idx].check_dialog()
+                if d:
+                    result += f"\n⚠️ Dialog recorded: [{d['type']}] {d.get('message','')}"
+                return result
+        except Exception as e:
+            logger.debug("browser_click: PW locator failed for %s: %s", click_desc, e)
 
-        d = await self._tabs[idx].check_dialog()
-        if d:
-            result += f"\n⚠️ Dialog recorded: [{d['type']}] {d.get('message','')}"
-        return result
+        # 3차: SelfHealingSelector (name이 있어야 의미 있음)
+        try:
+            t1 = time.monotonic()
+            healing = SelfHealingSelector(page)
+            locator2 = None
+            if name:
+                locator2 = await healing.find_element(
+                    "", text=name, role=role, aria_label=name,
+                )
+            elif selector:
+                locator2 = await healing.find_element(
+                    selector, role=role, text=node.get("_text_content", ""),
+                )
+            if locator2 is None:
+                total_elapsed = int((time.monotonic() - t0) * 1000)
+                logger.error("browser_click: all strategies failed for %s (%dms)",
+                              click_desc, total_elapsed)
+                return (f"Click by {click_desc} failed: could not uniquely identify element "
+                        f"(role={role!r}, name={name!r}). "
+                        "Try browser_snapshot() again to get a fresh ref.")
+            await locator2.click(timeout=5000)
+            await self._tabs[idx].update_info()
+            tab = self._tabs[idx]
+            heal_elapsed = int((time.monotonic() - t1) * 1000)
+            total_elapsed = int((time.monotonic() - t0) * 1000)
+            logger.info("browser_click: clicked %s via self-healing (%dms, total=%dms)",
+                         click_desc, heal_elapsed, total_elapsed)
+            result = (f"Clicked {click_desc} [heal] "
+                      f"[url={tab.url}, title={tab.title}]")
+            d = await self._tabs[idx].check_dialog()
+            if d:
+                result += f"\n⚠️ Dialog recorded: [{d['type']}] {d.get('message','')}"
+            return result
+        except Exception as e:
+            total_elapsed = int((time.monotonic() - t0) * 1000)
+            logger.error("browser_click: self-healing failed for %s (%dms): %s",
+                          click_desc, total_elapsed, e)
+            return f"Click by {click_desc} failed: {e}"
 
     async def browser_get_text(self, ref: int, tab_index: Optional[int] = None) -> str:
         """접근성 트리 ref 번호로 요소의 DOM 텍스트를 가져온다.
 
         접근성 트리에 표시되지 않는 보이는 텍스트를 추출할 때 사용한다.
         aria-label 등 accessible name이 비어있어도 실제 DOM 텍스트를 반환한다.
+        CDP backendNodeId로 정확한 요소를 찾는다.
 
         Args:
             ref: browser_snapshot() 결과에 표시된 [#N] 번호
@@ -1110,45 +1125,147 @@ class PlaywrightManager:
         page = self._ensure_page(tab_index)
         role = node.get("role", "")
         name = node.get("name", "")
+        backend_id = node.get("_backendNodeId")
 
-        try:
-            # Playwright get_by_role 로 찾기
-            if name:
-                locator = page.get_by_role(role, name=name, exact=False)
-            else:
-                locator = page.get_by_role(role)
-
-            # 모든 일치 요소의 텍스트 수집
-            count = await locator.count()
-            if count == 0:
-                return f"Text for ref #{ref} ({role} \"{name}\"): (no elements found)"
-            if count == 1:
-                text = (await locator.first.inner_text()).strip()
-                return f"Text for ref #{ref} ({role} \"{name}\"):\n{text}"
-            # 여러 개면 인덱스와 함께 표시
-            parts = []
-            for i in range(count):
-                t = (await locator.nth(i).inner_text()).strip()
-                short = t[:200] + ("..." if len(t) > 200 else "")
-                parts.append(f"[{i}] {short}")
-            return (f"Elements with role '{role}' (ref #{ref}): "
-                    f"{count} matches\n" + "\n".join(parts))
-        except Exception as e:
-            # fallback: page.evaluate 로 DOM textContent 직접 추출
+        # backendNodeId가 있으면 CDP getOuterHTML로 정확히 찾기
+        if backend_id is not None:
             try:
-                escaped_role = role.replace("'", "\\'")
+                cdp = await page.context.new_cdp_session(page)
+                result = await cdp.send("DOM.getOuterHTML", {
+                    "backendNodeId": backend_id,
+                })
+                outer = result.get("outerHTML", "")
+                if outer:
+                    import re
+                    tag_count = outer.count("<")
+                    text = re.sub(r'<[^>]+>', ' ', outer).strip()
+                    text = ' '.join(text.split())
+                    if text:
+                        if tag_count <= 5:
+                            return f"Text for ref #{ref} ({role} \"{name}\"):\n{text}"
+                        return (f"Text for ref #{ref} ({role} \"{name}\"):\n{text[:5000]}\n"
+                                "(truncated — call browser_snapshot(ref=N) to drill into child refs)")
+            except Exception as e:
+                logger.warning("CDP getOuterHTML for ref %d failed: %s", ref, e)
+
+        # fallback 1: _text_content (CDP enrichment에서 저장된 값)
+        text_content = node.get("_text_content", "")
+        if text_content:
+            return (f"Text for ref #{ref} ({role} \"{name}\"):\n"
+                    f"{text_content.strip()[:5000]}\n"
+                    "(truncated — call browser_snapshot(ref=N) to drill into child refs)")
+
+        # fallback 2: page.evaluate 로 DOM textContent 직접 추출 (CSS selector)
+        try:
+            selector = node.get("_selector", "")
+            if selector:
                 script = (
-                    f"Array.from(document.querySelectorAll('[role=\"{escaped_role}\"], "
-                    f"{escaped_role}, [href]'))"
-                    f".slice(0, 20).map((el, i) => "
-                    f"'['+i+'] '+(el.textContent||'').trim().substring(0,200))"
+                    f"(document.querySelector('{selector}')"
+                    f"?.outerHTML || '')"
                 )
-                results = await page.evaluate(script)
-                if results:
-                    return f"Text for ref #{ref} ({role} \"{name}\") [DOM fallback]:\n" + "\n".join(results)
-                return f"Text for ref #{ref} ({role} \"{name}\") [DOM fallback]: (empty)"
-            except Exception as e2:
-                return f"Get text by ref #{ref} failed: {e} (fallback: {e2})"
+                outer_qs = await page.evaluate(script)
+                if outer_qs:
+                    import re
+                    tag_count = outer_qs.count("<")
+                    text = re.sub(r'<[^>]+>', ' ', outer_qs).strip()
+                    text = ' '.join(text.split())
+                    if text:
+                        if tag_count <= 5:
+                            return f"Text for ref #{ref} ({role} \"{name}\"):\n{text}"
+                        return (f"Text for ref #{ref} ({role} \"{name}\"):\n{text[:5000]}\n"
+                                "(truncated — call browser_snapshot(ref=N) to drill into child refs)")
+
+            # 최후: role+name 기반 selector (name이 있을 때만)
+            if name:
+                escaped_role = role.replace("'", "\\'")
+                escaped_name = name.replace("'", "\\'")
+                if tag:
+                    sel = f'{tag}[role="{escaped_role}"][aria-label="{escaped_name}"]'
+                else:
+                    sel = f'[role="{escaped_role}"][aria-label="{escaped_name}"]'
+                script = (
+                    f"(document.querySelector('{sel}')"
+                    f"?.outerHTML || '')"
+                )
+                outer_last = await page.evaluate(script)
+                if outer_last:
+                    import re
+                    tag_count = outer_last.count("<")
+                    text = re.sub(r'<[^>]+>', ' ', outer_last).strip()
+                    text = ' '.join(text.split())
+                    if text:
+                        if tag_count <= 5:
+                            return f"Text for ref #{ref} ({role} \"{name}\"):\n{text}"
+                        return (f"Text for ref #{ref} ({role} \"{name}\"):\n{text[:5000]}\n"
+                                "(truncated — call browser_snapshot(ref=N) to drill into child refs)")
+            return f"Text for ref #{ref} ({role} \"{name}\"): (no text found)"
+        except Exception as e:
+            return f"Get text by ref #{ref} failed: {e}"
+
+    async def browser_get_by_ref(self, ref: int, tab_index: Optional[int] = None) -> str:
+        """접근성 트리 ref 번호로 요소의 전체 DOM outerHTML을 가져온다.
+
+        디버깅/테스트 용도: ref가 가리키는 요소의 정확한 DOM 구조를 확인한다.
+        CDP backendNodeId로 정확한 요소를 찾는다.
+
+        Args:
+            ref: browser_snapshot() 결과에 표시된 [#N] 번호
+            tab_index: 대상 탭 인덱스 (None이면 포커스 탭)
+        """
+        session_refs = self._get_session_refs()
+        node = session_refs.get(ref)
+        if node is None:
+            return (f"Get by ref failed: ref #{ref} not found. "
+                    "Call browser_snapshot() first to refresh the tree.")
+
+        page = self._ensure_page(tab_index)
+        role = node.get("role", "")
+        name = node.get("name", "")
+        tag = node.get("tag", "") or node.get("_tag", "")
+        nid = node.get("_id", "")
+        backend_id = node.get("_backendNodeId")
+
+        desc = f"ref #{ref} ({role}"
+        if name:
+            desc += f" \"{name}\""
+        if tag:
+            desc += f" <{tag}>"
+        if nid:
+            desc += f" #{nid}"
+        desc += ")"
+
+        if backend_id is not None:
+            try:
+                cdp = await page.context.new_cdp_session(page)
+                result = await cdp.send("DOM.getOuterHTML", {
+                    "backendNodeId": backend_id,
+                })
+                outer = result.get("outerHTML", "")
+                if outer:
+                    if len(outer) > 10000 and outer.count("<") > 5:
+                        return (f"DOM for {desc}:\n{outer[:10000]}\n"
+                                "... (truncated — call browser_snapshot(ref=N) to drill into child refs)")
+                    return f"DOM for {desc}:\n{outer}"
+            except Exception as e:
+                logger.warning("CDP getOuterHTML for ref %d failed: %s", ref, e)
+
+        # fallback: CSS selector로 outerHTML 추출
+        try:
+            selector = node.get("_selector", "")
+            if selector:
+                script = (
+                    f"(document.querySelector('{selector}')?.outerHTML || '')"
+                )
+                outer = await page.evaluate(script)
+                if outer:
+                    if len(outer) > 10000 and outer.count("<") > 5:
+                        return (f"DOM for {desc} (via selector):\n{outer[:10000]}\n"
+                                "... (truncated — call browser_snapshot(ref=N) to drill into child refs)")
+                    return f"DOM for {desc} (via selector):\n{outer}"
+        except Exception as e:
+            logger.warning("Selector fallback for ref %d failed: %s", ref, e)
+
+        return f"DOM for {desc}: (element not found)"
 
     async def browser_screenshot(
         self,

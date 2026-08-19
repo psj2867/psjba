@@ -2,13 +2,16 @@
 
 import logging
 import re
-from typing import Optional
+from typing import Any, Optional
 
 from playwright.async_api import Locator, Page
 
 logger = logging.getLogger("psjba.browser.self_healing")
 
 MAX_CONSECUTIVE_FAILURES = 3
+
+# CSS 클래스명으로 안전한 문자만: [a-zA-Z0-9_-]
+_SAFE_CLASS_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 
 
 def _css_to_possible_xpath(css_selector: str) -> str:
@@ -66,6 +69,77 @@ class SelfHealingSelector:
 
     def should_give_up(self) -> bool:
         return self._consecutive_failures >= MAX_CONSECUTIVE_FAILURES
+
+    async def make_unique_selector(
+        self,
+        cdp: Any,
+        root_id: int,
+        selector: str,
+        node: dict[str, Any],
+    ) -> str:
+        """중복 CSS 선택자를 unique하게 만든다.
+
+        CDP DOM.querySelectorAll 로 개수 체크 (eval 없음),
+        1개 초과 시에만 page.evaluate 로 textContent / aria-label 비교.
+
+        Args:
+            cdp: CDP 세션
+            root_id: DOM.getDocument 의 root nodeId
+            selector: 중복 가능성이 있는 CSS 선택자
+            node: 접근성 트리 노드 (name, _text_content, _aria_label 등)
+
+        Returns:
+            unique CSS 선택자 (중복이 없으면 원본 그대로)
+        """
+        try:
+            qr = await cdp.send("DOM.querySelectorAll", {
+                "nodeId": root_id, "selector": selector,
+            })
+            nids = qr.get("nodeIds", [])
+        except Exception as e:
+            logger.debug("make_unique_selector: querySelectorAll failed: %s", e)
+            return selector
+        if len(nids) <= 1:
+            return selector
+
+        # 여러 match → textContent / aria-label / 순서로 unique
+        name = node.get("name", "") or node.get("_text_content", "") or ""
+        aria_label = node.get("_aria_label", "")
+
+        # name이 있으면 textContent matching
+        if name:
+            try:
+                escaped = name.replace("'", "\\'").replace("\\", "\\\\")
+                idx = await self._page.evaluate(f"""(() => {{
+                    const t = '{escaped}';
+                    const nodes = document.querySelectorAll('{selector}');
+                    for (let i = 0; i < nodes.length; i++)
+                        if ((nodes[i].textContent || '').trim() === t) return i;
+                    return -1;
+                }})()""")
+                if idx >= 0:
+                    return f"{selector}:nth-of-type({idx + 1})"
+            except Exception as e:
+                logger.debug("make_unique_selector: text content eval failed: %s", e)
+            return selector
+
+        # name 없음 → aria-label matching
+        if aria_label:
+            try:
+                escaped = aria_label.replace("'", "\\'").replace("\\", "\\\\")
+                idx = await self._page.evaluate(f"""(() => {{
+                    const t = '{escaped}';
+                    const nodes = document.querySelectorAll('{selector}');
+                    for (let i = 0; i < nodes.length; i++)
+                        if ((nodes[i].getAttribute('aria-label') || '').trim() === t) return i;
+                    return -1;
+                }})()""")
+                if idx >= 0:
+                    return f"{selector}:nth-of-type({idx + 1})"
+            except Exception as e:
+                logger.debug("make_unique_selector: aria-label eval failed: %s", e)
+
+        return selector
 
     async def find_element(
         self,
@@ -175,5 +249,6 @@ class SelfHealingSelector:
         try:
             locator = self._page.get_by_role(role)
             return locator
-        except Exception:
+        except Exception as e:
+            logger.debug("_try_role failed for role=%r: %s", role, e)
             return None

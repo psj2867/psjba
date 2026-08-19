@@ -9,12 +9,13 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QMessageBox,
     QPushButton,
     QVBoxLayout,
     QWidget,
 )
 
-from src.browser.manager import PlaywrightManager
+from src.browser.manager import PlaywrightManager, ExtensionError
 from src.config import Config
 from src.database import Database
 from src.ui.chat_widget import ChatWidget
@@ -141,7 +142,7 @@ class MainWindow(QMainWindow):
     # ─── 폰트 크기 ──────────────────────────────────────────────
 
     def _apply_font_size(self) -> None:
-        size = int(self._config.get("ui", "font_size", 14))
+        size = int(self._config.get("ui", "font_size"))
         font = QFont()
         font.setPointSize(size)
         self.setFont(font)
@@ -204,28 +205,31 @@ class MainWindow(QMainWindow):
     def _connect_chrome(self) -> None:
         self._set_chrome_status("connecting")
         logger.debug("Chrome connect requested, launching...")
+        self._run_async_background(
+            self._manager.connect(launch_if_needed=True),
+            self._on_connect_done,
+        )
 
-        async def _do():
-            logger.debug("Calling manager.connect(launch_if_needed=True)...")
-            result = await self._manager.connect(launch_if_needed=True)
-            logger.debug("manager.connect returned: %s", result)
-            return "Chrome connected" in result or "Already" in result
-
-        self._run_async_background(_do(), self._on_connect_done)
-
-    def _on_connect_done(self, connected: bool) -> None:
-        logger.debug("Chrome connect result: connected=%s", connected)
-        if connected:
-            self._set_chrome_status("connected")
+    def _on_connect_done(self, result) -> None:
+        """connect() 완료 후 호출. result는 성공 시 str, 실패 시 예외."""
+        if isinstance(result, ExtensionError):
+            QMessageBox.warning(self, "Chrome 연결 오류", str(result))
+        elif isinstance(result, Exception):
+            QMessageBox.critical(
+                self, "Chrome 연결 실패",
+                f"Chrome 연결 중 오류가 발생했습니다:\n{result}",
+            )
         else:
-            self._set_chrome_status("disconnected")
+            self._set_chrome_status("connected")
+            return
+        self._set_chrome_status("disconnected")
 
     def _disconnect_chrome(self) -> None:
-        async def _do():
-            await self._manager.disconnect()
-            return False
-
-        self._run_async_background(_do(), self._on_connect_done)
+        """Chrome 연결을 해제한다."""
+        self._run_async_background(
+            self._manager.disconnect(),
+            lambda _: self._set_chrome_status("disconnected"),
+        )
 
     def _set_chrome_status(self, status: str) -> None:
         if status == "connected":
@@ -253,12 +257,12 @@ class MainWindow(QMainWindow):
     def _on_config_saved(self) -> None:
         logger.debug("Config saved")
         self._manager.update_config(
-            cdp_host=self._config.get("cdp", "host", "127.0.0.1"),
-            cdp_port=self._config.get("cdp", "port", 9222),
-            chrome_path=self._config.get("chrome", "path", ""),
-            user_data_dir=self._config.get("chrome", "user_data_dir", ""),
-            headless=self._config.get("chrome", "headless", False),
-            workspace_dir=self._config.get("workspace", "workspace_dir", "./psjba_temp"),
+            cdp_host=self._config.get("cdp", "host"),
+            cdp_port=self._config.get("cdp", "port"),
+            chrome_path=self._config.get("chrome", "path"),
+            user_data_dir=self._config.get("chrome", "user_data_dir"),
+            headless=self._config.get("chrome", "headless"),
+            workspace_dir=self._config.get("workspace", "workspace_dir"),
         )
         # 설정 저장 후 Chrome 연결 재시도 (API 키가 이제 설정됨)
         if not self._manager.is_connected:
@@ -359,7 +363,7 @@ class MainWindow(QMainWindow):
                 result = None
             except Exception as e:
                 logger.error("Background task error: %s [%s]", e, type(e).__name__)
-                result = None
+                result = e  # 예외 객체를 그대로 콜백에 전달
             if callback:
                 from PySide6.QtCore import QTimer
                 QTimer.singleShot(0, lambda r=result: callback(r))

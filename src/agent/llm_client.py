@@ -20,11 +20,20 @@ class LLMClient:
 
     def __init__(self, config: Config) -> None:
         api_key = config.api_key
-        model = config.get("llm", "model", "qwen/qwen3.6-27b")
-        base_url = config.get("llm", "url", "https://openrouter.ai/api/v1")
-        temperature = config.get("llm", "temperature", 0.0)
-        max_tokens = config.get("llm", "max_tokens", 4096)
-        timeout = config.get("llm", "timeout", 60)
+        model = str(config.get("llm", "model")).strip()
+        base_url = config.get("llm", "url")
+        temperature = config.get("llm", "temperature")
+        max_tokens = config.get("llm", "max_tokens")
+        timeout = config.get("llm", "timeout")
+
+        if not model:
+            raise ValueError(
+                "LLM model is not configured. Open [⚙️ Settings] → [LLM] tab "
+                "and enter a model name (e.g. deepseek/deepseek-v4-flash).\n\n"
+                "⚠️ OpenRouter auto-selects a random model when model is empty. "
+                "This causes unexpected models (kimi, opus, etc.) to be used — "
+                "and wastes tokens. Please set the model explicitly."
+            )
 
         if not api_key:
             logger.warning("API key is empty, LLM calls will fail")

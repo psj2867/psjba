@@ -17,12 +17,17 @@ from langchain_core.language_models import BaseChatModel
 
 from src.agent.prompts import build_system_prompt
 from src.agent.state import AgentState
-from src.browser.manager import set_session_id as _set_current_session
+from src.browser.manager import set_a11y_session_id as _set_current_session
 
 logger = logging.getLogger("psjba.agent.nodes")
 
 ERROR_KEYWORDS = ("error", "failed", "exception", "not found", "timeout")
 MIN_KEEP_MESSAGES = 10
+
+# 과거 ToolMessage 내용 최대 길이 (token 최적화: 오래된 snapshot 등 대용량 결과 잘라냄)
+MAX_OLD_TOOL_RESULT_CHARS = 1500
+# 이 최근 N개 ToolMessage는 잘라내지 않음 (현재 작업 컨텍스트 보존)
+KEEP_RECENT_TOOL_MSGS = 4
 
 # browser_execute_script no-op 패턴: 실제 JS 문장이 없는 경우
 _NOOP_SCRIPT_RE = re.compile(
@@ -93,7 +98,32 @@ def _apply_sliding_window(
         return messages
 
     result = system_msgs + trimmed
+    _truncate_old_tool_results(result)
     return result
+
+
+def _truncate_old_tool_results(messages: list[BaseMessage]) -> None:
+    """오래된 ToolMessage의 대용량 결과를 잘라내 token을 절약한다.
+
+    최근 KEEP_RECENT_TOOL_MSGS개는 보존 (현재 작업 컨텍스트), 그 이전 것은
+    MAX_OLD_TOOL_RESULT_CHARS 초과 시 앞부분 유지 + 생략 표시.
+
+    Args:
+        messages: 슬라이딩 윈도우 적용 후 메시지 리스트 (in-place 수정)
+    """
+    if not messages:
+        return
+    tool_msg_indices = [
+        i for i, m in enumerate(messages)
+        if isinstance(m, ToolMessage) and m.content
+    ]
+    for i in tool_msg_indices[:-KEEP_RECENT_TOOL_MSGS] if len(tool_msg_indices) > KEEP_RECENT_TOOL_MSGS else []:
+        content = messages[i].content
+        if isinstance(content, str) and len(content) > MAX_OLD_TOOL_RESULT_CHARS:
+            messages[i].content = (
+                content[:MAX_OLD_TOOL_RESULT_CHARS]
+                + f"\n...[truncated {len(content) - MAX_OLD_TOOL_RESULT_CHARS} chars]"
+            )
 
 
 _TOOL_NAME_PATTERN = re.compile(
@@ -111,7 +141,7 @@ _TOOL_NAME_PATTERN = re.compile(
 def _detect_text_tool_call(content: str) -> Optional[str]:
     """모델이 텍스트로 도구 이름만 출력했는지 감지한다.
 
-    예: "browser_snapshot()" 또는 "chrome_health" 형태의 텍스트.
+    예: "browser_snapshot()" 또는 "browser_infos" 형태의 텍스트.
     tool_call 을 해야 하는데 텍스트로 출력한 경우를 식별.
 
     Returns:
@@ -133,6 +163,89 @@ def _extract_finish_reason(response: BaseMessage) -> str:
     return f"finish_reason={finish_reason}" if finish_reason else ""
 
 
+def _extract_response_model(response: BaseMessage) -> str:
+    """응답을 실제로 처리한 모델명을 추출한다.
+
+    OpenRouter/OpenAI는 응답 body의 "model" 필드에 실제 처리 모델을 담아준다.
+    langchain-openai가 이를 response_metadata["model_name"]으로 넣는다.
+
+    Args:
+        response: LLM 응답 메시지
+
+    Returns:
+        실제 응답 모델명, 또는 요청 모델명/빈 문자열
+    """
+    meta = getattr(response, "response_metadata", {}) or {}
+    model = meta.get("model_name", "") or ""
+    return str(model)
+
+
+def _format_usage_info(usage: dict, headers: Optional[dict] = None) -> str:
+    """OpenRouter/OpenAI token usage + cost + cache 정보를 로그 문자열로 만든다.
+
+    OpenRouter는 usage 객체에 cost 필드를 함께 준다:
+    - total_cost / prompt_cost / completion_cost (USD)
+    - prompt_cache_hit_tokens / prompt_cache_miss_tokens
+    - prompt_tokens_details.cached_tokens / completion_tokens_details.reasoning_tokens
+    또한 헤더에 X-Request-Costs-Usd, X-Total-Credits-Used/Limit 제공.
+
+    Args:
+        usage: response_metadata["token_usage"] (원시 response.usage dict)
+        headers: response_metadata["headers"] (있는 경우)
+
+    Returns:
+        "[in=100, out=50, total=150, cache_hit=60, cost=$0.0003]" 형태
+    """
+    parts: list[str] = []
+    if usage.get("prompt_tokens") is not None:
+        parts.append(f"in={usage['prompt_tokens']}")
+    if usage.get("completion_tokens") is not None:
+        parts.append(f"out={usage['completion_tokens']}")
+    if usage.get("total_tokens") is not None:
+        parts.append(f"total={usage['total_tokens']}")
+
+    cache_hit = usage.get("prompt_cache_hit_tokens")
+    if cache_hit is None:
+        details = usage.get("prompt_tokens_details") or {}
+        cache_hit = details.get("cached_tokens")
+    if cache_hit:
+        parts.append(f"cache_hit={cache_hit}")
+    cache_miss = usage.get("prompt_cache_miss_tokens")
+    if cache_miss:
+        parts.append(f"cache_miss={cache_miss}")
+
+    reasoning = (usage.get("completion_tokens_details") or {}).get("reasoning_tokens")
+    if reasoning:
+        parts.append(f"reasoning={reasoning}")
+
+    cost = usage.get("total_cost")
+    if cost is None:
+        cost_details = usage.get("cost_details") or {}
+        cost = cost_details.get("total_cost")
+    if cost is None and headers:
+        # OpenRouter 헤더의 요청 비용 fallback
+        try:
+            header_cost = headers.get("x-request-costs-usd")
+            if header_cost is not None:
+                cost = float(header_cost)
+        except (TypeError, ValueError):
+            cost = None
+    if cost is not None:
+        parts.append(f"cost=${float(cost):.6f}")
+
+    credits_str = ""
+    if headers:
+        used = headers.get("x-total-credits-used")
+        limit = headers.get("x-total-credits-limit")
+        if used is not None:
+            credits_str = f", credits_used={used}"
+            if limit is not None:
+                credits_str += f"/{limit}"
+
+    body = ", ".join(parts)
+    return f"[{body}]{credits_str}" if body or credits_str else ""
+
+
 def _is_tool_error(result: str) -> bool:
     """도구 실행 결과가 오류인지 판단한다."""
     lower = result.lower()
@@ -146,18 +259,8 @@ async def _invoke_llm(
     injected_msgs: Optional[list[BaseMessage]] = None,
     state: Optional[AgentState] = None,
 ) -> dict[str, Any]:
-    """LLM 호출 공통 코어: 슬라이딩 윈도우 → 시스템 프롬프트 → 호출 → 응답.
-
-    Args:
-        messages: 컨텍스트 메시지 (슬라이딩 윈도우 적용 전)
-        llm: 바인딩된 ChatOpenAI 인스턴스
-        max_context_messages: 슬라이딩 윈도우 크기
-        injected_msgs: intervention 등 추가로 붙일 메시지
-        state: 현재 상태 (에러 카운트 증가용, 없으면 0)
-
-    Returns:
-        상태 업데이트 딕셔너리 (messages + 추가)
-    """
+    """LLM 호출 공통 코어: 슬라이딩 윈도우 → 시스템 프롬프트 → 호출 → 응답."""
+    _t = time.monotonic()
     messages = _apply_sliding_window(messages, max_context_messages)
 
     injected_msgs = injected_msgs or []
@@ -171,10 +274,12 @@ async def _invoke_llm(
     system_prompt = build_system_prompt(include_tools=include_tools)
 
     final_messages = [SystemMessage(content=system_prompt)] + messages
+    logger.debug("[TIMING] _invoke_llm prep (window+sysprompt): %.3fs", time.monotonic() - _t)
 
+    req_model = getattr(llm, "model_name", "") or "?"
     logger.info(
         f"call_model: {len(final_messages)} messages "
-        f"(window: {len(messages)} after sliding)"
+        f"(window: {len(messages)} after sliding) [req_model={req_model}]"
     )
 
     # 마지막 메시지(사용자 입력 or 툴 결과) 요약 로그
@@ -199,6 +304,7 @@ async def _invoke_llm(
             logger.info(f"LLM request >> ai{hints}: {last.content[:120]}")
 
     call_start = time.monotonic()
+    logger.debug("[TIMING] _invoke_llm → ainvoke (%.3fs prep)", time.monotonic() - _t)
     logger.debug("LLM call starting...")
 
     try:
@@ -215,27 +321,23 @@ async def _invoke_llm(
 
     call_duration = time.monotonic() - call_start
     finish_str = _extract_finish_reason(response)
+    response_model = _extract_response_model(response)
+    model_str = f"model={response_model}" if response_model else "model=?"
 
-    # token usage
+    # token usage + cost + cache (OpenRouter)
     meta = getattr(response, "response_metadata", {}) or {}
     usage = meta.get("token_usage", {}) or {}
-    tokens_str = ""
-    if usage:
-        parts = []
-        if "prompt_tokens" in usage:
-            parts.append(f"in={usage['prompt_tokens']}")
-        if "completion_tokens" in usage:
-            parts.append(f"out={usage['completion_tokens']}")
-        if "total_tokens" in usage:
-            parts.append(f"total={usage['total_tokens']}")
-        if parts:
-            tokens_str = " [" + ", ".join(parts) + "]"
+    headers = meta.get("headers") or {}
+    usage_str = _format_usage_info(usage, headers)
+    tokens_str = f" {usage_str}" if usage_str else ""
+    if headers:
+        logger.debug("LLM response headers: %s", dict(headers))
 
     has_tool_calls = hasattr(response, "tool_calls") and response.tool_calls
     if has_tool_calls:
         tool_names = [tc["name"] for tc in response.tool_calls]
         log_msg = (
-            f"LLM response ({call_duration:.1f}s){tokens_str}: "
+            f"LLM response ({call_duration:.1f}s) [{model_str}]{tokens_str}: "
             f"{len(response.tool_calls)} tool calls "
             f"→ {tool_names}"
         )
@@ -245,7 +347,7 @@ async def _invoke_llm(
     else:
         content = str(response.content or "").strip()
         log_msg = (
-            f"LLM response ({call_duration:.1f}s){tokens_str}: "
+            f"LLM response ({call_duration:.1f}s) [{model_str}]{tokens_str}: "
             f"\"{content[:200]}\""
         )
         if finish_str:
@@ -271,8 +373,58 @@ async def call_model_user(
     llm: BaseChatModel,
     max_context_messages: int = 30,
     max_tool_calls: int = 30,
+    db: Optional[Any] = None,
 ) -> dict[str, Any]:
-    """사용자 요청용 LLM 호출 — intervention/dialog/경고 포함."""
+    """사용자 요청용 LLM 호출 — history 로드, intervention/dialog/경고 포함.
+
+    Args:
+        state: 현재 에이전트 상태 (session_id, user_text, browser_context 등)
+        llm: 바인딩된 ChatOpenAI 인스턴스
+        max_context_messages: 슬라이딩 윈도우 크기
+        max_tool_calls: 최대 tool call 횟수
+        db: Database 인스턴스 (첫 호출 시 history 로드용)
+    """
+    messages = list(state.get("messages", []))
+
+    # ── 첫 호출: DB에서 history 로드 + user_text/browser_context 로 메시지 구성 ──
+    _t_load = time.monotonic()
+    if not messages and db is not None:
+        session_id = state.get("session_id", "")
+        user_text = state.get("user_text", "")
+        browser_context = state.get("browser_context", "")
+
+        history_rows = await db.get_messages(session_id, limit=999999)
+        # 방금 저장된 user 메시지는 user_text 로 대체하므로 제외
+        if history_rows and history_rows[-1].role == "user":
+            history_rows = history_rows[:-1]
+
+        # user 메시지 기준 슬라이딩 (미리 줄여서 메시지 객체 생성을 최소화)
+        user_indices = [i for i, r in enumerate(history_rows) if r.role == "user"]
+        if len(user_indices) > max_context_messages:
+            keep_from = user_indices[-max_context_messages]
+            history_rows = history_rows[keep_from:]
+
+        for row in history_rows:
+            if row.role == "user":
+                messages.append(HumanMessage(content=row.content))
+            elif row.role == "assistant":
+                messages.append(AIMessage(content=row.content))
+            elif row.role == "tool":
+                messages.append(ToolMessage(content=row.content, tool_call_id=""))
+            elif row.role == "system":
+                messages.append(SystemMessage(content=row.content))
+
+        # browser context → developer message
+        if browser_context and browser_context != "[Browser: not connected]":
+            messages.append(HumanMessage(
+                content=f"[Browser Context]\n{browser_context}",
+                additional_kwargs={"role": "developer"},
+            ))
+
+        # 현재 user text
+        messages.append(HumanMessage(content=user_text))
+        logger.debug("[TIMING] call_model_user history load: %.3fs", time.monotonic() - _t_load)
+
     # ── intervention 큐 확인: 실행 중 사용자 입력을 메시지로 주입 ──
     queue = state.get("intervention_queue")
     injected_msgs: list[BaseMessage] = []
@@ -320,8 +472,6 @@ async def call_model_user(
             "is_final": True,
         }
 
-    messages = list(state.get("messages", []))
-
     # ── 툴콜 한도 경고: max_tool_calls - 5 이하 남았을 때 system role 로 안내 ──
     remaining = max_tool_calls - current_count
     if 0 < remaining <= 5:
@@ -345,8 +495,10 @@ async def call_model_cron(
     llm: BaseChatModel,
     max_context_messages: int = 30,
     max_tool_calls: int = 50,
+    db: Optional[Any] = None,
 ) -> dict[str, Any]:
     """크론/잡 전용 LLM 호출 — intervention/dialog 없이 간결하게."""
+    _ = db  # 크론은 DB history 로드 불필요 (프롬프트가 messages에 직접 주입됨)
     current_count = state.get("tool_call_count", 0)
     try:
         current_count = int(current_count)
@@ -485,8 +637,8 @@ async def execute_tool(
                             f" ⚠️Dialog: tab[{dialogs[0]['tab_index']}] "
                             f"{dialogs[0]['type']} '{dialogs[0].get('message','')}'"
                         )
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Dialog check failed: %s", e)
 
         tool_msg_content = json.dumps(
             {

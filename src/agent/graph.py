@@ -1,6 +1,7 @@
 """LangGraph 그래프 정의 — 에이전트 실행 흐름 구성."""
 
 import logging
+import time
 from functools import partial
 from typing import Any, Callable, Optional, Sequence
 
@@ -47,22 +48,10 @@ def create_agent_graph(
     job_scheduler: Any = None,
     cron_job_id: str = "",
 ) -> StateGraph:
-    """LangGraph 에이전트 그래프를 생성하고 컴파일한다.
-
-    Args:
-        config: 설정 인스턴스 (LLM 설정 포함)
-        manager: 연결된 PlaywrightManager 인스턴스
-        db: Database 인스턴스 (memory_search용)
-        session_id: 현재 세션 ID
-        llm: 사전 생성된 LLM 인스턴스 (None이면 config로 생성)
-        max_context_messages: 슬라이딩 윈도우 크기
-        max_retries: 최대 오류 재시도 횟수
-        cron_job_id: 크론 job ID (크론 전용 도구용)
-
-    Returns:
-        컴파일된 StateGraph
-    """
+    """LangGraph 에이전트 그래프를 생성하고 컴파일한다."""
     from src.agent.llm_client import create_llm
+
+    _t = time.monotonic()
 
     if llm is None:
         llm = create_llm(config)
@@ -71,13 +60,17 @@ def create_agent_graph(
         manager, db=db, session_id=session_id,
         job_scheduler=job_scheduler, cron_job_id=cron_job_id,
     )
+    logger.debug("[TIMING] create_all_tools: %.3fs", time.monotonic() - _t)
 
+    _t2 = time.monotonic()
     tool_dict: dict[str, Any] = {}
     for t in tools:
         tool_dict[t.name] = t
 
     bound_llm = llm.bind_tools(tools, tool_choice="auto")
+    logger.debug("[TIMING] bind_tools: %.3fs", time.monotonic() - _t2)
 
+    _t3 = time.monotonic()
     graph = StateGraph(AgentState)
 
     graph.add_node(
@@ -87,6 +80,7 @@ def create_agent_graph(
             llm=bound_llm,
             max_context_messages=max_context_messages,
             max_tool_calls=max_tool_calls,
+            db=db,
         ),
     )
     graph.add_node(
@@ -121,6 +115,7 @@ def create_agent_graph(
     )
 
     compiled = graph.compile()
+    logger.debug("[TIMING] graph.compile: %.3fs", time.monotonic() - _t3)
     logger.info(
         f"Agent graph compiled: {len(tools)} tools, "
         f"window={max_context_messages}, retries={max_retries}"
