@@ -12,6 +12,8 @@ class AgentState(TypedDict, total=False):
 
     messages: Annotated[list[BaseMessage], add_messages]
     session_id: str
+    user_text: str  # 현재 사용자 프롬프트 원문 (call_model_user가 history와 합쳐 메시지 구성)
+    browser_context: str  # manager.get_browser_context() 결과 (첫 LLM 호출에 developer 메시지로 추가)
     url: str
     page_title: str
     accessibility_tree: str

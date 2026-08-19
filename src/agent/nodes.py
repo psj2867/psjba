@@ -381,8 +381,56 @@ async def call_model_user(
     llm: BaseChatModel,
     max_context_messages: int = 30,
     max_tool_calls: int = 30,
+    db: Optional[Any] = None,
 ) -> dict[str, Any]:
-    """사용자 요청용 LLM 호출 — intervention/dialog/경고 포함."""
+    """사용자 요청용 LLM 호출 — history 로드, intervention/dialog/경고 포함.
+
+    Args:
+        state: 현재 에이전트 상태 (session_id, user_text, browser_context 등)
+        llm: 바인딩된 ChatOpenAI 인스턴스
+        max_context_messages: 슬라이딩 윈도우 크기
+        max_tool_calls: 최대 tool call 횟수
+        db: Database 인스턴스 (첫 호출 시 history 로드용)
+    """
+    messages = list(state.get("messages", []))
+
+    # ── 첫 호출: DB에서 history 로드 + user_text/browser_context 로 메시지 구성 ──
+    if not messages and db is not None:
+        session_id = state.get("session_id", "")
+        user_text = state.get("user_text", "")
+        browser_context = state.get("browser_context", "")
+
+        history_rows = await db.get_messages(session_id, limit=999999)
+        # 방금 저장된 user 메시지는 user_text 로 대체하므로 제외
+        if history_rows and history_rows[-1].role == "user":
+            history_rows = history_rows[:-1]
+
+        # user 메시지 기준 슬라이딩 (미리 줄여서 메시지 객체 생성을 최소화)
+        user_indices = [i for i, r in enumerate(history_rows) if r.role == "user"]
+        if len(user_indices) > max_context_messages:
+            keep_from = user_indices[-max_context_messages]
+            history_rows = history_rows[keep_from:]
+
+        for row in history_rows:
+            if row.role == "user":
+                messages.append(HumanMessage(content=row.content))
+            elif row.role == "assistant":
+                messages.append(AIMessage(content=row.content))
+            elif row.role == "tool":
+                messages.append(ToolMessage(content=row.content, tool_call_id=""))
+            elif row.role == "system":
+                messages.append(SystemMessage(content=row.content))
+
+        # browser context → developer message
+        if browser_context and browser_context != "[Browser: not connected]":
+            messages.append(HumanMessage(
+                content=f"[Browser Context]\n{browser_context}",
+                additional_kwargs={"role": "developer"},
+            ))
+
+        # 현재 user text
+        messages.append(HumanMessage(content=user_text))
+
     # ── intervention 큐 확인: 실행 중 사용자 입력을 메시지로 주입 ──
     queue = state.get("intervention_queue")
     injected_msgs: list[BaseMessage] = []
@@ -455,8 +503,10 @@ async def call_model_cron(
     llm: BaseChatModel,
     max_context_messages: int = 30,
     max_tool_calls: int = 50,
+    db: Optional[Any] = None,
 ) -> dict[str, Any]:
     """크론/잡 전용 LLM 호출 — intervention/dialog 없이 간결하게."""
+    _ = db  # 크론은 DB history 로드 불필요 (프롬프트가 messages에 직접 주입됨)
     current_count = state.get("tool_call_count", 0)
     try:
         current_count = int(current_count)

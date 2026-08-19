@@ -87,6 +87,7 @@ def create_agent_graph(
             llm=bound_llm,
             max_context_messages=max_context_messages,
             max_tool_calls=max_tool_calls,
+            db=db,
         ),
     )
     graph.add_node(

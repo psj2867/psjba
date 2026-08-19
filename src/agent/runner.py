@@ -8,7 +8,6 @@ from typing import Any, AsyncIterator, Optional
 from langchain_core.messages import (
     AIMessage,
     HumanMessage,
-    SystemMessage,
     ToolMessage,
 )
 
@@ -65,27 +64,6 @@ async def handle_prompt(
     user_msg = Message(session_id=session_id, role="user", content=text)
     await db.save_message(user_msg)
 
-    # 슬라이딩 윈도우: user 프롬프트 단위로 리밋, 사이의 모든 메시지 포함
-    slide_window = config.get("agent", "sliding_window_size")
-    history_rows = await db.get_messages(session_id, limit=999999)
-    if history_rows and history_rows[-1].role == "user" and history_rows[-1].content == text:
-        history_rows = history_rows[:-1]
-    user_indices = [i for i, r in enumerate(history_rows) if r.role == "user"]
-    if len(user_indices) > slide_window:
-        keep_from = user_indices[-slide_window]
-        history_rows = history_rows[keep_from:]
-
-    history_messages: list = []
-    for row in history_rows:
-        if row.role == "user":
-            history_messages.append(HumanMessage(content=row.content))
-        elif row.role == "assistant":
-            history_messages.append(AIMessage(content=row.content))
-        elif row.role == "tool":
-            history_messages.append(ToolMessage(content=row.content, tool_call_id=""))
-        elif row.role == "system":
-            history_messages.append(SystemMessage(content=row.content))
-
     # LLMClient 로 httpx 세션 관리 (Python 3.14 GeneratorExit 방지)
     llm_client = None
     try:
@@ -101,26 +79,13 @@ async def handle_prompt(
             job_scheduler=job_scheduler,
         )
 
-        browser_ctx = await manager.get_browser_context()
-        logger.info("Browser context:\n%s", browser_ctx)
-
-        history_developer_msg = None
-        if browser_ctx and browser_ctx != "[Browser: not connected]":
-            history_developer_msg = HumanMessage(
-                content=f"[Browser Context]\n{browser_ctx}",
-                additional_kwargs={"role": "developer"},
-            )
-
-        if history_developer_msg:
-            messages = [*history_messages, history_developer_msg, HumanMessage(content=text)]
-        else:
-            messages = [*history_messages, HumanMessage(content=text)]
-
-        logger.info("User prompt: %s", text[:80])
+        browser_context = await manager.get_browser_context()
+        logger.info("Browser context:\n%s", browser_context)
 
         state = {
-            "messages": messages,
             "session_id": session_id,
+            "user_text": text,
+            "browser_context": browser_context,
             "intervention_queue": window.intervention_queue,
             "url": "",
             "page_title": "",
@@ -132,8 +97,6 @@ async def handle_prompt(
         }
 
         window.show_ai_thinking("🤖 응답 대기 중...")
-
-        input_msg_count = len(state["messages"])
 
         try:
             final_state = None
@@ -148,9 +111,8 @@ async def handle_prompt(
                     final_state = event
                     try:
                         event_msgs = event.get("messages", [])
-                        if event_msgs and len(event_msgs) > input_msg_count:
-                            new_msgs = event_msgs[input_msg_count:]
-                            for m in reversed(new_msgs):
+                        if event_msgs:
+                            for m in reversed(event_msgs):
                                 if m.type != "ai":
                                     continue
                                 content = str(m.content or "").strip()
@@ -163,7 +125,7 @@ async def handle_prompt(
                     if window.stop_requested:
                         logger.warning("Stop requested during agent execution, breaking loop")
                         break
-            input_count = len(state["messages"])
+
             final_messages = final_state.get("messages", []) if final_state else []
         except asyncio.CancelledError:
             logger.warning("Agent execution cancelled (graph astream)")
@@ -183,9 +145,7 @@ async def handle_prompt(
             return
 
         try:
-            new_messages = final_messages[input_count:]
-
-            assistant_msgs = [m for m in new_messages if m.type == "ai"]
+            assistant_msgs = [m for m in final_messages if m.type == "ai"]
             if assistant_msgs:
                 last = assistant_msgs[-1]
                 tool_calls = None
@@ -197,7 +157,7 @@ async def handle_prompt(
                     ]
                 window._chat.finalize_ai_response(str(last.content), tool_calls=tool_calls)
 
-            for msg in new_messages:
+            for msg in final_messages:
                 try:
                     role = "assistant" if msg.type == "ai" else msg.type
                     if role not in ("user", "assistant", "tool", "system"):
