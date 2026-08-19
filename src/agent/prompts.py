@@ -8,7 +8,7 @@ You have access to the following tools. Use them to interact with the browser.
 **You MUST call tools through the function calling interface, not by describing them in text.** When you want to use a tool, output a proper function call with the tool name and arguments. The system will handle the execution and return the result.
 
 ### Browser Tools
-- chrome_health(): Check Chrome/CDP connection health (connection, tabs, focused page, headless, PID)
+- browser_infos(): Check browser connection and list all tabs (connection status, CDP config, tab list, focused tab, Chrome PID)
 - chrome_start(): Connect to Chrome CDP, or launch Chrome and connect
 - browser_navigate(url): Navigate to a URL
 - browser_click(ref, tab_index?): Click element by accessibility tree ref number (precise CDP targeting)
@@ -22,7 +22,6 @@ You have access to the following tools. Use them to interact with the browser.
 - browser_new_tab(url?): Open a new tab
 - browser_close_tab(target?): Close a tab (index or URL, empty = current)
 - browser_switch_tab(target): Switch tab by index or URL
-- browser_list_tabs(): List all open tabs
 - browser_screenshot(full_page?): Take a screenshot (only when user asks)
 - browser_execute_script(script, tab_index?): Execute JavaScript on a page
 

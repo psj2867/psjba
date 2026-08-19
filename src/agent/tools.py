@@ -90,9 +90,9 @@ def create_browser_tools(
         return await manager.browser_switch_tab(target)
 
     @tool
-    async def browser_list_tabs() -> str:
-        """List all open browser tabs with index, URL, and title."""
-        return await manager.browser_list_tabs()
+    async def browser_infos() -> str:
+        """Check browser connection health and list all open tabs. Returns connection status, CDP config, tab list (with focused marker), and Chrome PID. Safe to call even when not connected."""
+        return await manager.browser_infos()
 
     @tool
     async def browser_screenshot(full_page: bool = False, tab_index: Optional[int] = None) -> str:
@@ -119,13 +119,8 @@ def create_browser_tools(
         return await manager.browser_snapshot(tab_index, ref=ref)
 
     @tool
-    async def chrome_health() -> str:
-        """Check Chrome/CDP connection health and get comprehensive browser status. Returns connection status, tab count, focused tab info, CDP settings, headless mode, and Chrome PID if available. Safe to call even when not connected."""
-        return await manager.chrome_health()
-
-    @tool
     async def chrome_start() -> str:
-        """Connect to Chrome CDP, or launch Chrome and connect if not already running. Use this when you need to interact with the browser but chrome_health() shows not connected. Returns connection result with health info on success."""
+        """Connect to Chrome CDP, or launch Chrome and connect if not already running. Use this when you need to interact with the browser but browser_infos() shows not connected. Returns connection result with health info on success."""
         return await manager.chrome_start()
 
     @tool
@@ -173,7 +168,7 @@ def create_browser_tools(
         return datetime.now().strftime(f"%Y-%m-%d %H:%M:%S ({tz_name})")
 
     return [
-        chrome_health,
+        browser_infos,
         chrome_start,
         browser_navigate,
         browser_click,
@@ -187,7 +182,6 @@ def create_browser_tools(
         browser_new_tab,
         browser_close_tab,
         browser_switch_tab,
-        browser_list_tabs,
         browser_screenshot,
         browser_snapshot,
         browser_execute_script,
