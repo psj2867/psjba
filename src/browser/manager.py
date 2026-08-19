@@ -1182,10 +1182,13 @@ class PlaywrightManager:
                 outer = result.get("outerHTML", "")
                 if outer:
                     import re
+                    tag_count = outer.count("<")
                     text = re.sub(r'<[^>]+>', ' ', outer).strip()
-                    text = ' '.join(text.split())[:5000]
+                    text = ' '.join(text.split())
                     if text:
-                        return (f"Text for ref #{ref} ({role} \"{name}\"):\n{text}\n"
+                        if tag_count <= 5:
+                            return f"Text for ref #{ref} ({role} \"{name}\"):\n{text}"
+                        return (f"Text for ref #{ref} ({role} \"{name}\"):\n{text[:5000]}\n"
                                 "(truncated — use browser_snapshot() for full tree)")
             except Exception as e:
                 logger.warning("CDP getOuterHTML for ref %d failed: %s", ref, e)
@@ -1203,12 +1206,19 @@ class PlaywrightManager:
             if selector:
                 script = (
                     f"(document.querySelector('{selector}')"
-                    f"?.textContent || '').trim().substring(0, 5000)"
+                    f"?.outerHTML || '')"
                 )
-                text = await page.evaluate(script)
-                if text:
-                    return (f"Text for ref #{ref} ({role} \"{name}\"):\n{text}\n"
-                            "(truncated — use browser_snapshot() for full tree)")
+                outer_qs = await page.evaluate(script)
+                if outer_qs:
+                    import re
+                    tag_count = outer_qs.count("<")
+                    text = re.sub(r'<[^>]+>', ' ', outer_qs).strip()
+                    text = ' '.join(text.split())
+                    if text:
+                        if tag_count <= 5:
+                            return f"Text for ref #{ref} ({role} \"{name}\"):\n{text}"
+                        return (f"Text for ref #{ref} ({role} \"{name}\"):\n{text[:5000]}\n"
+                                "(truncated — use browser_snapshot() for full tree)")
 
             # 최후: role+name 기반 selector (name이 있을 때만)
             if name:
@@ -1220,12 +1230,19 @@ class PlaywrightManager:
                     sel = f'[role="{escaped_role}"][aria-label="{escaped_name}"]'
                 script = (
                     f"(document.querySelector('{sel}')"
-                    f"?.textContent || '').trim().substring(0, 5000)"
+                    f"?.outerHTML || '')"
                 )
-                text = await page.evaluate(script)
-                if text:
-                    return (f"Text for ref #{ref} ({role} \"{name}\"):\n{text}\n"
-                            "(truncated — use browser_snapshot() for full tree)")
+                outer_last = await page.evaluate(script)
+                if outer_last:
+                    import re
+                    tag_count = outer_last.count("<")
+                    text = re.sub(r'<[^>]+>', ' ', outer_last).strip()
+                    text = ' '.join(text.split())
+                    if text:
+                        if tag_count <= 5:
+                            return f"Text for ref #{ref} ({role} \"{name}\"):\n{text}"
+                        return (f"Text for ref #{ref} ({role} \"{name}\"):\n{text[:5000]}\n"
+                                "(truncated — use browser_snapshot() for full tree)")
             return f"Text for ref #{ref} ({role} \"{name}\"): (no text found)"
         except Exception as e:
             return f"Get text by ref #{ref} failed: {e}"
@@ -1270,7 +1287,7 @@ class PlaywrightManager:
                 })
                 outer = result.get("outerHTML", "")
                 if outer:
-                    if len(outer) > 10000:
+                    if len(outer) > 10000 and outer.count("<") > 5:
                         return (f"DOM for {desc}:\n{outer[:10000]}\n"
                                 "... (truncated — use browser_snapshot() for full tree)")
                     return f"DOM for {desc}:\n{outer}"
@@ -1286,7 +1303,7 @@ class PlaywrightManager:
                 )
                 outer = await page.evaluate(script)
                 if outer:
-                    if len(outer) > 10000:
+                    if len(outer) > 10000 and outer.count("<") > 5:
                         return (f"DOM for {desc} (via selector):\n{outer[:10000]}\n"
                                 "... (truncated — use browser_snapshot() for full tree)")
                     return f"DOM for {desc} (via selector):\n{outer}"
