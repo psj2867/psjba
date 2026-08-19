@@ -999,10 +999,10 @@ async def _enrich_node(cdp_session: Any, node: dict[str, Any]) -> None:
                 text = ' '.join(text.split())  # 연속 공백 제거
                 if text:
                     node["_text_content"] = text[:200]  # 최대 200자
-        except Exception:
-            pass
-    except Exception:
-        pass
+        except Exception as e:
+            logger.debug("_enrich_node: getOuterHTML failed for backendId=%s: %s", backend_id, e)
+    except Exception as e:
+        logger.debug("_enrich_node: describeNode failed for backendId=%s: %s", backend_id, e)
 
 
 # ─── Legacy CDP fallback (getFullAXTree → snapshot) ───

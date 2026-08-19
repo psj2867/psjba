@@ -117,12 +117,32 @@ psjba/                          # ← 워크스페이스 루트
 ### 에러 처리
 - CSS 선택자 실패 시 self-healing (XPath → 텍스트 → aria-label → role 순)
 - 연속 3회 오류 시 self-healing 포기, 사용자 보고 후 종료
+- **`except Exception:`만 잡아서 `pass` 금지.** 반드시 `logger.debug()`(예상된 fallback) 또는
+  `logger.warning()`(예상치 못한 오류)로 예외를 로그에 남길 것.
+  fallback 체인의 일부로 예외 발생이 정상 흐름인 경우만 예외 허용 (예: `DOM.getOuterHTML` 같은
+  best-effort enrichment). 그 외에는 `pass` 대신 최소 `logger.debug(...)`를 남겨야 한다.
 
 ### 보안
 - 파일 접근은 다음 세 경로로만 제한: `config.ini`, `SQLite DB`, `workspace_dir`
 - 시스템 경로 접근 차단 (sandbox.py)
 
-## 6. 작업 순서
+## 6. 책임 분리 규칙
+
+각 모듈은 자기 책임에 집중하고, 다른 모듈의 책임을 대신하지 않는다.
+
+- `browser/accessibility.py`: 접근성 트리 구축, DOM enrichment, ref 맵 생성, selector 빌드용
+  속성(`_nth_of_type`, `_class`, `_id`, `_aria_label` 등) 수집.
+- `browser/self_healing.py`: CSS/XPath self-healing, selector 중복 해소 로직.
+- `browser/manager.py` (`browser_snapshot`): 접근성 트리 텍스트 요청 + ref 저장 + 텍스트 반환.
+  **절대 `page.evaluate()`로 CSS selector 검증/중복 해소를 하지 않는다.**
+  (selector 검증은 `browser_click` 등 실제 사용 시점에 CDP로 한다.)
+- `browser/manager.py` (`browser_click` / `browser_hover`): 실제 요소 조작.
+  selector는 `_build_click_selector(node)`로 필요 시점에 생성하고,
+  중복 해소는 `SelfHealingSelector.make_unique_selector`에 위임.
+- `browser/manager.py` (`_build_click_selector`): static method. refs dict에 저장된
+  속성만으로 CSS selector 문자열을 생성. `page`나 `cdp`에 접근하지 않는다.
+
+## 7. 작업 순서
 
 기획 문서를 읽고 다음 순서로 개발하세요:
 

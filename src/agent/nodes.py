@@ -595,8 +595,8 @@ async def execute_tool(
                             f" ⚠️Dialog: tab[{dialogs[0]['tab_index']}] "
                             f"{dialogs[0]['type']} '{dialogs[0].get('message','')}'"
                         )
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Dialog check failed: %s", e)
 
         tool_msg_content = json.dumps(
             {

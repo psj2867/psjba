@@ -96,7 +96,8 @@ class SelfHealingSelector:
                 "nodeId": root_id, "selector": selector,
             })
             nids = qr.get("nodeIds", [])
-        except Exception:
+        except Exception as e:
+            logger.debug("make_unique_selector: querySelectorAll failed: %s", e)
             return selector
         if len(nids) <= 1:
             return selector
@@ -115,8 +116,8 @@ class SelfHealingSelector:
             }})()""")
             if idx >= 0:
                 return f"{selector}:nth-of-type({idx + 1})"
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("make_unique_selector: text content eval failed: %s", e)
 
         return selector
 
@@ -228,5 +229,6 @@ class SelfHealingSelector:
         try:
             locator = self._page.get_by_role(role)
             return locator
-        except Exception:
+        except Exception as e:
+            logger.debug("_try_role failed for role=%r: %s", role, e)
             return None
