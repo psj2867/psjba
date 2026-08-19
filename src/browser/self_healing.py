@@ -75,18 +75,18 @@ class SelfHealingSelector:
         cdp: Any,
         root_id: int,
         selector: str,
-        name: str,
+        node: dict[str, Any],
     ) -> str:
         """중복 CSS 선택자를 unique하게 만든다.
 
         CDP DOM.querySelectorAll 로 개수 체크 (eval 없음),
-        1개 초과 시에만 1회 page.evaluate 로 textContent 비교.
+        1개 초과 시에만 page.evaluate 로 textContent / aria-label 비교.
 
         Args:
             cdp: CDP 세션
             root_id: DOM.getDocument 의 root nodeId
             selector: 중복 가능성이 있는 CSS 선택자
-            name: 접근성 트리의 name (textContent 비교 기준)
+            node: 접근성 트리 노드 (name, _text_content, _aria_label 등)
 
         Returns:
             unique CSS 선택자 (중복이 없으면 원본 그대로)
@@ -102,22 +102,42 @@ class SelfHealingSelector:
         if len(nids) <= 1:
             return selector
 
-        if not name:
+        # 여러 match → textContent / aria-label / 순서로 unique
+        name = node.get("name", "") or node.get("_text_content", "") or ""
+        aria_label = node.get("_aria_label", "")
+
+        # name이 있으면 textContent matching
+        if name:
+            try:
+                escaped = name.replace("'", "\\'").replace("\\", "\\\\")
+                idx = await self._page.evaluate(f"""(() => {{
+                    const t = '{escaped}';
+                    const nodes = document.querySelectorAll('{selector}');
+                    for (let i = 0; i < nodes.length; i++)
+                        if ((nodes[i].textContent || '').trim() === t) return i;
+                    return -1;
+                }})()""")
+                if idx >= 0:
+                    return f"{selector}:nth-of-type({idx + 1})"
+            except Exception as e:
+                logger.debug("make_unique_selector: text content eval failed: %s", e)
             return selector
 
-        try:
-            escaped = name.replace("'", "\\'").replace("\\", "\\\\")
-            idx = await self._page.evaluate(f"""(() => {{
-                const t = '{escaped}';
-                const nodes = document.querySelectorAll('{selector}');
-                for (let i = 0; i < nodes.length; i++)
-                    if ((nodes[i].textContent || '').trim() === t) return i;
-                return -1;
-            }})()""")
-            if idx >= 0:
-                return f"{selector}:nth-of-type({idx + 1})"
-        except Exception as e:
-            logger.debug("make_unique_selector: text content eval failed: %s", e)
+        # name 없음 → aria-label matching
+        if aria_label:
+            try:
+                escaped = aria_label.replace("'", "\\'").replace("\\", "\\\\")
+                idx = await self._page.evaluate(f"""(() => {{
+                    const t = '{escaped}';
+                    const nodes = document.querySelectorAll('{selector}');
+                    for (let i = 0; i < nodes.length; i++)
+                        if ((nodes[i].getAttribute('aria-label') || '').trim() === t) return i;
+                    return -1;
+                }})()""")
+                if idx >= 0:
+                    return f"{selector}:nth-of-type({idx + 1})"
+            except Exception as e:
+                logger.debug("make_unique_selector: aria-label eval failed: %s", e)
 
         return selector
 

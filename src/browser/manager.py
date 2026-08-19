@@ -1021,7 +1021,8 @@ class PlaywrightManager:
         if backend_id is not None:
             try:
                 cdp = await page.context.new_cdp_session(page)
-                # pushNodesByBackendIdsToFrontend가 requestNode보다 안정적
+                # pushNodesByBackendIdsToFrontend는 DOM document 필요
+                await cdp.send("DOM.getDocument", {})
                 pn = await cdp.send("DOM.pushNodesByBackendIdsToFrontend", {
                     "backendNodeIds": [backend_id],
                 })
@@ -1054,10 +1055,10 @@ class PlaywrightManager:
                 root_id = doc.get("root", {}).get("nodeId")
                 if root_id:
                     # 중복 선택자 해소 (CDP DOM.querySelectorAll 로 eval 없이)
-                    if selector and name:
+                    if selector:
                         try:
                             selector = await SelfHealingSelector(page).make_unique_selector(
-                                cdp, root_id, selector, name,
+                                cdp, root_id, selector, node,
                             )
                         except Exception as e:
                             logger.debug("browser_click: make_unique_selector failed: %s", e)
@@ -1108,7 +1109,7 @@ class PlaywrightManager:
                     result += f"\n⚠️ Dialog recorded: [{d['type']}] {d.get('message','')}"
                 return result
         except Exception as e:
-            pass  # fallthrough
+            logger.debug("browser_click: PW locator failed for %s: %s", click_desc, e)
 
         # 3차: SelfHealingSelector (name이 있어야 의미 있음)
         try:
@@ -1120,7 +1121,9 @@ class PlaywrightManager:
                     "", text=name, role=role, aria_label=name,
                 )
             elif selector:
-                locator2 = await healing.find_element(selector)
+                locator2 = await healing.find_element(
+                    selector, role=role, text=node.get("_text_content", ""),
+                )
             if locator2 is None:
                 total_elapsed = int((time.monotonic() - t0) * 1000)
                 logger.error("browser_click: all strategies failed for %s (%dms)",
