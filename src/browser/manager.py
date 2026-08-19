@@ -1171,7 +1171,8 @@ class PlaywrightManager:
                     text = re.sub(r'<[^>]+>', ' ', outer).strip()
                     text = ' '.join(text.split())[:5000]
                     if text:
-                        return f"Text for ref #{ref} ({role} \"{name}\"):\n{text}"
+                        return (f"Text for ref #{ref} ({role} \"{name}\"):\n{text}\n"
+                                "(truncated — use browser_snapshot() for full tree)")
             except Exception as e:
                 logger.warning("CDP getOuterHTML for ref %d failed: %s", ref, e)
 
@@ -1179,7 +1180,8 @@ class PlaywrightManager:
         text_content = node.get("_text_content", "")
         if text_content:
             return (f"Text for ref #{ref} ({role} \"{name}\"):\n"
-                    f"{text_content.strip()[:5000]}")
+                    f"{text_content.strip()[:5000]}\n"
+                    "(truncated — use browser_snapshot() for full tree)")
 
         # fallback 2: page.evaluate 로 DOM textContent 직접 추출 (CSS selector)
         try:
@@ -1191,7 +1193,8 @@ class PlaywrightManager:
                 )
                 text = await page.evaluate(script)
                 if text:
-                    return f"Text for ref #{ref} ({role} \"{name}\"):\n{text}"
+                    return (f"Text for ref #{ref} ({role} \"{name}\"):\n{text}\n"
+                            "(truncated — use browser_snapshot() for full tree)")
 
             # 최후: role+name 기반 selector (name이 있을 때만)
             if name:
@@ -1207,7 +1210,8 @@ class PlaywrightManager:
                 )
                 text = await page.evaluate(script)
                 if text:
-                    return f"Text for ref #{ref} ({role} \"{name}\"):\n{text}"
+                    return (f"Text for ref #{ref} ({role} \"{name}\"):\n{text}\n"
+                            "(truncated — use browser_snapshot() for full tree)")
             return f"Text for ref #{ref} ({role} \"{name}\"): (no text found)"
         except Exception as e:
             return f"Get text by ref #{ref} failed: {e}"
@@ -1253,7 +1257,8 @@ class PlaywrightManager:
                 outer = result.get("outerHTML", "")
                 if outer:
                     if len(outer) > 10000:
-                        outer = outer[:10000] + "\n... (truncated 10000 chars)"
+                        return (f"DOM for {desc}:\n{outer[:10000]}\n"
+                                "... (truncated — use browser_snapshot() for full tree)")
                     return f"DOM for {desc}:\n{outer}"
             except Exception as e:
                 logger.warning("CDP getOuterHTML for ref %d failed: %s", ref, e)
@@ -1268,7 +1273,8 @@ class PlaywrightManager:
                 outer = await page.evaluate(script)
                 if outer:
                     if len(outer) > 10000:
-                        outer = outer[:10000] + "\n... (truncated 10000 chars)"
+                        return (f"DOM for {desc} (via selector):\n{outer[:10000]}\n"
+                                "... (truncated — use browser_snapshot() for full tree)")
                     return f"DOM for {desc} (via selector):\n{outer}"
         except Exception as e:
             logger.warning("Selector fallback for ref %d failed: %s", ref, e)
