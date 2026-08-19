@@ -646,10 +646,11 @@ class PlaywrightManager:
 
     @staticmethod
     async def refine_unique_selector(
-        cdp: Any, root_id: int, selector: str, name: str
+        cdp: Any, root_id: int, selector: str, name: str, page: Any = None
     ) -> str:
         """querySelectorAll 중복 시 name(textContent)으로 유일한 선택자로 좁힌다.
-        CDP DOM.querySelectorAll → DOM.getOuterHTML 순으로 page.evaluate 없이 처리.
+        CDP DOM.querySelectorAll로 먼저 개수 체크 (eval 없음),
+        1개 초과 시에만 1회 page.evaluate로 textContent 매칭.
         """
         try:
             qr = await cdp.send("DOM.querySelectorAll", {
@@ -661,20 +662,21 @@ class PlaywrightManager:
         if len(nids) <= 1:
             return selector
 
-        # name으로 unique textContent 매치 시도 (CDP DOM.getOuterHTML → innerText 추출)
-        if name:
-            import re
-            name_clean = name.strip()
-            for i, nid in enumerate(nids):
-                try:
-                    html_res = await cdp.send("DOM.getOuterHTML", {"nodeId": nid})
-                    outer = html_res.get("outerHTML", "")
-                    # 태그 제거하고 순수 텍스트만
-                    text = re.sub(r'<[^>]+>', '', outer).strip()
-                    if text == name_clean or name_clean in text:
-                        return f"{selector}:nth-of-type({i + 1})"
-                except Exception:
-                    continue
+        # 중복 시: 1회 evaluate로 textContent 매칭 인덱스 찾기
+        if name and page is not None:
+            try:
+                escaped = name.replace("'", "\\'").replace("\\", "\\\\")
+                idx = await page.evaluate(f"""(() => {{
+                    const t = '{escaped}';
+                    const nodes = document.querySelectorAll('{selector}');
+                    for (let i = 0; i < nodes.length; i++)
+                        if ((nodes[i].textContent || '').trim() === t) return i;
+                    return -1;
+                }})()""")
+                if idx >= 0:
+                    return f"{selector}:nth-of-type({idx + 1})"
+            except Exception:
+                pass
 
         return selector  # 최후의 선택
 
@@ -1304,7 +1306,7 @@ class PlaywrightManager:
                     if selector and name:
                         try:
                             selector = await self.refine_unique_selector(
-                                cdp, root_id, selector, name,
+                                cdp, root_id, selector, name, page=page,
                             )
                         except Exception:
                             pass
