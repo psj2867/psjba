@@ -234,6 +234,7 @@ def _format_node(
             "_aria_label": node.get("_aria_label", ""),
             "_backendNodeId": node.get("_backendNodeId"),
             "_text_content": (node.get("_text_content", "") or "")[:500],
+            "_nth_of_type": node.get("_nth_of_type", 0),
         }
 
     # detail 모드에서 추가 정보
@@ -335,6 +336,28 @@ async def _format_tree(
         lines.append(formatted)
 
     children = snapshot.get("children", [])
+
+    # 같은 부모 아래 (tag, role) 쌍별 sibling count — nth-of-type 용
+    type_counts: dict[tuple[str, str], int] = {}
+    for child in children:
+        cr = child.get("role", "")
+        ct = (child.get("tag", "") or child.get("_tag", "")).lower()
+        if cr or ct:
+            key = (ct, cr)
+            type_counts[key] = type_counts.get(key, 0) + 1
+
+    # nth-of-type 인덱스를 각 child dict에 기록
+    type_used: dict[tuple[str, str], int] = {}
+    for child in children:
+        cr = child.get("role", "")
+        ct = (child.get("tag", "") or child.get("_tag", "")).lower()
+        key = (ct, cr)
+        if type_counts.get(key, 0) > 1:
+            type_used[key] = type_used.get(key, 0) + 1
+            child["_nth_of_type"] = type_used[key]
+        else:
+            child["_nth_of_type"] = 0
+
     _IMAGE_ROLES = {"image", "img", "graphic", "icon"}
 
     # 연속 image 그루핑
