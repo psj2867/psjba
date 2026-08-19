@@ -444,6 +444,7 @@ class PlaywrightManager:
         logger.info("browser_close_tab: target=%s", target)
         """탭을 닫는다. target이 없으면 현재 탭. target은 인덱스(0-base) 또는 URL."""
         self._ensure_connected()
+        assert self._context is not None
         if not self._tabs:
             return "No tabs to close"
 
@@ -538,19 +539,35 @@ class PlaywrightManager:
                     logger.debug("_refresh_tabs: tab %d ext attribute eval failed: %s", i, e)
                     continue
 
-    async def browser_list_tabs(self) -> str:
-        logger.info("browser_list_tabs called")
-        """현재 열린 탭 목록을 반환한다."""
-        self._ensure_connected()
-        await self._refresh_tabs()
-        lines: list[str] = []
-        for i, tab in enumerate(self._tabs):
-            await tab.update_info()
-            if i == self._focused_tab_index:
-                lines.append(f"  [{i}] {tab.url} - {tab.title} ◀ FOCUSED")
-            else:
-                lines.append(f"  [{i}] {tab.url} - {tab.title}")
-        return "Open tabs:\n" + "\n".join(lines) if lines else "No tabs open"
+    async def browser_infos(self) -> str:
+        """브라우저 연결 상태, 탭 목록, Chrome 정보를 종합해서 반환한다."""
+        info: dict[str, Any] = {
+            "connected": self._connected,
+            "cdp_host": self._cdp_host,
+            "cdp_port": self._cdp_port,
+            "headless": self._launcher._headless,
+        }
+
+        if self._connected:
+            await self._refresh_tabs()
+            info["tab_count"] = len(self._tabs)
+
+            tabs_list = []
+            for i, tab in enumerate(self._tabs):
+                await tab.update_info()
+                tabs_list.append({
+                    "index": i,
+                    "url": tab.url,
+                    "title": tab.title,
+                    "focused": i == self._focused_tab_index,
+                })
+            info["tabs"] = tabs_list
+
+        chrome_pid = self._launcher.get_chrome_pid()
+        if chrome_pid is not None:
+            info["chrome_pid"] = chrome_pid
+
+        return json.dumps(info, indent=2, ensure_ascii=False)
 
     # ─── 네비게이션 ──────────────────────────────────────────
 
@@ -786,47 +803,6 @@ class PlaywrightManager:
 
     # ─── 정보 조회 ──────────────────────────────────────────
 
-    async def chrome_health(self) -> str:
-        """Chrome/CDP 연결 상태 및 브라우저 종합 정보를 반환한다.
-
-        연결 여부, 탭 개수, 포커스된 탭 정보, CDP 설정,
-        Chrome 경로 등 브라우저 상태를 한 번에 파악할 수 있다.
-        연결이 안 된 상태에서도 안전하게 호출 가능하다.
-        """
-        info: dict[str, Any] = {
-            "connected": self._connected,
-            "cdp_host": self._cdp_host,
-            "cdp_port": self._cdp_port,
-            "headless": self._launcher._headless,
-        }
-
-        if self._connected:
-            info["tab_count"] = len(self._tabs)
-
-            focused = self._tabs[self._focused_tab_index]
-            await focused.update_info()
-            info["focused_tab"] = {
-                "index": self._focused_tab_index,
-                "url": focused.url,
-                "title": focused.title,
-            }
-
-            tabs_list = []
-            for i, tab in enumerate(self._tabs):
-                await tab.update_info()
-                tabs_list.append({
-                    "index": i,
-                    "url": tab.url,
-                    "title": tab.title,
-                    "focused": i == self._focused_tab_index,
-                })
-            info["tabs"] = tabs_list
-
-        chrome_pid = self._launcher.get_chrome_pid()
-        if chrome_pid is not None:
-            info["chrome_pid"] = chrome_pid
-
-        return json.dumps(info, indent=2, ensure_ascii=False)
 
     async def get_browser_context(self) -> str:
         """현재 브라우저 상태를 사람이 읽기 쉬운 문자열로 반환한다.
@@ -860,7 +836,7 @@ class PlaywrightManager:
 
         result = await self.connect(launch_if_needed=True)
         if self._connected:
-            return f"Chrome started and connected successfully.\n{await self.chrome_health()}"
+            return f"Chrome started and connected successfully.\n{await self.browser_infos()}"
         else:
             return f"Failed to start Chrome: {result}"
 

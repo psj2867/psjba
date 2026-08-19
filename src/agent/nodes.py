@@ -141,7 +141,7 @@ _TOOL_NAME_PATTERN = re.compile(
 def _detect_text_tool_call(content: str) -> Optional[str]:
     """모델이 텍스트로 도구 이름만 출력했는지 감지한다.
 
-    예: "browser_snapshot()" 또는 "chrome_health" 형태의 텍스트.
+    예: "browser_snapshot()" 또는 "browser_infos" 형태의 텍스트.
     tool_call 을 해야 하는데 텍스트로 출력한 경우를 식별.
 
     Returns:
