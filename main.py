@@ -126,15 +126,8 @@ async def run(config: Config) -> None:
     await job_scheduler.start()
     logger.info("Step 5a/10: JobScheduler started")
 
-    await db.conn.execute(
-        "UPDATE psjba_cron_job SET status = 'disable', updated_at = datetime('now') "
-        "WHERE status = 'enable'"
-    )
-    await db.conn.execute(
-        "UPDATE psjba_scheduled_job SET status = 'cancelled' "
-        "WHERE status = 'pending'"
-    )
-    await db.conn.commit()
+    await db.disable_all_cron_jobs()
+    await db.cancel_all_scheduled_jobs()
     logger.info("Step 5c/10: All cron/scheduled jobs disabled at startup")
 
     manager.set_cron_dependencies(db=db, cron_scheduler=cron_scheduler)

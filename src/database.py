@@ -473,6 +473,22 @@ class Database:
         row = await cursor.fetchone()
         return row["notes"] if row else ""
 
+    async def disable_all_cron_jobs(self) -> None:
+        """시작 시 모든 활성 크론 job을 비활성화한다."""
+        await self.conn.execute(
+            "UPDATE psjba_cron_job SET status = 'disable', updated_at = datetime('now') "
+            "WHERE status = 'enable'"
+        )
+        await self.conn.commit()
+
+    async def cancel_all_scheduled_jobs(self) -> None:
+        """시작 시 모든 대기 중인 예약 job을 취소한다."""
+        await self.conn.execute(
+            "UPDATE psjba_scheduled_job SET status = 'cancelled' "
+            "WHERE status = 'pending'"
+        )
+        await self.conn.commit()
+
     async def get_cron_session_logs(
         self,
         cron_job_id: str,
