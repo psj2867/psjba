@@ -1234,10 +1234,12 @@ class PlaywrightManager:
         if backend_id is not None:
             try:
                 cdp = await page.context.new_cdp_session(page)
-                req = await cdp.send("DOM.requestNode", {
-                    "backendNodeId": backend_id,
+                # pushNodesByBackendIdsToFrontend가 requestNode보다 안정적
+                pn = await cdp.send("DOM.pushNodesByBackendIdsToFrontend", {
+                    "backendNodeIds": [backend_id],
                 })
-                node_id = req.get("nodeId")
+                nids = pn.get("nodeIds", [])
+                node_id = nids[0] if nids else None
                 if node_id:
                     ok, cx, cy = await _cdp_dispatch(cdp, node_id)
                     if ok:
@@ -1253,7 +1255,7 @@ class PlaywrightManager:
                             result += f"\n⚠️ Dialog recorded: [{d['type']}] {d.get('message','')}"
                         return result
             except Exception as e:
-                logger.warning("CDP requestNode for %s failed: %s. → CDP re-discovery", click_desc, e)
+                logger.warning("CDP pushNodesByBackendIdsToFrontend for %s failed: %s. → CDP re-discovery", click_desc, e)
 
         # 1.5차: CSS selector로 CDP 재발견 → CDP 클릭 (backendNodeId=null or stale 모두)
         try:
