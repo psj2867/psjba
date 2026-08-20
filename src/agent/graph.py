@@ -3,7 +3,7 @@
 import logging
 import time
 from functools import partial
-from typing import Any, Callable, Optional, Sequence
+from typing import Any, Optional
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage
@@ -27,7 +27,6 @@ logger = logging.getLogger("psjba.agent.graph")
 def _should_continue(state: AgentState) -> str:
     """call_model 이후 라우팅: 마지막 AIMessage에 tool_calls 있으면 execute_tool, 없으면 END."""
     messages = state.get("messages", [])
-    # 가장 마지막 AI 메시지만 확인 (이전 루프의 tool_calls는 무시)
     for msg in reversed(messages):
         if isinstance(msg, AIMessage):
             if hasattr(msg, "tool_calls") and msg.tool_calls:
@@ -36,88 +35,105 @@ def _should_continue(state: AgentState) -> str:
     return "__end__"
 
 
-def create_agent_graph(
-    config: Config,
-    manager: PlaywrightManager,
-    db: Optional[Database] = None,
-    session_id: str = "",
-    llm: Optional[BaseChatModel] = None,
-    max_context_messages: int = 10,
-    max_retries: int = 3,
-    max_tool_calls: int = 30,
-    job_scheduler: Any = None,
-    cron_job_id: str = "",
-) -> StateGraph:
-    """LangGraph 에이전트 그래프를 생성하고 컴파일한다."""
-    from src.agent.llm_client import create_llm
+class AgentGraph:
+    """LangGraph 에이전트 그래프 — 생성/컴파일 1회, 캐싱 후 실행만 반복.
 
-    _t = time.monotonic()
+    사용법:
+        agent = AgentGraph(config=..., manager=..., db=..., llm=..., ...)
 
-    if llm is None:
-        llm = create_llm(config)
+        # 매 프롬프트
+        graph = agent.compiled(session_id=session_id)
+        async for event in graph.astream(state):
+            ...
+    """
 
-    tools = create_all_tools(
-        manager, db=db, session_id=session_id,
-        job_scheduler=job_scheduler, cron_job_id=cron_job_id,
-    )
-    logger.debug("[TIMING] create_all_tools: %.3fs", time.monotonic() - _t)
+    def __init__(
+        self,
+        *,
+        config: Config,
+        manager: PlaywrightManager,
+        db: Optional[Database] = None,
+        llm: BaseChatModel,
+        job_scheduler: Any = None,
+        max_context_messages: int = 10,
+        max_retries: int = 3,
+        max_tool_calls: int = 30,
+    ) -> None:
+        self._config = config
+        self._manager = manager
+        self._db = db
+        self._llm = llm
+        self._job_scheduler = job_scheduler
+        self._max_context_messages = max_context_messages
+        self._max_retries = max_retries
+        self._max_tool_calls = max_tool_calls
+        self._cache: dict[str, Any] = {}
 
-    _t2 = time.monotonic()
-    tool_dict: dict[str, Any] = {}
-    for t in tools:
-        tool_dict[t.name] = t
+    # ── public ─────────────────────────────────────────────────
 
-    bound_llm = llm.bind_tools(tools, tool_choice="auto")
-    logger.debug("[TIMING] bind_tools: %.3fs", time.monotonic() - _t2)
+    def compiled(self, session_id: str, cron_job_id: str = "") -> Any:
+        """세션에 대응하는 compiled graph를 반환한다 (lazy build + cache)."""
+        key = f"{session_id}|{bool(cron_job_id)}"
+        if key not in self._cache:
+            self._cache[key] = self._build(session_id, cron_job_id)
+        return self._cache[key]
 
-    _t3 = time.monotonic()
-    graph = StateGraph(AgentState)
+    # ── build ──────────────────────────────────────────────────
 
-    graph.add_node(
-        "call_model",
-        partial(
-            call_model_cron if cron_job_id else call_model_user,
-            llm=bound_llm,
-            max_context_messages=max_context_messages,
-            max_tool_calls=max_tool_calls,
-            db=db,
-        ),
-    )
-    graph.add_node(
-        "execute_tool",
-        partial(execute_tool, tools=tool_dict, manager=manager),
-    )
-    graph.add_node(
-        "assess_error",
-        partial(assess_error, max_retries=max_retries),
-    )
+    def _build(self, session_id: str, cron_job_id: str = "") -> Any:
+        """실제 그래프를 생성하고 compile한다."""
+        _t0 = time.monotonic()
 
-    graph.set_entry_point("call_model")
+        tools = create_all_tools(
+            self._manager, db=self._db, session_id=session_id,
+            job_scheduler=self._job_scheduler, cron_job_id=cron_job_id,
+        )
+        logger.debug("[TIMING] create_all_tools: %.3fs", time.monotonic() - _t0)
 
-    graph.add_conditional_edges(
-        "call_model",
-        _should_continue,
-        {
-            "execute_tool": "execute_tool",
-            "__end__": END,
-        },
-    )
+        _t1 = time.monotonic()
+        tool_dict: dict[str, Any] = {t.name: t for t in tools}
+        bound_llm = self._llm.bind_tools(tools, tool_choice="auto")
+        logger.debug("[TIMING] bind_tools: %.3fs", time.monotonic() - _t1)
 
-    graph.add_edge("execute_tool", "assess_error")
+        _t2 = time.monotonic()
+        graph = StateGraph(AgentState)
 
-    graph.add_conditional_edges(
-        "assess_error",
-        lambda state: "call_model" if not state.get("is_final") else "__end__",
-        {
-            "call_model": "call_model",
-            "__end__": END,
-        },
-    )
+        graph.add_node(
+            "call_model",
+            partial(
+                call_model_cron if cron_job_id else call_model_user,
+                llm=bound_llm,
+                max_context_messages=self._max_context_messages,
+                max_tool_calls=self._max_tool_calls,
+                db=self._db,
+            ),
+        )
+        graph.add_node(
+            "execute_tool",
+            partial(execute_tool, tools=tool_dict, manager=self._manager),
+        )
+        graph.add_node(
+            "assess_error",
+            partial(assess_error, max_retries=self._max_retries),
+        )
 
-    compiled = graph.compile()
-    logger.debug("[TIMING] graph.compile: %.3fs", time.monotonic() - _t3)
-    logger.info(
-        f"Agent graph compiled: {len(tools)} tools, "
-        f"window={max_context_messages}, retries={max_retries}"
-    )
-    return compiled
+        graph.set_entry_point("call_model")
+        graph.add_conditional_edges(
+            "call_model",
+            _should_continue,
+            {"execute_tool": "execute_tool", "__end__": END},
+        )
+        graph.add_edge("execute_tool", "assess_error")
+        graph.add_conditional_edges(
+            "assess_error",
+            lambda state: "call_model" if not state.get("is_final") else "__end__",
+            {"call_model": "call_model", "__end__": END},
+        )
+
+        compiled = graph.compile()
+        logger.debug("[TIMING] graph.compile: %.3fs", time.monotonic() - _t2)
+        logger.info(
+            f"Agent graph compiled: {len(tools)} tools, "
+            f"window={self._max_context_messages}, retries={self._max_retries}"
+        )
+        return compiled

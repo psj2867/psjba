@@ -34,6 +34,7 @@ class JobScheduler:
         self._manager = manager
         self._scheduler = AsyncIOScheduler()
         self._running: dict[str, asyncio.Task] = {}
+        self._agent: Any = None
 
     @property
     def running_jobs(self) -> list[str]:
@@ -131,7 +132,20 @@ class JobScheduler:
                 )
             )
 
-            graph = self._create_graph(session.id)
+            # AgentGraph lazy init
+            if self._agent is None:
+                from src.agent.llm_client import LLMClient
+                from src.agent.graph import AgentGraph
+                llm_client = LLMClient(self._config)
+                self._agent = AgentGraph(
+                    config=self._config, manager=self._manager, db=self._db,
+                    llm=llm_client.llm, job_scheduler=self,
+                    max_context_messages=int(
+                        self._config.get("agent", "sliding_window_size")
+                    ),
+                )
+
+            graph = self._agent.compiled(session_id=session.id)
             from langchain_core.messages import HumanMessage
 
             state: dict[str, Any] = {
@@ -205,19 +219,6 @@ class JobScheduler:
                 )
         finally:
             self._running.pop(job.id, None)
-
-    def _create_graph(self, session_id: str) -> Any:
-        from src.agent.graph import create_agent_graph
-
-        return create_agent_graph(
-            config=self._config,
-            manager=self._manager,
-            db=self._db,
-            session_id=session_id,
-            max_context_messages=int(
-                self._config.get("agent", "sliding_window_size")
-            ),
-        )
 
     async def _cancel_job(self, job_id: str) -> None:
         task = self._running.get(job_id)

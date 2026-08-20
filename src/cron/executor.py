@@ -34,6 +34,8 @@ class CronExecutor:
         self._db = db
         self._manager = manager
         self._running: dict[str, asyncio.Task] = {}
+        # AgentGraph는 크론에서 llm 없이 생성 → _run에서 LLMClient로 llm 생성 후 주입
+        self._agent: Any = None
 
     @property
     def running_jobs(self) -> list[str]:
@@ -87,8 +89,25 @@ class CronExecutor:
                 job.notes = ""
                 await self._db.update_cron_job(job)
 
-            graph = self._create_graph(session.id, job.id)
             _set_session_context(session.id)
+
+            # AgentGraph lazy init (첫 크론 실행 시)
+            if self._agent is None:
+                from src.agent.llm_client import LLMClient
+                from src.agent.graph import AgentGraph
+                llm_client = LLMClient(self._config)
+                self._agent = AgentGraph(
+                    config=self._config, manager=self._manager, db=self._db,
+                    llm=llm_client.llm, job_scheduler=None,
+                    max_context_messages=self._config.get(
+                        "agent", "sliding_window_size"
+                    ),
+                    max_tool_calls=self._config.get("agent", "cron_tool_calls"),
+                )
+
+            graph = self._agent.compiled(
+                session_id=session.id, cron_job_id=job.id,
+            )
             from langchain_core.messages import HumanMessage, SystemMessage
 
             state_messages: list = [HumanMessage(content=job.prompt)]
@@ -167,21 +186,6 @@ class CronExecutor:
                 )
         finally:
             self._running.pop(job.id, None)
-
-    def _create_graph(self, session_id: str, cron_job_id: str = "") -> Any:
-        from src.agent.graph import create_agent_graph
-
-        return create_agent_graph(
-            config=self._config,
-            manager=self._manager,
-            db=self._db,
-            session_id=session_id,
-            max_context_messages=self._config.get(
-                "agent", "sliding_window_size"
-            ),
-            cron_job_id=cron_job_id,
-            max_tool_calls=self._config.get("agent", "cron_tool_calls"),
-        )
 
     async def _save_message(
         self,
