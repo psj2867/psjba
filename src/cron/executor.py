@@ -93,20 +93,19 @@ class CronExecutor:
 
             # AgentGraph lazy init (첫 크론 실행 시)
             if self._agent is None:
-                from src.agent.llm_client import LLMClient
                 from src.agent.graph import AgentGraph
-                llm_client = LLMClient(self._config)
                 self._agent = AgentGraph(
-                    config=self._config, manager=self._manager, db=self._db,
-                    llm=llm_client.llm, job_scheduler=None,
+                    manager=self._manager, db=self._db,
                     max_context_messages=self._config.get(
                         "agent", "sliding_window_size"
                     ),
                     max_tool_calls=self._config.get("agent", "cron_tool_calls"),
                 )
 
+            from src.agent.llm_client import LLMClient
+            llm_client = LLMClient(self._config)
             graph = self._agent.compiled(
-                session_id=session.id, cron_job_id=job.id,
+                session_id=session.id, llm=llm_client.llm, cron_job_id=job.id,
             )
             from langchain_core.messages import HumanMessage, SystemMessage
 

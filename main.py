@@ -226,13 +226,10 @@ async def run(config: Config) -> None:
     else:
         logger.info("Step 10/10: api_key and model configured")
 
-    # AgentGraph 생성 (LLM 주입 + 캐싱)
+    # AgentGraph 생성 (LLM 주입은 handle_prompt에서)
     from src.agent.graph import AgentGraph
-    from src.agent.llm_client import LLMClient
-    llm_client = LLMClient(config)
     agent = AgentGraph(
-        config=config, manager=manager, db=db,
-        llm=llm_client.llm, job_scheduler=job_scheduler,
+        manager=manager, db=db, job_scheduler=job_scheduler,
         max_context_messages=int(config.get("agent", "sliding_window_size")),
         max_tool_calls=int(config.get("agent", "max_tool_calls")),
     )

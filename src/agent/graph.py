@@ -1,10 +1,25 @@
-"""LangGraph 그래프 정의 — 에이전트 실행 흐름 구성."""
+"""LangGraph 그래프 정의 — 에이전트 실행 흐름 구성.
+
+Architecture
+────────────
+  AgentGraph (러너/크론이 사용)
+    │
+    ├─ compiled(session_id, llm, cron_job_id)
+    │     → _build_cached(session_id, …)    ← @lru_cache(maxsize=32)
+    │     → node.set_llm(bound_llm)         ← bind_tools + 주입 (호출 직전)
+    │     → compiled graph 반환
+    │
+    └─ _build_cached (module-level, hashable param만)
+          → tools 생성
+          → _CallModelNode + StateGraph.compile
+          → (compiled_graph, call_node, tools) 반환
+"""
 
 import functools
 import logging
 import time
 from functools import partial
-from typing import Any, Optional
+from typing import Any
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage
@@ -18,12 +33,17 @@ from src.agent.nodes import (
 )
 from src.agent.state import AgentState
 from src.agent.tools import create_all_tools
-from src.browser.manager import PlaywrightManager
-from src.config import Config
-from src.database import Database
 
 logger = logging.getLogger("psjba.agent.graph")
 
+
+# ── 앱 lifetime singleton (AgentGraph.__init__에서 1회 설정) ────────
+_shared_manager: Any = None
+_shared_db: Any = None
+_shared_scheduler: Any = None
+
+
+# ── 라우팅 ─────────────────────────────────────────────────────────
 
 def _should_continue(state: AgentState) -> str:
     """call_model 이후 라우팅: 마지막 AIMessage에 tool_calls 있으면 execute_tool, 없으면 END."""
@@ -36,14 +56,116 @@ def _should_continue(state: AgentState) -> str:
     return "__end__"
 
 
+# ── 동적 LLM 주입용 call_model 노드 ────────────────────────────────
+
+class _CallModelNode:
+    """call_model 노드 — partial 대신 사용, LLM을 동적으로 주입.
+
+    _build_cached에서 compiled graph에 박히고,
+    AgentGraph.compiled()에서 set_llm()으로 LLM을 주입한다.
+    """
+
+    def __init__(
+        self,
+        is_cron: bool,
+        max_context_messages: int,
+        max_tool_calls: int,
+    ) -> None:
+        self._is_cron = is_cron
+        self._max_context_messages = max_context_messages
+        self._max_tool_calls = max_tool_calls
+        self._llm: Any = None  # set_llm()으로 주입
+
+    def set_llm(self, llm: Any) -> None:
+        self._llm = llm
+
+    async def __call__(self, state: AgentState) -> dict:
+        fn = call_model_cron if self._is_cron else call_model_user
+        return await fn(
+            state,
+            llm=self._llm,
+            max_context_messages=self._max_context_messages,
+            max_tool_calls=self._max_tool_calls,
+            db=_shared_db,
+        )
+
+
+# ── module-level lru_cache 빌드 ────────────────────────────────────
+
+@functools.lru_cache(maxsize=32)
+def _build_cached(
+    session_id: str,
+    is_cron: bool,
+    cron_job_id: str,
+    max_context_messages: int,
+    max_tool_calls: int,
+    max_retries: int,
+) -> tuple:
+    """(compiled_graph, call_node, tool_dict) 를 캐싱하여 반환.
+
+    Hashable param만 받고, 나머지(app-lifetime singleton)는 module global 참조.
+    LLM은 포함되지 않음 → AgentGraph.compiled()에서 set_llm()으로 주입.
+    """
+    _t0 = time.monotonic()
+
+    tools = create_all_tools(
+        _shared_manager, db=_shared_db, session_id=session_id,
+        job_scheduler=_shared_scheduler, cron_job_id=cron_job_id,
+    )
+    logger.debug("[TIMING] create_all_tools: %.3fs", time.monotonic() - _t0)
+
+    tool_dict: dict[str, Any] = {t.name: t for t in tools}
+
+    call_node = _CallModelNode(is_cron, max_context_messages, max_tool_calls)
+
+    _t1 = time.monotonic()
+    graph = StateGraph(AgentState)
+
+    graph.add_node("call_model", call_node)
+    graph.add_node(
+        "execute_tool",
+        partial(execute_tool, tools=tool_dict, manager=_shared_manager),
+    )
+    graph.add_node(
+        "assess_error",
+        partial(assess_error, max_retries=max_retries),
+    )
+
+    graph.set_entry_point("call_model")
+    graph.add_conditional_edges(
+        "call_model",
+        _should_continue,
+        {"execute_tool": "execute_tool", "__end__": END},
+    )
+    graph.add_edge("execute_tool", "assess_error")
+    graph.add_conditional_edges(
+        "assess_error",
+        lambda state: "call_model" if not state.get("is_final") else "__end__",
+        {"call_model": "call_model", "__end__": END},
+    )
+
+    compiled = graph.compile()
+    logger.debug("[TIMING] graph.compile: %.3fs", time.monotonic() - _t1)
+    logger.info(
+        f"Agent graph compiled: {len(tools)} tools, "
+        f"window={max_context_messages}, retries={max_retries}"
+    )
+    return compiled, call_node, tool_dict
+
+
+# ── AgentGraph ─────────────────────────────────────────────────────
+
 class AgentGraph:
-    """LangGraph 에이전트 그래프 — 생성/컴파일 1회, LRU 캐싱 후 실행만 반복.
+    """LangGraph 에이전트 — LRU 캐싱 + LLM 동적 주입.
 
     사용법:
-        agent = AgentGraph(config=..., manager=..., db=..., llm=..., ...)
+        agent = AgentGraph(manager=..., db=..., ...)
 
         # 매 프롬프트
-        graph = agent.compiled(session_id=session_id)
+        graph = agent.compiled(
+            session_id=session_id,
+            llm=llm_client.llm,
+        )
         async for event in graph.astream(state):
             ...
     """
@@ -51,88 +173,39 @@ class AgentGraph:
     def __init__(
         self,
         *,
-        config: Config,
-        manager: PlaywrightManager,
-        db: Optional[Database] = None,
-        llm: BaseChatModel,
+        manager: Any,
+        db: Any = None,
         job_scheduler: Any = None,
         max_context_messages: int = 10,
         max_retries: int = 3,
         max_tool_calls: int = 30,
     ) -> None:
-        self._config = config
-        self._manager = manager
-        self._db = db
-        self._llm = llm
-        self._job_scheduler = job_scheduler
+        global _shared_manager, _shared_db, _shared_scheduler
+        _shared_manager = manager
+        _shared_db = db
+        _shared_scheduler = job_scheduler
+
         self._max_context_messages = max_context_messages
         self._max_retries = max_retries
         self._max_tool_calls = max_tool_calls
-        # lru_cache: (session_id, cron_job_id) → compiled graph (최대 32개)
-        self._compiled = functools.lru_cache(maxsize=32)(self._build)
 
     # ── public ─────────────────────────────────────────────────
 
-    def compiled(self, session_id: str, cron_job_id: str = "") -> Any:
-        """세션에 대응하는 compiled graph를 반환한다 (lazy build + lru_cache)."""
-        return self._compiled(session_id, cron_job_id)
-
-    # ── build ──────────────────────────────────────────────────
-
-    def _build(self, session_id: str, cron_job_id: str = "") -> Any:
-        """실제 그래프를 생성하고 compile한다."""
-        _t0 = time.monotonic()
-
-        tools = create_all_tools(
-            self._manager, db=self._db, session_id=session_id,
-            job_scheduler=self._job_scheduler, cron_job_id=cron_job_id,
+    def compiled(
+        self,
+        session_id: str,
+        llm: BaseChatModel,
+        cron_job_id: str = "",
+    ) -> Any:
+        """캐싱된 compiled graph를 반환한다 (LLM은 호출 직전 주입)."""
+        is_cron = bool(cron_job_id)
+        compiled, call_node, tools = _build_cached(
+            session_id, is_cron, cron_job_id,
+            self._max_context_messages,
+            self._max_tool_calls,
+            self._max_retries,
         )
-        logger.debug("[TIMING] create_all_tools: %.3fs", time.monotonic() - _t0)
-
-        _t1 = time.monotonic()
-        tool_dict: dict[str, Any] = {t.name: t for t in tools}
-        bound_llm = self._llm.bind_tools(tools, tool_choice="auto")
-        logger.debug("[TIMING] bind_tools: %.3fs", time.monotonic() - _t1)
-
-        _t2 = time.monotonic()
-        graph = StateGraph(AgentState)
-
-        graph.add_node(
-            "call_model",
-            partial(
-                call_model_cron if cron_job_id else call_model_user,
-                llm=bound_llm,
-                max_context_messages=self._max_context_messages,
-                max_tool_calls=self._max_tool_calls,
-                db=self._db,
-            ),
-        )
-        graph.add_node(
-            "execute_tool",
-            partial(execute_tool, tools=tool_dict, manager=self._manager),
-        )
-        graph.add_node(
-            "assess_error",
-            partial(assess_error, max_retries=self._max_retries),
-        )
-
-        graph.set_entry_point("call_model")
-        graph.add_conditional_edges(
-            "call_model",
-            _should_continue,
-            {"execute_tool": "execute_tool", "__end__": END},
-        )
-        graph.add_edge("execute_tool", "assess_error")
-        graph.add_conditional_edges(
-            "assess_error",
-            lambda state: "call_model" if not state.get("is_final") else "__end__",
-            {"call_model": "call_model", "__end__": END},
-        )
-
-        compiled = graph.compile()
-        logger.debug("[TIMING] graph.compile: %.3fs", time.monotonic() - _t2)
-        logger.info(
-            f"Agent graph compiled: {len(tools)} tools, "
-            f"window={self._max_context_messages}, retries={self._max_retries}"
-        )
+        # bind_tools + LLM 주입 (호출 직전, ~0.028s)
+        bound_llm = llm.bind_tools(tools, tool_choice="auto")
+        call_node.set_llm(bound_llm)
         return compiled

@@ -134,18 +134,17 @@ class JobScheduler:
 
             # AgentGraph lazy init
             if self._agent is None:
-                from src.agent.llm_client import LLMClient
                 from src.agent.graph import AgentGraph
-                llm_client = LLMClient(self._config)
                 self._agent = AgentGraph(
-                    config=self._config, manager=self._manager, db=self._db,
-                    llm=llm_client.llm, job_scheduler=self,
+                    manager=self._manager, db=self._db, job_scheduler=self,
                     max_context_messages=int(
                         self._config.get("agent", "sliding_window_size")
                     ),
                 )
 
-            graph = self._agent.compiled(session_id=session.id)
+            from src.agent.llm_client import LLMClient
+            llm_client = LLMClient(self._config)
+            graph = self._agent.compiled(session_id=session.id, llm=llm_client.llm)
             from langchain_core.messages import HumanMessage
 
             state: dict[str, Any] = {
