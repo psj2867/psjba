@@ -1,36 +1,33 @@
-"""tests/test_agent_prompts.py — 시스템 프롬프트 테스트."""
+"""tests/test_agent_prompts.py — 시스템 프롬프트 테스트.
 
-from src.agent.prompts import SYSTEM_PROMPT_TEMPLATE, build_system_prompt
+툴 설명은 bind_tools()의 API schema로 전달되므로,
+시스템 프롬프트는 행동 규칙만 담고 있어야 한다.
+"""
+
+from src.agent.prompts import SYSTEM_PROMPT, build_system_prompt
 
 
 class TestSystemPrompt:
-    def test_template_contains_placeholders(self):
-        assert "{accessibility_tree}" in SYSTEM_PROMPT_TEMPLATE
+    def test_constant_name(self):
+        """SYSTEM_PROMPT 상수가 존재하고 문자열이다."""
+        assert isinstance(SYSTEM_PROMPT, str)
+        assert len(SYSTEM_PROMPT) > 100
 
-    def test_build_system_prompt_default(self):
-        prompt = build_system_prompt()
-        assert "(No page loaded)" in prompt
-        assert "browser automation agent" in prompt.lower()
+    def test_build_system_prompt_returns_same(self):
+        """build_system_prompt()은 항상 SYSTEM_PROMPT를 반환한다."""
+        assert build_system_prompt() is SYSTEM_PROMPT
 
-    def test_build_system_prompt_with_tree(self):
-        tree = "[button] \"Click me\"\n  [link] \"here\""
-        prompt = build_system_prompt(accessibility_tree=tree)
-        assert "[button]" in prompt
-        assert "\"Click me\"" in prompt
-        assert "[link]" in prompt
+    def test_no_tool_descriptions(self):
+        """툴 설명 섹션(## Available Tools)이 없어야 함 (bind_tools에 위임).
 
-    def test_contains_tool_list(self):
-        prompt = build_system_prompt()
-        assert "browser_navigate" in prompt
-        assert "browser_click" in prompt
-        assert "browser_snapshot" in prompt
-        assert "browser_screenshot" in prompt
-        assert "cron_add" in prompt
-        assert "memory_search" in prompt
+        규칙에서 tool 이름을 언급하는 건 OK (예: "browser_click(ref)"),
+        별도의 툴 설명 목록 섹션이 없어야 한다.
+        """
+        assert "## Available Tools" not in SYSTEM_PROMPT
+        assert "### Browser Tools" not in SYSTEM_PROMPT
+        assert "### Cron Tools" not in SYSTEM_PROMPT
 
     def test_contains_rules(self):
-        prompt = build_system_prompt()
-        assert "CSS selectors" in prompt
-        assert "self-healing" in prompt
-        assert "Max 3 retries" in prompt or "3 retries" in prompt
-        assert "memory_search" in prompt
+        """핵심 행동 규칙이 포함되어야 함."""
+        assert "browser automation agent" in SYSTEM_PROMPT.lower()
+        assert "Max 3 retries" in SYSTEM_PROMPT or "3 retries" in SYSTEM_PROMPT

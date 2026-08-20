@@ -47,7 +47,7 @@ def _apply_sliding_window(
     min_keep개의 최근 user 메시지는 절대 제거하지 않음.
     assistant 메시지는 user 메시지에 종속되어 함께 제거됨.
 
-    첫 번째 user 메시지는 항상 유지 (툴 목록이 포함된 컨텍스트 유지).
+    첫 번째 user 메시지는 항상 유지 (대화 맥락 보존).
 
     Args:
         messages: 전체 메시지 리스트
@@ -87,7 +87,7 @@ def _apply_sliding_window(
 
     keep_start = cutoff_user_idx + 1
 
-    # 첫 번째 user 메시지는 항상 유지 (툴 목록이 포함된 컨텍스트)
+    # 첫 번째 user 메시지는 항상 유지 (대화 맥락 보존)
     first_user_idx = user_indices[0]
     if keep_start > first_user_idx:
         keep_start = first_user_idx
@@ -267,11 +267,8 @@ async def _invoke_llm(
     if injected_msgs:
         messages = messages + injected_msgs
 
-    # 첫 요청(call_model)에만 툴 목록 포함.
-    # messages에 ToolMessage가 있으면 tool loop 안 → 툴 설명이 이미 컨텍스트에 있음
-    has_tool_msgs = any(isinstance(m, ToolMessage) for m in messages)
-    include_tools = not has_tool_msgs
-    system_prompt = build_system_prompt(include_tools=include_tools)
+    # 항상 동일한 시스템 프롬프트 사용 (툴 설명은 bind_tools의 API schema로 전달)
+    system_prompt = build_system_prompt()
 
     final_messages = [SystemMessage(content=system_prompt)] + messages
     logger.debug("[TIMING] _invoke_llm prep (window+sysprompt): %.3fs", time.monotonic() - _t)
