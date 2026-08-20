@@ -76,11 +76,10 @@ async def handle_prompt(
 
         _t3 = time.monotonic()
         graph = (agent or AgentGraph(
-            config=config, manager=manager, db=db,
-            llm=llm_client.llm, job_scheduler=job_scheduler,
+            manager=manager, db=db, job_scheduler=job_scheduler,
             max_context_messages=int(config.get("agent", "sliding_window_size")),
             max_tool_calls=int(config.get("agent", "max_tool_calls")),
-        )).compiled(session_id=session_id)
+        )).compiled(session_id=session_id, llm=llm_client.llm)
         logger.debug("[TIMING] create_agent_graph: %.3fs", time.monotonic() - _t3)
 
         _t4 = time.monotonic()
