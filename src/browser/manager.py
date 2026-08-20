@@ -46,6 +46,13 @@ class _TabInfo:
         self.url = url
         self.title: str = ""
         self.dialog: Optional[dict] = None  # {type, message, default} — override dialog
+        self._cdp: Any = None  # lazy CDP session
+
+    async def _get_cdp(self) -> Any:
+        """CDP session을 lazy 생성."""
+        if self._cdp is None:
+            self._cdp = await self.page.context.new_cdp_session(self.page)
+        return self._cdp
 
     async def update_info(self) -> None:
         try:
@@ -54,38 +61,41 @@ class _TabInfo:
         except Exception as e:
             logger.debug("TabInfo.update_info failed: %s", e)
 
-    async def check_dialog(self, timeout: float = 2.0) -> Optional[dict]:
-        """Override된 dialog 정보를 page에서 읽어온다.
+    async def _evaluate_js(self, expression: str) -> Any:
+        """page.evaluate 대신 CDP Runtime.evaluate 사용.
 
-        page.evaluate 는 페이지 상태가 좋지 않으면 무기한 대기할 수 있어
-        짧은 타임아웃을 적용한다 (agent 실행이 멈추는 것 방지).
-
-        Args:
-            timeout: evaluate 최대 대기 시간 (초)
-
-        Returns:
-            대화상자 정보 dict, 또는 None
+        Playwright 1.62.0 + Python 3.14에서 page.evaluate()에
+        timeout 키워드가 전달되는 버그가 있어 CDP로 우회한다.
         """
         try:
-            d = await self.page.evaluate(
-                "window.__psjba_dialog", timeout=timeout
-            )
-            if d and not d.get("_handled"):
-                await self.page.evaluate(
-                    "window.__psjba_dialog._handled = true", timeout=timeout
-                )
-                self.dialog = d
-                return d
+            cdp = await self._get_cdp()
+            result = await cdp.send("Runtime.evaluate", {
+                "expression": expression,
+                "returnByValue": True,
+                "awaitPromise": False,
+            })
+            exc = result.get("exceptionDetails")
+            if exc:
+                logger.debug("_evaluate_js exception: %s", exc)
+                return None
+            value = result.get("result", {}).get("value")
+            return value
         except Exception as e:
-            logger.debug("TabInfo.check_dialog failed: %s", e)
+            logger.debug("_evaluate_js failed: %s", e)
+            return None
+
+    async def check_dialog(self) -> Optional[dict]:
+        """Override된 dialog 정보를 page에서 읽어온다."""
+        d = await self._evaluate_js("window.__psjba_dialog")
+        if d and not d.get("_handled"):
+            await self._evaluate_js("window.__psjba_dialog._handled = true")
+            self.dialog = d
+            return d
         return None
 
     async def clear_dialog(self) -> None:
         self.dialog = None
-        try:
-            await self.page.evaluate("window.__psjba_dialog = null")
-        except Exception as e:
-            logger.debug("TabInfo.clear_dialog failed: %s", e)
+        await self._evaluate_js("window.__psjba_dialog = null")
 
 
 class ExtensionError(RuntimeError):
