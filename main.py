@@ -147,7 +147,8 @@ async def run(config: Config) -> None:
                     window._prompt.set_running(True)
                     window.stop_requested = False
                     await handle_prompt(
-                        config, db, manager, window, current_text, job_scheduler
+                        config, db, manager, window, current_text,
+                        job_scheduler, agent=agent,
                     )
                     await asyncio.sleep(0)
             finally:
@@ -224,6 +225,17 @@ async def run(config: Config) -> None:
         window._open_settings()
     else:
         logger.info("Step 10/10: api_key and model configured")
+
+    # AgentGraph 생성 (LLM 주입 + 캐싱)
+    from src.agent.graph import AgentGraph
+    from src.agent.llm_client import LLMClient
+    llm_client = LLMClient(config)
+    agent = AgentGraph(
+        config=config, manager=manager, db=db,
+        llm=llm_client.llm, job_scheduler=job_scheduler,
+        max_context_messages=int(config.get("agent", "sliding_window_size")),
+        max_tool_calls=int(config.get("agent", "max_tool_calls")),
+    )
 
     logger.info("Application started successfully")
 

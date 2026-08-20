@@ -12,7 +12,7 @@ from langchain_core.messages import (
     ToolMessage,
 )
 
-from src.agent.graph import create_agent_graph
+from src.agent.graph import AgentGraph
 from src.agent.llm_client import LLMClient
 from src.models.schemas import Message
 from src.ui.helpers import finish_prompt_cancelled, show_error_in_ui
@@ -50,6 +50,7 @@ async def handle_prompt(
     window: Any,
     text: str,
     job_scheduler: Optional[Any] = None,
+    agent: Optional[AgentGraph] = None,
 ) -> None:
     """사용자 프롬프트를 LangGraph 에이전트로 실행하고 결과를 UI/DB에 반영한다."""
     logger.info("User prompt: %s", text[:80])
@@ -67,7 +68,6 @@ async def handle_prompt(
     await db.save_message(user_msg)
     logger.debug("[TIMING] session/DB: %.3fs", time.monotonic() - _t)
 
-    # LLMClient 로 httpx 세션 관리 (Python 3.14 GeneratorExit 방지)
     llm_client = None
     try:
         _t2 = time.monotonic()
@@ -75,16 +75,12 @@ async def handle_prompt(
         logger.debug("[TIMING] LLMClient(): %.3fs", time.monotonic() - _t2)
 
         _t3 = time.monotonic()
-        graph = create_agent_graph(
-            config=config,
-            manager=manager,
-            db=db,
-            session_id=session_id,
-            llm=llm_client.llm,
+        graph = (agent or AgentGraph(
+            config=config, manager=manager, db=db,
+            llm=llm_client.llm, job_scheduler=job_scheduler,
             max_context_messages=int(config.get("agent", "sliding_window_size")),
             max_tool_calls=int(config.get("agent", "max_tool_calls")),
-            job_scheduler=job_scheduler,
-        )
+        )).compiled(session_id=session_id)
         logger.debug("[TIMING] create_agent_graph: %.3fs", time.monotonic() - _t3)
 
         _t4 = time.monotonic()
