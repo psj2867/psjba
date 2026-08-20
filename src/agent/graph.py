@@ -115,6 +115,7 @@ def _build_cached(
     logger.debug("[TIMING] create_all_tools: %.3fs", time.monotonic() - _t0)
 
     tool_dict: dict[str, Any] = {t.name: t for t in tools}
+    tool_list: list = tools  # bind_tools용 list
 
     call_node = _CallModelNode(is_cron, max_context_messages, max_tool_calls)
 
@@ -150,7 +151,7 @@ def _build_cached(
         f"Agent graph compiled: {len(tools)} tools, "
         f"window={max_context_messages}, retries={max_retries}"
     )
-    return compiled, call_node, tool_dict
+    return compiled, call_node, tool_list
 
 
 # ── AgentGraph ─────────────────────────────────────────────────────
