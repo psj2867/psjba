@@ -525,19 +525,24 @@ class PlaywrightManager:
         if self._focused_tab_index >= len(self._tabs):
             self._focused_tab_index = max(0, len(self._tabs) - 1)
 
-        # 확장 프로그램 content script DOM attribute로 포커스 보정
+        # 확장 프로그램 content script DOM attribute로 포커스 보정 (병렬)
         if self._ext_available:
-            for i, tab in enumerate(self._tabs):
+            async def _check_active(i: int, tab: _TabInfo) -> int | None:
                 try:
                     active = await tab.page.evaluate(
                         "document.documentElement.getAttribute('data-psjba-active')"
                     )
-                    if active == "true":
-                        self._focused_tab_index = i
-                        break
+                    return i if active == "true" else None
                 except Exception as e:
                     logger.debug("_refresh_tabs: tab %d ext attribute eval failed: %s", i, e)
-                    continue
+                    return None
+            results = await asyncio.gather(*(
+                _check_active(i, tab) for i, tab in enumerate(self._tabs)
+            ))
+            for idx in results:
+                if idx is not None:
+                    self._focused_tab_index = idx
+                    break
 
     async def browser_infos(self) -> str:
         """브라우저 연결 상태, 탭 목록, Chrome 정보를 종합해서 반환한다."""
@@ -552,9 +557,10 @@ class PlaywrightManager:
             await self._refresh_tabs()
             info["tab_count"] = len(self._tabs)
 
+            # 모든 탭의 update_info를 병렬 실행
+            await asyncio.gather(*(tab.update_info() for tab in self._tabs))
             tabs_list = []
             for i, tab in enumerate(self._tabs):
-                await tab.update_info()
                 tabs_list.append({
                     "index": i,
                     "url": tab.url,
@@ -814,9 +820,11 @@ class PlaywrightManager:
             return "[Browser: not connected]"
 
         await self._refresh_tabs()
+        # 모든 탭의 update_info를 병렬 실행
+        await asyncio.gather(*(tab.update_info() for tab in self._tabs))
+
         parts = [f"[Browser: connected ({len(self._tabs)} tabs)]"]
         for i, tab in enumerate(self._tabs):
-            await tab.update_info()
             marker = " ◀ FOCUSED" if i == self._focused_tab_index else ""
             parts.append(f"  Tab {i}: {tab.url}{' (' + tab.title + ')' if tab.title else ''}{marker}")
             # pending dialog 정보도 표시
