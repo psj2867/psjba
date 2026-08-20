@@ -1,5 +1,6 @@
 """LangGraph 그래프 정의 — 에이전트 실행 흐름 구성."""
 
+import functools
 import logging
 import time
 from functools import partial
@@ -36,7 +37,7 @@ def _should_continue(state: AgentState) -> str:
 
 
 class AgentGraph:
-    """LangGraph 에이전트 그래프 — 생성/컴파일 1회, 캐싱 후 실행만 반복.
+    """LangGraph 에이전트 그래프 — 생성/컴파일 1회, LRU 캐싱 후 실행만 반복.
 
     사용법:
         agent = AgentGraph(config=..., manager=..., db=..., llm=..., ...)
@@ -67,16 +68,14 @@ class AgentGraph:
         self._max_context_messages = max_context_messages
         self._max_retries = max_retries
         self._max_tool_calls = max_tool_calls
-        self._cache: dict[str, Any] = {}
+        # lru_cache: (session_id, cron_job_id) → compiled graph (최대 32개)
+        self._compiled = functools.lru_cache(maxsize=32)(self._build)
 
     # ── public ─────────────────────────────────────────────────
 
     def compiled(self, session_id: str, cron_job_id: str = "") -> Any:
-        """세션에 대응하는 compiled graph를 반환한다 (lazy build + cache)."""
-        key = f"{session_id}|{bool(cron_job_id)}"
-        if key not in self._cache:
-            self._cache[key] = self._build(session_id, cron_job_id)
-        return self._cache[key]
+        """세션에 대응하는 compiled graph를 반환한다 (lazy build + lru_cache)."""
+        return self._compiled(session_id, cron_job_id)
 
     # ── build ──────────────────────────────────────────────────
 
