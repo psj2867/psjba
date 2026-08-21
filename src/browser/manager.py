@@ -1395,23 +1395,40 @@ class PlaywrightManager:
         return f"cron_add: job '{name}' created (id={job.id}, schedule={schedule})"
 
     async def cron_list(self) -> str:
-        """등록된 크론 작업 목록을 조회한다."""
+        """등록된 CRON + 1회성 예약 작업 목록을 조회한다."""
         if self._db is None:
             return "cron_list error: database not initialized"
 
-        jobs, _ = await self._db.list_cron_jobs(page=1, page_size=999)
-        if not jobs:
-            return "cron_list: no cron jobs registered"
+        lines = ["**Registered Jobs:**"]
 
-        lines = ["**Cron Jobs:**"]
-        for j in jobs:
-            status_icon = "🟢" if j.status == "enable" else "🔴"
-            next_run = j.next_run_at.strftime("%Y-%m-%d %H:%M") if j.next_run_at else "-"
-            lines.append(
-                f"- {status_icon} **{j.name}** (id={j.id}) | "
-                f"schedule=`{j.schedule}` | prompt=`{j.prompt[:60]}` | "
-                f"next={next_run}"
-            )
+        # CRON jobs
+        cron_jobs, _ = await self._db.list_cron_jobs(page=1, page_size=999, include_archived=True)
+        if cron_jobs:
+            lines.append("\n**📅 Cron Jobs:**")
+            for j in cron_jobs:
+                status_icon = "🟢" if j.status == "enable" else "🔴"
+                next_run = j.next_run_at.strftime("%Y-%m-%d %H:%M") if j.next_run_at else "-"
+                lines.append(
+                    f"- {status_icon} `{j.id[:8]}…` **{j.name}** | "
+                    f"schedule=`{j.schedule}` | prompt=`{j.prompt[:60]}` | "
+                    f"next={next_run}"
+                )
+
+        # Scheduled jobs
+        sched_jobs, _ = await self._db.list_scheduled_jobs_paginated(page=1, page_size=999)
+        if sched_jobs:
+            lines.append("\n**⏰ One-time Jobs:**")
+            for j in sched_jobs:
+                status_icon = {"pending": "⏳", "running": "🔄", "done": "✅", "error": "❌", "cancelled": "🚫"}.get(j.status, "⚪")
+                scheduled = j.scheduled_at.strftime("%m-%d %H:%M") if j.scheduled_at else "-"
+                lines.append(
+                    f"- {status_icon} `{j.id[:8]}…` **{j.name}** | "
+                    f"at={scheduled} | prompt=`{j.prompt[:60]}` | "
+                    f"status={j.status}"
+                )
+
+        if len(lines) == 1:
+            return "cron_list: no jobs registered"
         return "\n".join(lines)
 
     async def cron_edit(
@@ -1421,9 +1438,13 @@ class PlaywrightManager:
         schedule: Optional[str] = None,
         prompt: Optional[str] = None,
     ) -> str:
-        """크론 작업을 수정한다."""
+        """크론 작업을 수정한다. schedule='' (빈 문자열)이면 해당 job을 삭제한다."""
         if self._db is None:
             return "cron_edit error: database not initialized"
+
+        # schedule='' → 삭제
+        if schedule is not None and schedule.strip() == "":
+            return await self._remove_job(job_id, "cron")
 
         job = await self._db.get_cron_job(job_id)
         if not job:
@@ -1443,20 +1464,35 @@ class PlaywrightManager:
 
         return f"cron_edit: job '{job.name}' (id={job_id}) updated"
 
-    async def cron_remove(self, job_id: str) -> str:
-        """크론 작업을 삭제한다."""
+    async def _remove_job(self, job_id: str, job_type: str) -> str:
+        """공통 job 삭제 로직 (cron 또는 scheduled)."""
         if self._db is None:
-            return "cron_remove error: database not initialized"
+            return "remove error: database not initialized"
 
-        job = await self._db.get_cron_job(job_id)
-        if not job:
-            return f"cron_remove error: job '{job_id}' not found"
+        if job_type == "cron":
+            job = await self._db.get_cron_job(job_id)
+            if not job:
+                return f"remove error: cron job '{job_id}' not found"
+            await self._db.delete_cron_job(job_id)
+            if self._cron_scheduler:
+                await self._cron_scheduler.remove_job(job_id)
+            return f"제거됨: cron job '{job.name}' (id={job_id})"
+        else:
+            job = await self._db.get_scheduled_job(job_id)
+            if not job:
+                return f"remove error: scheduled job '{job_id}' not found"
+            job.status = "cancelled"
+            job.updated_at = datetime.now()
+            await self._db.update_scheduled_job(job)
+            return f"제거됨: scheduled job '{job.name}' (id={job_id})"
 
-        await self._db.delete_cron_job(job_id)
-        if self._cron_scheduler:
-            await self._cron_scheduler.remove_job(job_id)
+    async def cron_remove(self, job_id: str) -> str:
+        """크론 작업을 삭제한다. (deprecated: cron_edit에서 schedule=''로 대체)"""
+        return await self._remove_job(job_id, "cron")
 
-        return f"cron_remove: job '{job.name}' (id={job_id}) removed"
+    async def job_remove(self, job_id: str) -> str:
+        """1회성 예약 작업을 취소/삭제한다."""
+        return await self._remove_job(job_id, "scheduled")
 
     async def add_main_session_message(self, message: str) -> str:
         """메인 세션 채팅창에 메시지를 표시한다."""

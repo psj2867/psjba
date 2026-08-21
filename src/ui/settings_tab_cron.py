@@ -64,6 +64,7 @@ class CronTab(QWidget):
         self._l1_page: int = 1
         self._l1_total_pages: int = 1
         self._l1_filter: str = "all"  # all | cron | scheduled
+        self._l1_show_archived: bool = False
 
         # L2 (session list for a cron job)
         self._l2_page: int = 1
@@ -117,6 +118,12 @@ class CronTab(QWidget):
             self._l1_filter_btns[key] = btn
         self._update_l1_filter_style()
 
+        # archive toggle
+        self._l1_archive_btn = QPushButton("아카이브 보기")
+        self._l1_archive_btn.setFixedWidth(120)
+        self._l1_archive_btn.clicked.connect(self._on_toggle_archived)
+        header.addWidget(self._l1_archive_btn)
+
         layout.addLayout(header)
 
         scroll = QScrollArea()
@@ -149,6 +156,14 @@ class CronTab(QWidget):
         self._update_l1_filter_style()
         self._load_level1()
 
+    def _on_toggle_archived(self) -> None:
+        self._l1_show_archived = not self._l1_show_archived
+        self._l1_archive_btn.setText(
+            "아카이브 숨기기" if self._l1_show_archived else "아카이브 보기"
+        )
+        self._l1_page = 1
+        self._load_level1()
+
     def _on_l1_prev(self) -> None:
         if self._l1_page > 1:
             self._l1_page -= 1
@@ -166,12 +181,19 @@ class CronTab(QWidget):
 
         async def _fetch() -> Any:
             page_size = 10
+            show_archived = self._l1_show_archived
+
+            # CRON: show_archived=False → enable만, True → disable+enable
             cron_jobs, cron_total = await self._db.list_cron_jobs(
-                page=1, page_size=999, include_archived=True,
+                page=1, page_size=999, include_archived=show_archived,
             ) if filt in ("all", "cron") else ([], 0)
+
+            # Scheduled: archived = done/cancelled/error
             sched_jobs, sched_total = await self._db.list_scheduled_jobs_paginated(
                 page=1, page_size=999,
             ) if filt in ("all", "scheduled") else ([], 0)
+            if not show_archived:
+                sched_jobs = [j for j in (sched_jobs or []) if j.status in ("pending", "running")]
 
             combined: list[tuple[str, Any]] = []
             combined.extend((self.TYPE_CRON, j) for j in (cron_jobs or []))
@@ -576,13 +598,13 @@ class CronTab(QWidget):
             self._cron_stacked.setCurrentIndex(3)
             layout = self._l4_detail_layout
 
-            layout.addLayout(_detail_row("ID", getattr(job, "id", "")))
-            layout.addLayout(_detail_row("이름", getattr(job, "name", "") or "-"))
-            layout.addLayout(_detail_row("Cron", getattr(job, "schedule", "") or "-"))
-            layout.addLayout(_detail_row("Prompt", getattr(job, "prompt", "") or "-"))
-            layout.addLayout(_detail_row("Status", getattr(job, "status", "")))
-            layout.addLayout(_detail_row("Created", str(getattr(job, "created_at", ""))[:19]))
-            layout.addLayout(_detail_row("Updated", str(getattr(job, "updated_at", ""))[:19]))
+            layout.addWidget(_detail_row("ID", getattr(job, "id", "")))
+            layout.addWidget(_detail_row("이름", getattr(job, "name", "") or "-"))
+            layout.addWidget(_detail_row("Cron", getattr(job, "schedule", "") or "-"))
+            layout.addWidget(_detail_row("Prompt", getattr(job, "prompt", "") or "-"))
+            layout.addWidget(_detail_row("Status", getattr(job, "status", "")))
+            layout.addWidget(_detail_row("Created", str(getattr(job, "created_at", ""))[:19]))
+            layout.addWidget(_detail_row("Updated", str(getattr(job, "updated_at", ""))[:19]))
 
             enable_btn = QPushButton("비활성화" if getattr(job, "status", "") == "enable" else "활성화")
             enable_btn.clicked.connect(lambda: self._on_cron_l4_toggle(job_id))
@@ -684,16 +706,16 @@ class CronTab(QWidget):
             self._cron_stacked.setCurrentIndex(3)
             layout = self._l4_detail_layout
 
-            layout.addLayout(_detail_row("ID", getattr(job, "id", "")))
-            layout.addLayout(_detail_row("이름", getattr(job, "name", "") or "-"))
+            layout.addWidget(_detail_row("ID", getattr(job, "id", "")))
+            layout.addWidget(_detail_row("이름", getattr(job, "name", "") or "-"))
             st = getattr(job, "scheduled_at", None)
             st_str = st.strftime("%Y-%m-%d %H:%M:%S") if isinstance(st, datetime) else str(st or "-")
-            layout.addLayout(_detail_row("예약 시간", st_str))
-            layout.addLayout(_detail_row("Prompt", getattr(job, "prompt", "") or "-"))
-            layout.addLayout(_detail_row("Status", getattr(job, "status", "")))
+            layout.addWidget(_detail_row("예약 시간", st_str))
+            layout.addWidget(_detail_row("Prompt", getattr(job, "prompt", "") or "-"))
+            layout.addWidget(_detail_row("Status", getattr(job, "status", "")))
             err = getattr(job, "error_message", None)
             if err:
-                layout.addLayout(_detail_row("오류", err))
+                layout.addWidget(_detail_row("오류", err))
 
             if getattr(job, "status", "") == "pending":
                 cancel_btn = QPushButton("예약 취소")

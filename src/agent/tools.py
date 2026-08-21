@@ -215,7 +215,7 @@ def create_cron_tools(
 
     @tool
     async def cron_list() -> str:
-        """List all registered cron jobs."""
+        """List all registered jobs (cron + one-time scheduled)."""
         return await manager.cron_list()
 
     @tool
@@ -225,13 +225,18 @@ def create_cron_tools(
         schedule: Optional[str] = None,
         prompt: Optional[str] = None,
     ) -> str:
-        """Edit a cron job. Provide job_id and any fields to change."""
+        """Edit a cron job. Provide job_id and any fields to change. Pass schedule='' (empty string) to delete the cron job entirely."""
         return await manager.cron_edit(job_id, name=name, schedule=schedule, prompt=prompt)
 
     @tool
     async def cron_remove(job_id: str) -> str:
-        """Remove (soft-delete) a cron job."""
+        """Remove (soft-delete) a cron job. Deprecated: use cron_edit(job_id, schedule='') instead."""
         return await manager.cron_remove(job_id)
+
+    @tool
+    async def job_remove(job_id: str) -> str:
+        """Cancel/remove a one-time scheduled job by its id. Use cron_list to find the id."""
+        return await manager.job_remove(job_id)
 
     @tool
     async def cron_to_session(message: str) -> str:
@@ -278,7 +283,7 @@ def create_cron_tools(
         logger.info("Cron note saved for %s: %s", cron_job_id, note[:80])
         return f"메모가 저장되었습니다 (길이: {len(note)}자). 다음 크론 실행 시 system 메시지로 자동 추가됩니다."
 
-    return [cron_add, cron_list, cron_edit, cron_remove, cron_to_session, job_add, cron_save_note]
+    return [cron_add, cron_list, cron_edit, cron_remove, job_remove, cron_to_session, job_add, cron_save_note]
 
 
 def create_memory_tools(db: Database, session_id: str) -> list:

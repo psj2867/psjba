@@ -59,8 +59,10 @@ async def build_initial_messages(
 
     # user 메시지 기준 슬라이딩
     user_indices = [i for i, r in enumerate(history_rows) if r.role == "user"]
+    skipped_count = 0
     if len(user_indices) > max_context_messages:
         keep_from = user_indices[-max_context_messages]
+        skipped_count = len(user_indices) - max_context_messages
         history_rows = history_rows[keep_from:]
 
     messages: list[BaseMessage] = []
@@ -73,6 +75,13 @@ async def build_initial_messages(
             messages.append(ToolMessage(content=row.content, tool_call_id=""))
         elif row.role == "system":
             messages.append(SystemMessage(content=row.content))
+
+    # 생략된 user 프롬프트 수 안내
+    if skipped_count > 0:
+        messages.insert(0, SystemMessage(
+            content=f"[시스템] 이전 {skipped_count}개의 사용자 요청은 컨텍스트 제한으로 생략되었습니다. "
+                    f"필요 시 memory_search 도구로 과거 내용을 검색할 수 있습니다."
+        ))
 
     # browser context → developer message
     if browser_context and browser_context != "[Browser: not connected]":

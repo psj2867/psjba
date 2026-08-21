@@ -17,6 +17,22 @@ SYSTEM_PROMPT = """You are a browser automation agent. You control a web browser
 """
 
 
-def build_system_prompt() -> str:
-    """시스템 프롬프트를 생성한다."""
-    return SYSTEM_PROMPT
+def build_system_prompt(is_cron: bool = False) -> str:
+    """시스템 프롬프트를 생성한다.
+
+    Args:
+        is_cron: 크론/예약 작업 백그라운드 실행 시 True.
+    """
+    if not is_cron:
+        return SYSTEM_PROMPT
+
+    bg = (
+        "\n\n## Background Job (Cron / Scheduled)\n"
+        "You are running as a background task. Rules:\n"
+        "1. Do NOT ask the user questions or wait for input — execute autonomously.\n"
+        "2. If you have information the user must see, use `cron_to_session()` to send it to the main chat.\n"
+        "3. Report completion or errors via `cron_to_session()` — do NOT leave silent failures.\n"
+        "4. All other rules (start with snapshot, retry on failure, minimize tool calls) still apply.\n"
+        "5. You can use `cron_save_note()` to persist state for the next run.\n"
+    )
+    return SYSTEM_PROMPT + bg

@@ -191,6 +191,7 @@ async def _invoke_llm(
     llm: BaseChatModel,
     injected_msgs: Optional[list[BaseMessage]] = None,
     state: Optional[AgentState] = None,
+    is_cron: bool = False,
 ) -> dict[str, Any]:
     """LLM 호출 공통 코어: 시스템 프롬프트 → 호출 → 응답."""
     _t = time.monotonic()
@@ -199,8 +200,8 @@ async def _invoke_llm(
     if injected_msgs:
         messages = messages + injected_msgs
 
-    # 항상 동일한 시스템 프롬프트 사용 (툴 설명은 bind_tools의 API schema로 전달)
-    system_prompt = build_system_prompt()
+    # 크론/잡 백그라운드는 전용 시스템 프롬프트 사용
+    system_prompt = build_system_prompt(is_cron=is_cron)
 
     final_messages = [SystemMessage(content=system_prompt)] + messages
     logger.debug("[TIMING] _invoke_llm prep (sysprompt): %.3fs", time.monotonic() - _t)
@@ -398,7 +399,7 @@ async def call_model_cron(
     messages = list(state.get("messages", []))
 
     return await _invoke_llm(
-        messages, llm, injected_msgs=None, state=state,
+        messages, llm, injected_msgs=None, state=state, is_cron=True,
     )
 
 
