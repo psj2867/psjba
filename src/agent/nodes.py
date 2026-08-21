@@ -497,11 +497,12 @@ async def call_model_user(
 
     # 최대 tool call 횟수 초과 시 즉시 종료
     current_count = state.get("tool_call_count", 0)
-    try:
-        current_count = int(current_count)
-        max_tool_calls = int(max_tool_calls)
-    except (TypeError, ValueError):
-        max_tool_calls = 30
+    max_tool_calls = int(_get_cfg("agent", "max_tool_calls"))
+    if not isinstance(current_count, int):
+        try:
+            current_count = int(current_count)
+        except (TypeError, ValueError):
+            current_count = 0
     if current_count >= max_tool_calls:
         logger.warning(
             f"Tool call limit reached: {current_count}/{max_tool_calls}, ending"
@@ -544,11 +545,11 @@ async def call_model_cron(
     """크론/잡 전용 LLM 호출 — intervention/dialog 없이 간결하게."""
     max_tool_calls = int(_get_cfg("agent", "cron_tool_calls"))
     current_count = state.get("tool_call_count", 0)
-    try:
-        current_count = int(current_count)
-        max_tool_calls = int(max_tool_calls)
-    except (TypeError, ValueError):
-        max_tool_calls = 50
+    if not isinstance(current_count, int):
+        try:
+            current_count = int(current_count)
+        except (TypeError, ValueError):
+            current_count = 0
     if current_count >= max_tool_calls:
         logger.warning(
             f"Cron: tool call limit reached: {current_count}/{max_tool_calls}, ending"
