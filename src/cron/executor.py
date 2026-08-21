@@ -95,11 +95,7 @@ class CronExecutor:
             if self._agent is None:
                 from src.agent.graph import AgentGraph
                 self._agent = AgentGraph(
-                    manager=self._manager, db=self._db,
-                    max_context_messages=self._config.get(
-                        "agent", "sliding_window_size"
-                    ),
-                    max_tool_calls=self._config.get("agent", "cron_tool_calls"),
+                    manager=self._manager, db=self._db, config=self._config,
                 )
 
             from src.agent.llm_client import LLMClient
