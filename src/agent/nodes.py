@@ -40,7 +40,6 @@ def _get_cfg(section: str, key: str, default: str = "") -> str:
 
 
 ERROR_KEYWORDS = ("error", "failed", "exception", "not found", "timeout")
-MIN_KEEP_MESSAGES = 10
 
 # abort (stop) 플래그 — module-level, runner가 설정하고 execute_tool이 확인
 _shared_abort_requested: bool = False
@@ -55,106 +54,10 @@ def reset_abort() -> None:
     global _shared_abort_requested
     _shared_abort_requested = False
 
-# 과거 ToolMessage 내용 최대 길이 (token 최적화: 오래된 snapshot 등 대용량 결과 잘라냄)
-MAX_OLD_TOOL_RESULT_CHARS = 1500
-# 이 최근 N개 ToolMessage는 잘라내지 않음 (현재 작업 컨텍스트 보존)
-KEEP_RECENT_TOOL_MSGS = 4
-
 # browser_execute_script no-op 패턴: 실제 JS 문장이 없는 경우
 _NOOP_SCRIPT_RE = re.compile(
     r'^\s*(?:(?:\/\/[^\n]*|/\*[\s\S]*?\*/|<!--[\s\S]*?-->|\s*;)*\s*)*$'
 )
-
-
-def _apply_sliding_window(
-    messages: list[BaseMessage],
-    max_context: int,
-    min_keep: int = MIN_KEEP_MESSAGES,
-) -> list[BaseMessage]:
-    """슬라이딩 윈도우를 적용하여 messages를 정리한다.
-
-    system 메시지는 항상 유지.
-    user 메시지 기준으로 max_context 초과 시 오래된 것부터 제거.
-    min_keep개의 최근 user 메시지는 절대 제거하지 않음.
-    assistant 메시지는 user 메시지에 종속되어 함께 제거됨.
-
-    첫 번째 user 메시지는 항상 유지 (대화 맥락 보존).
-
-    Args:
-        messages: 전체 메시지 리스트
-        max_context: 최대 user 메시지 수
-        min_keep: 유지할 최소 최근 user 메시지 수
-
-    Returns:
-        정리된 메시지 리스트
-    """
-    try:
-        max_context = int(max_context)
-        min_keep = int(min_keep)
-    except (TypeError, ValueError):
-        max_context = 30
-        min_keep = 10
-    if max_context <= 0:
-        return messages
-
-    system_msgs: list[BaseMessage] = []
-    non_system: list[BaseMessage] = []
-    for msg in messages:
-        if isinstance(msg, SystemMessage):
-            system_msgs.append(msg)
-        else:
-            non_system.append(msg)
-
-    user_indices = [
-        i for i, m in enumerate(non_system) if isinstance(m, HumanMessage)
-        and m.additional_kwargs.get("role") != "developer"
-    ]
-
-    if len(user_indices) <= max_context:
-        return messages
-
-    cutoff_count = len(user_indices) - max_context
-    cutoff_user_idx = user_indices[cutoff_count]
-
-    keep_start = cutoff_user_idx + 1
-
-    # 첫 번째 user 메시지는 항상 유지 (대화 맥락 보존)
-    first_user_idx = user_indices[0]
-    if keep_start > first_user_idx:
-        keep_start = first_user_idx
-
-    trimmed = non_system[keep_start:]
-
-    if not trimmed:
-        return messages
-
-    result = system_msgs + trimmed
-    _truncate_old_tool_results(result)
-    return result
-
-
-def _truncate_old_tool_results(messages: list[BaseMessage]) -> None:
-    """오래된 ToolMessage의 대용량 결과를 잘라내 token을 절약한다.
-
-    최근 KEEP_RECENT_TOOL_MSGS개는 보존 (현재 작업 컨텍스트), 그 이전 것은
-    MAX_OLD_TOOL_RESULT_CHARS 초과 시 앞부분 유지 + 생략 표시.
-
-    Args:
-        messages: 슬라이딩 윈도우 적용 후 메시지 리스트 (in-place 수정)
-    """
-    if not messages:
-        return
-    tool_msg_indices = [
-        i for i, m in enumerate(messages)
-        if isinstance(m, ToolMessage) and m.content
-    ]
-    for i in tool_msg_indices[:-KEEP_RECENT_TOOL_MSGS] if len(tool_msg_indices) > KEEP_RECENT_TOOL_MSGS else []:
-        content = messages[i].content
-        if isinstance(content, str) and len(content) > MAX_OLD_TOOL_RESULT_CHARS:
-            messages[i].content = (
-                content[:MAX_OLD_TOOL_RESULT_CHARS]
-                + f"\n...[truncated {len(content) - MAX_OLD_TOOL_RESULT_CHARS} chars]"
-            )
 
 
 _TOOL_NAME_PATTERN = re.compile(
@@ -289,10 +192,8 @@ async def _invoke_llm(
     injected_msgs: Optional[list[BaseMessage]] = None,
     state: Optional[AgentState] = None,
 ) -> dict[str, Any]:
-    """LLM 호출 공통 코어: 슬라이딩 윈도우 → 시스템 프롬프트 → 호출 → 응답."""
+    """LLM 호출 공통 코어: 시스템 프롬프트 → 호출 → 응답."""
     _t = time.monotonic()
-    max_context = int(_get_cfg("agent", "sliding_window_size"))
-    messages = _apply_sliding_window(messages, max_context)
 
     injected_msgs = injected_msgs or []
     if injected_msgs:
@@ -302,12 +203,11 @@ async def _invoke_llm(
     system_prompt = build_system_prompt()
 
     final_messages = [SystemMessage(content=system_prompt)] + messages
-    logger.debug("[TIMING] _invoke_llm prep (window+sysprompt): %.3fs", time.monotonic() - _t)
+    logger.debug("[TIMING] _invoke_llm prep (sysprompt): %.3fs", time.monotonic() - _t)
 
     req_model = getattr(llm, "model_name", "") or "?"
     logger.info(
-        f"call_model: {len(final_messages)} messages "
-        f"(window: {len(messages)} after sliding) [req_model={req_model}]"
+        f"call_model: {len(final_messages)} messages [req_model={req_model}]"
     )
 
     # 마지막 메시지(사용자 입력 or 툴 결과) 요약 로그

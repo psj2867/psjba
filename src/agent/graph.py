@@ -83,7 +83,7 @@ def _build_cached(
     """(compiled_graph, call_node, tool_dict) 를 캐싱하여 반환.
 
     Hashable param만 받고, 나머지(app-lifetime singleton)는 module global 참조.
-    설정값(max_tool_calls, sliding_window_size 등)은 _shared_config에서 실시간 읽음.
+    설정값(max_tool_calls 등)은 _shared_config에서 실시간 읽음.
     LLM은 포함되지 않음 → AgentGraph.compiled()에서 set_llm()으로 주입.
     """
     _t0 = time.monotonic()

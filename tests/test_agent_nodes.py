@@ -4,54 +4,13 @@ import json
 from unittest.mock import AsyncMock
 
 import pytest
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, ToolMessage
 
 from src.agent.nodes import (
-    _apply_sliding_window,
     _is_tool_error,
     assess_error,
     execute_tool,
 )
-
-
-class TestApplySlidingWindow:
-    def test_no_trimming_needed(self):
-        msgs = [HumanMessage(content="a"), HumanMessage(content="b")]
-        result = _apply_sliding_window(msgs, max_context=10)
-        assert len(result) == 2
-
-    def test_trim_excess(self):
-        msgs = [HumanMessage(content=f"msg{i}") for i in range(10)]
-        result = _apply_sliding_window(msgs, max_context=3)
-        # user만 10개, system 없음 → 첫 user 보존 로직이 cutoff보다 우선하므로 모두 유지
-        assert len(result) == 10
-
-    def test_system_message_preserved(self):
-        msgs = [SystemMessage(content="system"), HumanMessage(content="a"),
-                HumanMessage(content="b"), HumanMessage(content="c")]
-        result = _apply_sliding_window(msgs, max_context=2)
-        assert any(isinstance(m, SystemMessage) for m in result)
-
-    def test_empty_messages(self):
-        result = _apply_sliding_window([], max_context=10)
-        assert result == []
-
-    def test_only_system_messages(self):
-        msgs = [SystemMessage(content="sys")]
-        result = _apply_sliding_window(msgs, max_context=5)
-        assert len(result) == 1
-
-    def test_min_keep_messages(self):
-        """min_keep개의 최근 user 메시지는 유지."""
-        msgs = [HumanMessage(content=f"msg{i}") for i in range(10)]
-        result = _apply_sliding_window(msgs, max_context=3, min_keep=2)
-        # 적어도 2개의 최근 메시지는 유지되어야 함
-        assert len(result) >= 2
-
-    def test_max_context_zero(self):
-        msgs = [HumanMessage(content="a")]
-        result = _apply_sliding_window(msgs, max_context=0)
-        assert len(result) == 1  # 0이면 그대로
 
 
 class TestIsToolError:
