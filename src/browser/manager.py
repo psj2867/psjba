@@ -5,6 +5,7 @@ import contextvars
 import json
 import logging
 import os
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -837,9 +838,17 @@ class PlaywrightManager:
         if not self._connected or not self._tabs:
             return "[Browser: not connected]"
 
+        _t0 = time.monotonic()
+
         await self._refresh_tabs()
+        _t1 = time.monotonic()
+        logger.info("[TIMING] get_browser_context: _refresh_tabs: %.3fs", _t1 - _t0)
+
         # 모든 탭의 update_info를 병렬 실행
         await asyncio.gather(*(tab.update_info() for tab in self._tabs))
+        _t2 = time.monotonic()
+        logger.info("[TIMING] get_browser_context: update_info x%d: %.3fs",
+                    len(self._tabs), _t2 - _t1)
 
         parts = [f"[Browser: connected ({len(self._tabs)} tabs)]"]
         for i, tab in enumerate(self._tabs):
@@ -849,6 +858,10 @@ class PlaywrightManager:
             if tab.dialog:
                 d = tab.dialog
                 parts.append(f"       ⚠️ Dialog: [{d.get('type')}] {d.get('message', '')}")
+
+        _t3 = time.monotonic()
+        logger.info("[TIMING] get_browser_context: string build: %.6fs (total: %.3fs)",
+                    _t3 - _t2, _t3 - _t0)
         return "\n".join(parts)
 
     async def chrome_start(self) -> str:
@@ -1386,7 +1399,7 @@ class PlaywrightManager:
         if self._db is None:
             return "cron_list error: database not initialized"
 
-        jobs = await self._db.list_cron_jobs()
+        jobs, _ = await self._db.list_cron_jobs(page=1, page_size=999)
         if not jobs:
             return "cron_list: no cron jobs registered"
 

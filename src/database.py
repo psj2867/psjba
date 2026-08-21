@@ -417,18 +417,39 @@ class Database:
         await self.conn.commit()
 
     async def list_cron_jobs(
-        self, include_deleted: bool = False
-    ) -> list[CronJob]:
-        if include_deleted:
-            cursor = await self.conn.execute(
-                "SELECT * FROM psjba_cron_job ORDER BY created_at DESC"
-            )
-        else:
-            cursor = await self.conn.execute(
-                "SELECT * FROM psjba_cron_job WHERE status != 'deleted' ORDER BY created_at DESC"
-            )
+        self,
+        page: int = 1,
+        page_size: int = 10,
+        include_archived: bool = False,
+    ) -> tuple[list[CronJob], int]:
+        """크론 job 목록을 페이지네이션하여 반환한다.
+
+        Args:
+            page: 페이지 번호 (1부터)
+            page_size: 페이지당 항목 수
+            include_archived: True면 status='disable' (비활성) job도 포함
+
+        Returns:
+            (job_list, total_count)
+        """
+        conditions = ["status != 'deleted'"]
+        if not include_archived:
+            conditions.append("status = 'enable'")
+
+        where = " AND ".join(conditions)
+        count_cursor = await self.conn.execute(
+            f"SELECT COUNT(*) FROM psjba_cron_job WHERE {where}"
+        )
+        total = (await count_cursor.fetchone())[0]
+
+        offset = (page - 1) * page_size
+        cursor = await self.conn.execute(
+            f"SELECT * FROM psjba_cron_job WHERE {where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            (page_size, offset),
+        )
         rows = await cursor.fetchall()
-        return [self._row_to_cron_job(r) for r in rows]
+        jobs = [self._row_to_cron_job(r) for r in rows]
+        return jobs, total
 
     async def get_enabled_cron_jobs(self) -> list[CronJob]:
         cursor = await self.conn.execute(
