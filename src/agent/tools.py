@@ -240,14 +240,13 @@ def create_cron_tools(
         return await manager.add_main_session_message(message)
 
     @tool
-    async def job_add(name: str, time_str: str, prompt: str) -> str:
-        """Add a one-time scheduled job. time_str is a datetime in ISO format (e.g. '2026-07-30T15:30:00' or '2026-07-30 15:30:00')."""
-        from datetime import datetime
+    async def job_add(name: str, seconds: int, prompt: str) -> str:
+        """Add a one-time scheduled job. seconds is how many seconds from now to run the job (e.g. pass 300 for 5 minutes from now)."""
+        from datetime import datetime, timedelta
         from src.models.schemas import ScheduledJob
-        parsed = time_str.replace("T", " ").strip()
-        dt = datetime.fromisoformat(parsed)
-        if dt <= datetime.now():
-            return f"job_add error: time must be in the future (now: {datetime.now().isoformat()[:19]})"
+        if seconds < 10:
+            return f"job_add error: seconds must be at least 10 (got {seconds})"
+        dt = datetime.now() + timedelta(seconds=seconds)
         job = ScheduledJob(
             name=name,
             scheduled_at=dt,
@@ -261,7 +260,7 @@ def create_cron_tools(
             return "job_add error: no database or scheduler available"
         return (
             f"Scheduled one-time job '{name}' created: "
-            f"will run at {dt.isoformat()[:19]} (ID: {job.id})"
+            f"will run at {dt.isoformat()[:19]} ({seconds} seconds from now, ID: {job.id})"
         )
 
     @tool

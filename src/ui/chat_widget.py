@@ -278,9 +278,9 @@ class ChatWidget(QWidget):
         return sb.maximum() - sb.value() <= threshold
 
     def _auto_scroll_if_needed(self) -> None:
-        """스크롤이 하단 근처이면 최하단으로 내린다."""
+        """스크롤이 하단 근처이면 최하단으로 내린다. (setMarkdown 직후에는 레이아웃 미반영이므로 QTimer 지연)"""
         if self._is_near_bottom():
-            self._scroll_to_bottom()
+            QTimer.singleShot(0, self._do_scroll)
 
     # --- 사용자 메시지 ---
 
