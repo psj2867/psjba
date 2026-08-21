@@ -51,6 +51,20 @@ def _should_continue(state: AgentState) -> str:
     return "__end__"
 
 
+def _should_init_continue(state: AgentState) -> str:
+    """init_call_model 이후 라우팅: is_final이면 END, call_model로 진행."""
+    return "__end__" if state.get("is_final") else "call_model"
+
+
+# ── init_call_model 노드 ────────────────────────────────────────────
+
+class _InitCallModelNode:
+    """첫 호출 메시지 구성 노드 — DB history 로드 + user_text/browser_context 조합."""
+
+    async def __call__(self, state: AgentState) -> dict:
+        return await _nodes_module.init_call_model(state, db=_shared_db)
+
+
 # ── 동적 LLM 주입용 call_model 노드 ────────────────────────────────
 
 class _CallModelNode:
@@ -69,7 +83,7 @@ class _CallModelNode:
 
     async def __call__(self, state: AgentState) -> dict:
         fn = _nodes_module.call_model_cron if self._is_cron else _nodes_module.call_model_user
-        return await fn(state, llm=self._llm, db=_shared_db)
+        return await fn(state, llm=self._llm)
 
 
 # ── module-level lru_cache 빌드 ────────────────────────────────────
@@ -98,10 +112,12 @@ def _build_cached(
     tool_list: list = tools  # bind_tools용 list
 
     call_node = _CallModelNode(is_cron)
+    init_node = _InitCallModelNode()
 
     _t1 = time.monotonic()
     graph = StateGraph(AgentState)
 
+    graph.add_node("init_call_model", init_node)
     graph.add_node("call_model", call_node)
     graph.add_node(
         "execute_tool",
@@ -109,7 +125,12 @@ def _build_cached(
     )
     graph.add_node("assess_error", _nodes_module.assess_error)
 
-    graph.set_entry_point("call_model")
+    graph.set_entry_point("init_call_model")
+    graph.add_conditional_edges(
+        "init_call_model",
+        _should_init_continue,
+        {"call_model": "call_model", "__end__": END},
+    )
     graph.add_conditional_edges(
         "call_model",
         _should_continue,
@@ -157,6 +178,7 @@ class AgentGraph:
         _shared_manager = manager
         _shared_db = db
         _shared_scheduler = job_scheduler
+        _nodes_module.reset_abort()
         # nodes.py에도 config 전파 (실시간 읽기용)
         _nodes_module._shared_config = config
 
