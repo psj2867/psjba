@@ -244,8 +244,8 @@ def create_cron_tools(
         """Add a one-time scheduled job. seconds is how many seconds from now to run the job (e.g. pass 300 for 5 minutes from now)."""
         from datetime import datetime, timedelta
         from src.models.schemas import ScheduledJob
-        if seconds < 10:
-            return f"job_add error: seconds must be at least 10 (got {seconds})"
+        if seconds < 1:
+            return f"job_add error: seconds must be at least 1 (got {seconds})"
         dt = datetime.now() + timedelta(seconds=seconds)
         job = ScheduledJob(
             name=name,
