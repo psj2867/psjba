@@ -396,82 +396,11 @@ async def _invoke_llm(
     return {"messages": injected_msgs + [response]}
 
 
-async def init_call_model(
-    state: AgentState,
-    db: Optional[Any] = None,
-) -> dict[str, Any]:
-    """첫 호출: DB history 로드 + user_text/browser_context로 메시지 구성.
-
-    이 노드는 그래프 진입점이다. state.messages가 이미 있으면 skip
-    (크론/잡 등은 프롬프트가 직접 messages에 주입되어 있음).
-
-    Returns:
-        messages가 구성된 dict, 또는 is_final=True.
-    """
-    if state.get("messages"):
-        return {"_init_done": True}
-
-    if db is None:
-        logger.error("init_call_model: db is None, cannot load history")
-        return {"is_final": True}
-
-    max_context_messages = int(_get_cfg("agent", "sliding_window_size"))
-    _t_load = time.monotonic()
-    session_id = state.get("session_id", "")
-    user_text = state.get("user_text", "")
-    browser_context = state.get("browser_context", "")
-
-    try:
-        history_rows = await db.get_messages(session_id, limit=999999)
-    except Exception as e:
-        logger.error("init_call_model: DB load failed: %s", e)
-        return {"is_final": True, "messages": [AIMessage(content=f"[DB load failed: {e}]")]}
-
-    # 방금 저장된 user 메시지는 user_text로 대체
-    if history_rows and history_rows[-1].role == "user":
-        history_rows = history_rows[:-1]
-
-    # user 메시지 기준 슬라이딩
-    user_indices = [i for i, r in enumerate(history_rows) if r.role == "user"]
-    if len(user_indices) > max_context_messages:
-        keep_from = user_indices[-max_context_messages]
-        history_rows = history_rows[keep_from:]
-
-    messages: list[BaseMessage] = []
-    for row in history_rows:
-        if row.role == "user":
-            messages.append(HumanMessage(content=row.content))
-        elif row.role == "assistant":
-            messages.append(AIMessage(content=row.content))
-        elif row.role == "tool":
-            messages.append(ToolMessage(content=row.content, tool_call_id=""))
-        elif row.role == "system":
-            messages.append(SystemMessage(content=row.content))
-
-    # browser context → developer message
-    if browser_context and browser_context != "[Browser: not connected]":
-        messages.append(HumanMessage(
-            content=f"[Browser Context]\n{browser_context}",
-            additional_kwargs={"role": "developer"},
-        ))
-
-    # 현재 user text
-    if user_text:
-        messages.append(HumanMessage(content=user_text))
-
-    logger.debug("[TIMING] init_call_model history load: %.3fs", time.monotonic() - _t_load)
-    return {"messages": messages, "_init_done": True}
-
-
 async def call_model_user(
     state: AgentState,
     llm: BaseChatModel,
 ) -> dict[str, Any]:
-    """사용자 요청용 LLM 호출 — intervention/dialog/경고 포함.
-
-    init_call_model이 DB history 로드 및 메시지 구성을 완료한 후 호출됨.
-    state.messages에 이미 user_text가 포함되어 있음.
-    """
+    """사용자 요청용 LLM 호출 — intervention/dialog/경고 포함."""
     messages = list(state.get("messages", []))
     queue = state.get("intervention_queue")
     injected_msgs: list[BaseMessage] = []

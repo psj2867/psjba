@@ -23,6 +23,73 @@ logger = logging.getLogger("psjba")
 _DEFAULT_AGENT_TIMEOUT = 300  # 메인 세션 그래프 타임아웃 (초)
 
 
+async def build_initial_messages(
+    db: Any,
+    session_id: str,
+    user_text: str,
+    browser_context: str,
+    config: Any = None,
+) -> list:
+    """DB history + browser_context + user_text로 초기 messages 리스트를 구성한다.
+
+    runner.py의 handle_prompt에서 state.messages에 세팅하기 위해 사용.
+    """
+    from langchain_core.messages import (
+        AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage,
+    )
+
+    max_context_messages = 5  # 기본값
+    if config:
+        try:
+            max_context_messages = int(getattr(getattr(config, "agent", None), "sliding_window_size", 5))
+        except (TypeError, ValueError):
+            pass
+
+    _t_load = time.monotonic()
+
+    try:
+        history_rows = await db.get_messages(session_id, limit=999999)
+    except Exception as e:
+        logger.error("build_initial_messages: DB load failed: %s", e)
+        return []
+
+    # 방금 저장된 user 메시지는 user_text로 대체
+    if history_rows and history_rows[-1].role == "user":
+        history_rows = history_rows[:-1]
+
+    # user 메시지 기준 슬라이딩
+    user_indices = [i for i, r in enumerate(history_rows) if r.role == "user"]
+    if len(user_indices) > max_context_messages:
+        keep_from = user_indices[-max_context_messages]
+        history_rows = history_rows[keep_from:]
+
+    messages: list[BaseMessage] = []
+    for row in history_rows:
+        if row.role == "user":
+            messages.append(HumanMessage(content=row.content))
+        elif row.role == "assistant":
+            messages.append(AIMessage(content=row.content))
+        elif row.role == "tool":
+            messages.append(ToolMessage(content=row.content, tool_call_id=""))
+        elif row.role == "system":
+            messages.append(SystemMessage(content=row.content))
+
+    # browser context → developer message
+    if browser_context and browser_context != "[Browser: not connected]":
+        messages.append(HumanMessage(
+            content=f"[Browser Context]\n{browser_context}",
+            additional_kwargs={"role": "developer"},
+        ))
+
+    # 현재 user text
+    if user_text:
+        messages.append(HumanMessage(content=user_text))
+
+    logger.debug("[TIMING] build_initial_messages: %.3fs (%d msgs)",
+                 time.monotonic() - _t_load, len(messages))
+    return messages
+
+
 async def async_iter_timeout(
     aiterable: Any,
     timeout: float,
@@ -101,6 +168,16 @@ async def handle_prompt(
             "is_final": False,
             "tool_call_count": 0,
         }
+
+        # 초기 메시지 구성: DB history + browser_context + user_text
+        initial_msgs = await build_initial_messages(
+            db, session_id, text, browser_context, config,
+        )
+        if initial_msgs:
+            state["messages"] = initial_msgs
+        else:
+            # DB 로드 실패 시에도 user_text는 보존
+            state["messages"] = [HumanMessage(content=text)]
 
         _t5 = time.monotonic()
         window.show_ai_thinking("🤖 응답 대기 중...")
