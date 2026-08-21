@@ -175,9 +175,11 @@ async def handle_prompt(
         )
         if initial_msgs:
             state["messages"] = initial_msgs
+            initial_msg_count = len(initial_msgs)
         else:
             # DB 로드 실패 시에도 user_text는 보존
             state["messages"] = [HumanMessage(content=text)]
+            initial_msg_count = 1
 
         _t5 = time.monotonic()
         window.show_ai_thinking("🤖 응답 대기 중...")
@@ -241,7 +243,7 @@ async def handle_prompt(
                     ]
                 window._chat.finalize_ai_response(str(last.content), tool_calls=tool_calls)
 
-            for msg in final_messages:
+            for msg in final_messages[initial_msg_count:]:
                 try:
                     role = "assistant" if msg.type == "ai" else msg.type
                     if role not in ("user", "assistant", "tool", "system"):
