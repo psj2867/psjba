@@ -108,6 +108,7 @@ def create_browser_tools(
     async def browser_snapshot(tab_index: Optional[int] = None, ref: Optional[int] = None) -> str:
         """Get the accessibility tree of a page. Use this to understand the page structure before taking actions.
 
+        Result includes a tab info header line like '[Tab 0] url | title'.
         If ref is provided, returns a detailed subtree view (up to 3 levels deep with full tag/attribute info)
         for that specific [#N] ref from a previous snapshot. Call browser_snapshot() (without ref) first to
         get the overall tree and ref numbers.

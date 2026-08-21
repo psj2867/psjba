@@ -435,6 +435,14 @@ class PlaywrightManager:
             return self._tabs[idx].page
         raise RuntimeError(f"Invalid tab index: {idx} (focused: {self._focused_tab_index})")
 
+    def _format_tab_info_line(self, idx: int) -> str:
+        """탭 정보 한 줄 문자열 (snapshot 결과 앞에 붙임)."""
+        try:
+            tab = self._tabs[idx]
+            return f"[Tab {idx}] {tab.url} | {tab.title}"
+        except (IndexError, AttributeError):
+            return f"[Tab {idx}] (unknown)"
+
     # ─── 탭 관리 ────────────────────────────────────────────
 
     async def browser_new_tab(self, url: Optional[str] = None) -> str:
@@ -870,13 +878,17 @@ class PlaywrightManager:
             tab_index: 대상 탭 인덱스 (None이면 포커스 탭)
             ref: 상세 조회할 [#N] ref 번호 (None이면 전체 트리)
         """
+        idx = tab_index if tab_index is not None else self._focused_tab_index
+        tab_info = self._format_tab_info_line(idx)
+
         if ref is not None:
             session_refs = self._get_session_refs()
             if not session_refs:
-                return ("No a11y refs available. "
+                return (tab_info + "\n"
                         "Call browser_snapshot() first to get the accessibility tree.")
             page = self._ensure_page(tab_index)
-            return await get_subtree_detail(page, ref, session_refs)
+            tree = await get_subtree_detail(page, ref, session_refs)
+            return tab_info + "\n" + tree
 
         # 전체 트리 요청: 이전 refs + counter 초기화
         self._clear_session_refs()
@@ -895,7 +907,7 @@ class PlaywrightManager:
                     node["_selector"] = sel
 
         self._set_session_refs(refs)
-        return text
+        return tab_info + "\n" + text
 
     async def browser_click(self, ref: int, tab_index: Optional[int] = None) -> str:
         """접근성 트리 ref 번호로 요소를 찾아 클릭한다.
