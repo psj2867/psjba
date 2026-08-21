@@ -451,6 +451,31 @@ class Database:
         jobs = [self._row_to_cron_job(r) for r in rows]
         return jobs, total
 
+    async def list_scheduled_jobs_paginated(
+        self,
+        page: int = 1,
+        page_size: int = 10,
+    ) -> tuple[list[ScheduledJob], int]:
+        """1회성 예약 job 목록을 페이지네이션하여 반환한다.
+
+        Returns:
+            (job_list, total_count)
+        """
+        cursor = await self.conn.execute(
+            "SELECT COUNT(*) FROM psjba_scheduled_job WHERE status != 'cancelled'"
+        )
+        total = (await cursor.fetchone())[0]
+
+        offset = (page - 1) * page_size
+        cursor = await self.conn.execute(
+            "SELECT * FROM psjba_scheduled_job WHERE status != 'cancelled' "
+            "ORDER BY scheduled_at DESC LIMIT ? OFFSET ?",
+            (page_size, offset),
+        )
+        rows = await cursor.fetchall()
+        jobs = [self._row_to_scheduled_job(r) for r in rows]
+        return jobs, total
+
     async def get_enabled_cron_jobs(self) -> list[CronJob]:
         cursor = await self.conn.execute(
             "SELECT * FROM psjba_cron_job WHERE status = 'enable'"
