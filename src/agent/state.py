@@ -23,3 +23,4 @@ class AgentState(TypedDict, total=False):
     tool_call_count: int
     intervention_queue: list[str]  # 공유 참조 — 실행 중 사용자 입력
     pending_dialogs: list[dict]  # {tab_index, type, message, default} — override dialog, 탭별 여러 개
+    _first_done: bool  # call_model_user 첫 호출 user_text persist 여부 (내부용)
