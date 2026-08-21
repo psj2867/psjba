@@ -25,13 +25,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage
 from langgraph.graph import END, StateGraph
 
-from src.agent.nodes import (
-    _shared_config as _set_nodes_config,
-    assess_error,
-    call_model_cron,
-    call_model_user,
-    execute_tool,
-)
+import src.agent.nodes as _nodes_module
 from src.agent.state import AgentState
 from src.agent.tools import create_all_tools
 
@@ -74,7 +68,7 @@ class _CallModelNode:
         self._llm = llm
 
     async def __call__(self, state: AgentState) -> dict:
-        fn = call_model_cron if self._is_cron else call_model_user
+        fn = _nodes_module.call_model_cron if self._is_cron else _nodes_module.call_model_user
         return await fn(state, llm=self._llm, db=_shared_db)
 
 
@@ -111,9 +105,9 @@ def _build_cached(
     graph.add_node("call_model", call_node)
     graph.add_node(
         "execute_tool",
-        partial(execute_tool, tools=tool_dict, manager=_shared_manager),
+        partial(_nodes_module.execute_tool, tools=tool_dict, manager=_shared_manager),
     )
-    graph.add_node("assess_error", assess_error)
+    graph.add_node("assess_error", _nodes_module.assess_error)
 
     graph.set_entry_point("call_model")
     graph.add_conditional_edges(
@@ -164,7 +158,7 @@ class AgentGraph:
         _shared_db = db
         _shared_scheduler = job_scheduler
         # nodes.py에도 config 전파 (실시간 읽기용)
-        _set_nodes_config(config)
+        _nodes_module._shared_config = config
 
     # ── public ─────────────────────────────────────────────────
 

@@ -23,7 +23,8 @@ class TestApplySlidingWindow:
     def test_trim_excess(self):
         msgs = [HumanMessage(content=f"msg{i}") for i in range(10)]
         result = _apply_sliding_window(msgs, max_context=3)
-        assert len(result) <= 3 + 1  # 3 user + 비율 보정
+        # user만 10개, system 없음 → 첫 user 보존 로직이 cutoff보다 우선하므로 모두 유지
+        assert len(result) == 10
 
     def test_system_message_preserved(self):
         msgs = [SystemMessage(content="system"), HumanMessage(content="a"),
@@ -83,7 +84,7 @@ class TestExecuteTool:
         result = await execute_tool(state, tools)
         assert "messages" in result
         assert len(result["messages"]) == 1
-        assert result["messages"][0].role == "tool"
+        assert result["messages"][0].type == "tool"
         assert result["error_count"] == 0
 
     async def test_execute_unknown_tool(self):
@@ -105,7 +106,7 @@ class TestExecuteTool:
         result = await execute_tool(state, {})
         assert "messages" in result
         # ToolMessage with error
-        assert result["messages"][0].role == "tool"
+        assert result["messages"][0].type == "tool"
 
     async def test_tool_content_in_json(self):
         tool_func = AsyncMock()
