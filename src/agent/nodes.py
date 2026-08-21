@@ -21,6 +21,24 @@ from src.browser.manager import set_a11y_session_id as _set_current_session
 
 logger = logging.getLogger("psjba.agent.nodes")
 
+# ── config (AgentGraph.__init__에서 설정) ──────────────────────────
+_shared_config: Optional[Any] = None
+
+
+def _get_cfg(section: str, key: str, default: str = "") -> str:
+    """_shared_config에서 값을 읽는다 (없으면 default 반환)."""
+    cfg = _shared_config
+    if cfg is None:
+        return default
+    try:
+        val = cfg.get(section, key)
+        if val is None:
+            return default
+        return str(val)
+    except KeyError:
+        return default
+
+
 ERROR_KEYWORDS = ("error", "failed", "exception", "not found", "timeout")
 MIN_KEEP_MESSAGES = 10
 
@@ -255,13 +273,13 @@ def _is_tool_error(result: str) -> bool:
 async def _invoke_llm(
     messages: list[BaseMessage],
     llm: BaseChatModel,
-    max_context_messages: int = 30,
     injected_msgs: Optional[list[BaseMessage]] = None,
     state: Optional[AgentState] = None,
 ) -> dict[str, Any]:
     """LLM 호출 공통 코어: 슬라이딩 윈도우 → 시스템 프롬프트 → 호출 → 응답."""
     _t = time.monotonic()
-    messages = _apply_sliding_window(messages, max_context_messages)
+    max_context = int(_get_cfg("agent", "sliding_window_size"))
+    messages = _apply_sliding_window(messages, max_context)
 
     injected_msgs = injected_msgs or []
     if injected_msgs:
@@ -368,8 +386,6 @@ async def _invoke_llm(
 async def call_model_user(
     state: AgentState,
     llm: BaseChatModel,
-    max_context_messages: int = 30,
-    max_tool_calls: int = 30,
     db: Optional[Any] = None,
 ) -> dict[str, Any]:
     """사용자 요청용 LLM 호출 — history 로드, intervention/dialog/경고 포함.
@@ -377,10 +393,10 @@ async def call_model_user(
     Args:
         state: 현재 에이전트 상태 (session_id, user_text, browser_context 등)
         llm: 바인딩된 ChatOpenAI 인스턴스
-        max_context_messages: 슬라이딩 윈도우 크기
-        max_tool_calls: 최대 tool call 횟수
         db: Database 인스턴스 (첫 호출 시 history 로드용)
     """
+    max_tool_calls = int(_get_cfg("agent", "max_tool_calls"))
+    max_context_messages = int(_get_cfg("agent", "sliding_window_size"))
     messages = list(state.get("messages", []))
 
     # ── 첫 호출: DB에서 history 로드 + user_text/browser_context 로 메시지 구성 ──
@@ -483,19 +499,18 @@ async def call_model_user(
     injected_all = injected_msgs + dialog_msgs
 
     return await _invoke_llm(
-        messages, llm, max_context_messages, injected_msgs=injected_all, state=state,
+        messages, llm, injected_msgs=injected_all, state=state,
     )
 
 
 async def call_model_cron(
     state: AgentState,
     llm: BaseChatModel,
-    max_context_messages: int = 30,
-    max_tool_calls: int = 50,
     db: Optional[Any] = None,
 ) -> dict[str, Any]:
     """크론/잡 전용 LLM 호출 — intervention/dialog 없이 간결하게."""
     _ = db  # 크론은 DB history 로드 불필요 (프롬프트가 messages에 직접 주입됨)
+    max_tool_calls = int(_get_cfg("agent", "cron_tool_calls"))
     current_count = state.get("tool_call_count", 0)
     try:
         current_count = int(current_count)
@@ -521,7 +536,7 @@ async def call_model_cron(
     messages = list(state.get("messages", []))
 
     return await _invoke_llm(
-        messages, llm, max_context_messages, injected_msgs=None, state=state,
+        messages, llm, injected_msgs=None, state=state,
     )
 
 
@@ -688,7 +703,6 @@ async def execute_tool(
 
 def assess_error(
     state: AgentState,
-    max_retries: int = 3,
 ) -> dict:
     """도구 실행 결과를 평가하여 상태를 업데이트한다.
 
@@ -697,8 +711,8 @@ def assess_error(
 
     Args:
         state: 현재 에이전트 상태
-        max_retries: 최대 재시도 횟수
     """
+    max_retries = int(_get_cfg("agent", "max_retries", default="3"))
     error_count = state.get("error_count", 0)
     is_final = state.get("is_final", False)
 

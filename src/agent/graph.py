@@ -26,6 +26,7 @@ from langchain_core.messages import AIMessage
 from langgraph.graph import END, StateGraph
 
 from src.agent.nodes import (
+    _shared_config as _set_nodes_config,
     assess_error,
     call_model_cron,
     call_model_user,
@@ -65,15 +66,8 @@ class _CallModelNode:
     AgentGraph.compiled()에서 set_llm()으로 LLM을 주입한다.
     """
 
-    def __init__(
-        self,
-        is_cron: bool,
-        max_context_messages: int,
-        max_tool_calls: int,
-    ) -> None:
+    def __init__(self, is_cron: bool) -> None:
         self._is_cron = is_cron
-        self._max_context_messages = max_context_messages
-        self._max_tool_calls = max_tool_calls
         self._llm: Any = None  # set_llm()으로 주입
 
     def set_llm(self, llm: Any) -> None:
@@ -81,13 +75,7 @@ class _CallModelNode:
 
     async def __call__(self, state: AgentState) -> dict:
         fn = call_model_cron if self._is_cron else call_model_user
-        return await fn(
-            state,
-            llm=self._llm,
-            max_context_messages=self._max_context_messages,
-            max_tool_calls=self._max_tool_calls,
-            db=_shared_db,
-        )
+        return await fn(state, llm=self._llm, db=_shared_db)
 
 
 # ── module-level lru_cache 빌드 ────────────────────────────────────
@@ -97,13 +85,11 @@ def _build_cached(
     session_id: str,
     is_cron: bool,
     cron_job_id: str,
-    max_context_messages: int,
-    max_tool_calls: int,
-    max_retries: int,
 ) -> tuple:
     """(compiled_graph, call_node, tool_dict) 를 캐싱하여 반환.
 
     Hashable param만 받고, 나머지(app-lifetime singleton)는 module global 참조.
+    설정값(max_tool_calls, sliding_window_size 등)은 _shared_config에서 실시간 읽음.
     LLM은 포함되지 않음 → AgentGraph.compiled()에서 set_llm()으로 주입.
     """
     _t0 = time.monotonic()
@@ -117,7 +103,7 @@ def _build_cached(
     tool_dict: dict[str, Any] = {t.name: t for t in tools}
     tool_list: list = tools  # bind_tools용 list
 
-    call_node = _CallModelNode(is_cron, max_context_messages, max_tool_calls)
+    call_node = _CallModelNode(is_cron)
 
     _t1 = time.monotonic()
     graph = StateGraph(AgentState)
@@ -127,10 +113,7 @@ def _build_cached(
         "execute_tool",
         partial(execute_tool, tools=tool_dict, manager=_shared_manager),
     )
-    graph.add_node(
-        "assess_error",
-        partial(assess_error, max_retries=max_retries),
-    )
+    graph.add_node("assess_error", assess_error)
 
     graph.set_entry_point("call_model")
     graph.add_conditional_edges(
@@ -147,10 +130,7 @@ def _build_cached(
 
     compiled = graph.compile()
     logger.debug("[TIMING] graph.compile: %.3fs", time.monotonic() - _t1)
-    logger.info(
-        f"Agent graph compiled: {len(tools)} tools, "
-        f"window={max_context_messages}, retries={max_retries}"
-    )
+    logger.info(f"Agent graph compiled: {len(tools)} tools")
     return compiled, call_node, tool_list
 
 
@@ -160,7 +140,7 @@ class AgentGraph:
     """LangGraph 에이전트 — LRU 캐싱 + LLM 동적 주입.
 
     사용법:
-        agent = AgentGraph(manager=..., db=..., ...)
+        agent = AgentGraph(config=config, manager=..., db=..., ...)
 
         # 매 프롬프트
         graph = agent.compiled(
@@ -174,21 +154,17 @@ class AgentGraph:
     def __init__(
         self,
         *,
+        config: Any,
         manager: Any,
         db: Any = None,
         job_scheduler: Any = None,
-        max_context_messages: int = 10,
-        max_retries: int = 3,
-        max_tool_calls: int = 30,
     ) -> None:
         global _shared_manager, _shared_db, _shared_scheduler
         _shared_manager = manager
         _shared_db = db
         _shared_scheduler = job_scheduler
-
-        self._max_context_messages = max_context_messages
-        self._max_retries = max_retries
-        self._max_tool_calls = max_tool_calls
+        # nodes.py에도 config 전파 (실시간 읽기용)
+        _set_nodes_config(config)
 
     # ── public ─────────────────────────────────────────────────
 
@@ -202,9 +178,6 @@ class AgentGraph:
         is_cron = bool(cron_job_id)
         compiled, call_node, tools = _build_cached(
             session_id, is_cron, cron_job_id,
-            self._max_context_messages,
-            self._max_tool_calls,
-            self._max_retries,
         )
         # bind_tools + LLM 주입 (호출 직전, ~0.028s)
         bound_llm = llm.bind_tools(tools, tool_choice="auto")

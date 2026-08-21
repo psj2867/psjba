@@ -229,9 +229,7 @@ async def run(config: Config) -> None:
     # AgentGraph 생성 (LLM 주입은 handle_prompt에서)
     from src.agent.graph import AgentGraph
     agent = AgentGraph(
-        manager=manager, db=db, job_scheduler=job_scheduler,
-        max_context_messages=int(config.get("agent", "sliding_window_size")),
-        max_tool_calls=int(config.get("agent", "max_tool_calls")),
+        config=config, manager=manager, db=db, job_scheduler=job_scheduler,
     )
 
     logger.info("Application started successfully")

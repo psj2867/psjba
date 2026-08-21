@@ -10,7 +10,6 @@ from src.agent.nodes import (
     _apply_sliding_window,
     _is_tool_error,
     assess_error,
-    call_model,
     execute_tool,
 )
 
@@ -66,35 +65,6 @@ class TestIsToolError:
         assert _is_tool_error("Clicked: #button") is False
         assert _is_tool_error("hello world") is False
         assert _is_tool_error("") is False
-
-
-@pytest.mark.asyncio
-class TestCallModel:
-    async def test_llm_response(self):
-        llm = AsyncMock()
-        llm.ainvoke.return_value = AIMessage(content="Test response")
-        state = {
-            "messages": [HumanMessage(content="hello")],
-            "accessibility_tree": "[button] ok",
-            "error_count": 0,
-        }
-        result = await call_model(state, llm, max_context_messages=30)
-        assert "messages" in result
-        msgs = result["messages"]
-        assert len(msgs) == 1
-        assert msgs[0].content == "Test response"
-
-    async def test_llm_error_handling(self):
-        llm = AsyncMock()
-        llm.ainvoke.side_effect = Exception("API Timeout")
-        state = {
-            "messages": [HumanMessage(content="hello")],
-            "error_count": 0,
-        }
-        result = await call_model(state, llm)
-        assert "messages" in result
-        assert "LLM error" in result["messages"][0].content
-        assert result["error_count"] == 1
 
 
 @pytest.mark.asyncio
@@ -157,24 +127,33 @@ class TestExecuteTool:
 
 
 class TestAssessError:
+    """assess_error는 dict(state update) 반환. 라우팅은 graph.py의 conditional edge에서 수행.
+
+    _shared_config가 없으면 _get_cfg 기본값 max_retries=3.
+    """
+
     def test_no_error_continue(self):
         state = {"error_count": 0, "is_final": False}
-        assert assess_error(state) == "call_model"
+        result = assess_error(state)
+        assert result == {}
 
     def test_error_under_limit_retry(self):
         state = {"error_count": 1, "is_final": False}
-        assert assess_error(state, max_retries=3) == "call_model"
+        result = assess_error(state)
+        assert result == {}
 
     def test_error_at_limit_give_up(self):
         state = {"error_count": 3, "is_final": False}
-        result = assess_error(state, max_retries=3)
-        assert result == "__end__"
-        assert state["is_final"] is True
+        result = assess_error(state)
+        assert result["is_final"] is True
+        assert "messages" in result
 
     def test_is_final_ends(self):
         state = {"error_count": 0, "is_final": True}
-        assert assess_error(state) == "__end__"
+        result = assess_error(state)
+        assert result == {}
 
     def test_error_just_below_limit(self):
         state = {"error_count": 2, "is_final": False}
-        assert assess_error(state, max_retries=3) == "call_model"
+        result = assess_error(state)
+        assert result == {}

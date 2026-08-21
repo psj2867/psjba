@@ -63,6 +63,7 @@ DEFAULTS: dict[str, dict[str, Any]] = {
     },
     "agent": {
         "sliding_window_size": 5,
+        "max_retries": 3,
         "cron_timeout": 300,
         "max_tool_calls": 30,
         "cron_tool_calls": 50,
