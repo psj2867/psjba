@@ -504,7 +504,7 @@ async def call_model_user(
 
     # 첫 호출: 사용자 원본 메시지를 state에 보존 (툴 루프에서도 user_text 유지)
     if not state.get("_first_done") and state.get("user_text"):
-        state["_first_done"] = True
+        result["_first_done"] = True
         result["messages"] = [
             HumanMessage(content=state["user_text"]),
         ] + result["messages"]
