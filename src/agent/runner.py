@@ -13,6 +13,7 @@ from langchain_core.messages import (
 )
 
 from src.agent.graph import AgentGraph
+from src.agent.nodes import request_abort, reset_abort
 from src.agent.llm_client import LLMClient
 from src.models.schemas import Message
 from src.ui.helpers import finish_prompt_cancelled, show_error_in_ui
@@ -67,6 +68,8 @@ async def handle_prompt(
     user_msg = Message(session_id=session_id, role="user", content=text)
     await db.save_message(user_msg)
     logger.debug("[TIMING] session/DB: %.3fs", time.monotonic() - _t)
+
+    reset_abort()  # 이전 실행의 중단 플래그 초기화
 
     llm_client = None
     try:
@@ -129,6 +132,7 @@ async def handle_prompt(
                         logger.debug("Real-time content update failed: %s", e)
                     await asyncio.sleep(0)
                     if window.stop_requested:
+                        request_abort()
                         logger.warning("Stop requested during agent execution, breaking loop")
                         break
 
@@ -147,6 +151,7 @@ async def handle_prompt(
             return
 
         if window.stop_requested:
+            request_abort()
             finish_prompt_cancelled(window)
             return
 
