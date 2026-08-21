@@ -197,14 +197,10 @@ async def handle_prompt(
                     final_state = event
                     try:
                         event_msgs = event.get("messages", [])
-                        if event_msgs:
-                            for m in reversed(event_msgs):
-                                if m.type != "ai":
-                                    continue
-                                content = str(m.content or "").strip()
-                                if content:
-                                    window._chat.update_ai_content(content)
-                                break
+                        if event_msgs and event_msgs[-1].type == "ai":
+                            content = str(event_msgs[-1].content or "").strip()
+                            if content:
+                                window._chat.update_ai_content(content)
                     except Exception as e:
                         logger.debug("Real-time content update failed: %s", e)
                     await asyncio.sleep(0)
