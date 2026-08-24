@@ -610,15 +610,47 @@ class PlaywrightManager:
             return f"Navigation error: {e}"
 
     # ─── 헬퍼: CDP querySelector 로 노드 재발견 ──────────
+    async def _inject_data_psjba_refs(self, page: Page, refs: dict[int, dict[str, Any]]) -> None:
+        """CDP로 각 ref 요소에 data-psjba-ref="{ref}" 속성을 주입한다.
+
+        이후 ref 기반 조작(browser_click 등)에서 [data-psjba-ref="N"] CSS 선택자로
+        정확하고 빠르게 요소를 찾을 수 있다.
+        """
+        if not refs:
+            return
+        try:
+            cdp = await page.context.new_cdp_session(page)
+            await cdp.send("DOM.getDocument", {})
+            for ref, node in refs.items():
+                bid = node.get("_backendNodeId")
+                if not bid:
+                    continue
+                try:
+                    pn = await cdp.send("DOM.pushNodesByBackendIdsToFrontend", {
+                        "backendNodeIds": [bid],
+                    })
+                    nids = pn.get("nodeIds", [])
+                    if nids:
+                        await cdp.send("DOM.setAttributeValue", {
+                            "nodeId": nids[0],
+                            "name": "data-psjba-ref",
+                            "value": str(ref),
+                        })
+                        node["_has_data_ref"] = True
+                except Exception:
+                    logger.debug("_inject_data_psjba_refs: ref %d backendNodeId=%s skipped", ref, bid)
+        except Exception as e:
+            logger.warning("_inject_data_psjba_refs failed: %s", e)
+
     @staticmethod
     def _build_click_selector(node: dict[str, Any]) -> str:
         """ref 노드 정보로 CDP DOM.querySelector용 CSS 선택자를 만든다.
 
         Fallback chain (높은 정확도 순):
-          1. tag#id                        — id가 가장 정확
-          2. tag[role="X"]:nth-of-type(N)  — role + nth-of-type으로 unique
-          3. tag[attr="val"]                — aria-label, placeholder, name, type (중복 많음)
-          4. tag.safe-class[role="X"]       — 위험 문자 없는 클래스만
+          1. tag#id                          — id가 가장 정확
+          2. tag[role="X"]:nth-of-type(N)    — role + nth-of-type으로 unique
+          3. tag[attr="val"]                 — aria-label, placeholder, name, type
+          4. tag.safe-class[role="X"]        — 위험 문자 없는 클래스만
         """
         tag = node.get("tag", "") or node.get("_tag", "")
         nid = node.get("_id", "")
@@ -910,12 +942,18 @@ class PlaywrightManager:
 
         page = self._ensure_page(tab_index)
         text, refs = await get_accessibility_tree_with_refs(page)
+
+        # DOM에 data-psjba-ref 주입 (가장 신뢰할 수 있는 selector)
+        await self._inject_data_psjba_refs(page, refs)
+
         if refs:
             logger.info("a11y snapshot: %d interactive refs", len(refs))
-            # selector는 _build_click_selector로 동기 계산 (page.evaluate 없음)
-            # 중복 해소는 browser_click 등 사용 시점에 CDP로 refined
             for ref, node in refs.items():
-                sel = self._build_click_selector(node)
+                # data-psjba-ref가 주입되었으면 가장 정확한 선택자
+                if node.get("_has_data_ref"):
+                    sel = f'[data-psjba-ref="{ref}"]'
+                else:
+                    sel = self._build_click_selector(node)
                 if sel:
                     node["_selector"] = sel
 
