@@ -610,37 +610,6 @@ class PlaywrightManager:
             return f"Navigation error: {e}"
 
     # ─── 헬퍼: CDP querySelector 로 노드 재발견 ──────────
-    async def _inject_data_psjba_refs(self, page: Page, refs: dict[int, dict[str, Any]]) -> None:
-        """CDP로 각 ref 요소에 data-psjba-ref="{ref}" 속성을 주입한다.
-
-        이후 ref 기반 조작(browser_click 등)에서 [data-psjba-ref="N"] CSS 선택자로
-        정확하고 빠르게 요소를 찾을 수 있다.
-        """
-        if not refs:
-            return
-        try:
-            cdp = await page.context.new_cdp_session(page)
-            await cdp.send("DOM.getDocument", {})
-            for ref, node in refs.items():
-                bid = node.get("_backendNodeId")
-                if not bid:
-                    continue
-                try:
-                    pn = await cdp.send("DOM.pushNodesByBackendIdsToFrontend", {
-                        "backendNodeIds": [bid],
-                    })
-                    nids = pn.get("nodeIds", [])
-                    if nids:
-                        await cdp.send("DOM.setAttributeValue", {
-                            "nodeId": nids[0],
-                            "name": "data-psjba-ref",
-                            "value": str(ref),
-                        })
-                        node["_has_data_ref"] = True
-                except Exception:
-                    logger.debug("_inject_data_psjba_refs: ref %d backendNodeId=%s skipped", ref, bid)
-        except Exception as e:
-            logger.warning("_inject_data_psjba_refs failed: %s", e)
 
     @staticmethod
     def _build_click_selector(node: dict[str, Any]) -> str:
@@ -943,17 +912,14 @@ class PlaywrightManager:
         page = self._ensure_page(tab_index)
         text, refs = await get_accessibility_tree_with_refs(page)
 
-        # DOM에 data-psjba-ref 주입 (가장 신뢰할 수 있는 selector)
-        await self._inject_data_psjba_refs(page, refs)
-
         if refs:
             logger.info("a11y snapshot: %d interactive refs", len(refs))
+            # refs에 _selector가 없는 경우만 건너뛴다
+            # (format_accessibility_tree_with_refs에서 __psjba_id 기반으로 이미 설정함)
             for ref, node in refs.items():
-                # data-psjba-ref가 주입되었으면 가장 정확한 선택자
-                if node.get("_has_data_ref"):
-                    sel = f'[data-psjba-ref="{ref}"]'
-                else:
-                    sel = self._build_click_selector(node)
+                if node.get("_selector"):
+                    continue
+                sel = self._build_click_selector(node)
                 if sel:
                     node["_selector"] = sel
 

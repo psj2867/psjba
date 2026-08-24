@@ -5,6 +5,7 @@ import json
 import logging
 import time
 from typing import Any, Optional
+from uuid import uuid4
 
 from playwright.async_api import Page
 
@@ -220,6 +221,7 @@ def _format_node(
         if _is_interactive(role) or is_leaf:
             ref = _next_ref()
             label_parts.append(f"[#{ref}]")
+            psjba_id = node.get("__psjba_id", "")
             refs[ref] = {
             "role": role,
             "name": name,
@@ -235,7 +237,10 @@ def _format_node(
             "_backendNodeId": node.get("_backendNodeId"),
             "_text_content": (node.get("_text_content", "") or "")[:500],
             "_nth_of_type": node.get("_nth_of_type", 0),
+            "__psjba_id": psjba_id,
         }
+            if psjba_id:
+                refs[ref]["_selector"] = f'[data-psjba-id="{psjba_id}"]'
 
     # detail 모드에서 추가 정보
     auto = node.get("_autocomplete", "")
@@ -763,17 +768,42 @@ async def get_subtree_detail(page: Page, ref: int, refs: dict[int, dict[str, Any
     target_name = ref_info.get("name", "")
     target_selector = ref_info.get("_selector", "")
 
-    # Priority 1: CSS selector로 정확한 요소 찾기
+    # Priority 1: data-psjba-id → CDP로 서브트리 텍스트
     snapshot = None
+    psjba_id = ref_info.get("__psjba_id", "")
+    if psjba_id:
+        try:
+            cdp = await page.context.new_cdp_session(page)
+            await cdp.send("DOM.getDocument", {})
+            found = await cdp.send("DOM.querySelector", {
+                "nodeId": 1,
+                "selector": f'[data-psjba-id="{psjba_id}"]',
+            })
+            found_node_id = found.get("nodeId")
+            if found_node_id and found_node_id != 0:
+                outer_resp = await cdp.send("DOM.getOuterHTML", {"nodeId": found_node_id})
+                outer = outer_resp.get("outerHTML", "")
+                if outer:
+                    import re
+                    text = re.sub(r'<[^>]+>', '\n', outer).strip()
+                    text = '\n'.join(line.strip() for line in text.split('\n') if line.strip())
+                    if len(text) > 6000:
+                        text = text[:6000] + "\n... (truncated)"
+                    sel = ref_info.get("_selector", "")
+                    sel_line = f"\nselector = {sel}" if sel else ""
+                    return (f"--- Detail for ref #{ref} ({target_role} \"{target_name}\") ---\n"
+                            f"{text}{sel_line}")
+        except Exception as e:
+            logger.debug("get_subtree_detail: CDP querySelector failed: %s", e)
+
+    # Fallback: CSS selector → page.accessibility.snapshot (기존 방식)
     if target_selector:
         try:
             element = await page.query_selector(target_selector)
             if element:
                 snapshot = await page.accessibility.snapshot(root=element)
-                if snapshot is None:
-                    logger.debug("get_subtree_detail: a11y snapshot(root=%s) returned None", target_selector)
         except (PlaywrightError, AttributeError, Exception) as e:
-            logger.debug("get_subtree_detail: selector path failed: %s", e)
+            logger.debug("get_subtree_detail: a11y snapshot(root=%s) failed: %s", target_selector, e)
 
     # Priority 2: (role, name) match → full tree scan
     if snapshot is None:
@@ -954,7 +984,8 @@ async def _enrich_cdp_snapshot_with_dom(cdp_session: Any,
 
 
 async def _enrich_node(cdp_session: Any, node: dict[str, Any]) -> None:
-    """단일 노드의 DOM 속성과 텍스트를 CDP describeNode로 채운다."""
+    """단일 노드의 DOM 속성과 텍스트를 CDP describeNode로 채우고
+    data-psjba-id 속성을 DOM에 주입한다."""
     backend_id = node.get("_backendNodeId")
     if not backend_id:
         return
@@ -987,7 +1018,19 @@ async def _enrich_node(cdp_session: Any, node: dict[str, Any]) -> None:
             elif attr_name == "aria-haspopup":
                 node["_aria_haspopup"] = attr_val
 
-        # DOM getOuterHTML로 순수 텍스트 추출 (모든 노드 시도)
+        # DOM에 data-psjba-id 주입 (ref 기반 조작용 고유 선택자)
+        uid = uuid4().hex[:8]
+        try:
+            await cdp_session.send("DOM.setAttributeValue", {
+                "nodeId": dom_node.get("nodeId"),
+                "name": "data-psjba-id",
+                "value": uid,
+            })
+            node["__psjba_id"] = uid
+        except Exception:
+            pass  # non-fatal; nodeId 없으면 생략
+
+        # DOM getOuterHTML로 순수 텍스트 추출
         try:
             html_resp = await cdp_session.send("DOM.getOuterHTML", {
                 "backendNodeId": backend_id,
