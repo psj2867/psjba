@@ -128,6 +128,7 @@ class CronTab(QWidget):
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._l1_card_container = QWidget()
         self._l1_card_layout = QVBoxLayout(self._l1_card_container)
         self._l1_card_layout.setContentsMargins(8, 8, 8, 8)
@@ -355,6 +356,7 @@ class CronTab(QWidget):
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._l3_container = QWidget()
         self._l3_layout = QVBoxLayout(self._l3_container)
         self._l3_layout.setContentsMargins(8, 8, 8, 8)
@@ -569,6 +571,7 @@ class CronTab(QWidget):
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._l2_detail_container = QWidget()
         self._l2_detail_layout = QVBoxLayout(self._l2_detail_container)
         scroll.setWidget(self._l2_detail_container)

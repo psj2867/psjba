@@ -181,6 +181,7 @@ def _detail_row(label: str, value: str) -> QWidget:
     lbl.setFixedWidth(110)
     rl.addWidget(lbl)
     val = QLabel(value)
+    val.setWordWrap(True)
     val.setStyleSheet("border: none; color: #1e293b; font-size: 12px;")
     rl.addWidget(val)
     rl.addStretch()
