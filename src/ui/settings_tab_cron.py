@@ -328,56 +328,57 @@ class CronTab(QWidget):
         return frame
 
     def _on_job_card_click(self, job_type: str, job_id: str) -> None:
-        # 둘 다 L4 상세화면으로
+        # 둘 다 L2 상세화면으로
         self._l4_job_type = job_type
         self._l4_job_id = job_id
-        self._render_l4_detail(job_type, job_id)
+        self._render_l2_detail(job_type, job_id)
 
     # ================================================================
-    # Level 2: CRON job 선택 → 세션 목록
+    # Level 2: cron/job 상세 페이지
     # ================================================================
 
-    def _build_level2(self) -> QWidget:
+    def _build_level3(self) -> QWidget:
+        """L3: cron 세션 로그 목록."""
         w = QWidget()
         layout = QVBoxLayout(w)
 
         header = QHBoxLayout()
-        back_btn = QPushButton("◀ 목록으로")
-        back_btn.clicked.connect(lambda: self._cron_stacked.setCurrentIndex(0))
+        back_btn = QPushButton("◀ 상세")
+        back_btn.clicked.connect(lambda: self._cron_stacked.setCurrentIndex(1))
         header.addWidget(back_btn)
         header.addStretch()
-        self._l2_title = QLabel("")
-        self._l2_title.setStyleSheet("font-weight: bold; font-size: 12px;")
-        header.addWidget(self._l2_title)
+        self._l3_title = QLabel("")
+        self._l3_title.setStyleSheet("font-weight: bold; font-size: 12px;")
+        header.addWidget(self._l3_title)
         header.addStretch()
         layout.addLayout(header)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        self._l2_container = QWidget()
-        self._l2_layout = QVBoxLayout(self._l2_container)
-        self._l2_layout.setContentsMargins(8, 8, 8, 8)
-        self._l2_layout.setSpacing(4)
-        self._l2_layout.addStretch()
-        scroll.setWidget(self._l2_container)
+        self._l3_container = QWidget()
+        self._l3_layout = QVBoxLayout(self._l3_container)
+        self._l3_layout.setContentsMargins(8, 8, 8, 8)
+        self._l3_layout.setSpacing(4)
+        self._l3_layout.addStretch()
+        scroll.setWidget(self._l3_container)
         layout.addWidget(scroll)
 
-        self._l2_pagination = _make_pagination(self._on_l2_prev, self._on_l2_next)
-        layout.addLayout(self._l2_pagination)
+        self._l3_pagination = _make_pagination(self._on_l3_prev, self._on_l3_next)
+        layout.addLayout(self._l3_pagination)
         return w
 
-    def _on_l2_prev(self) -> None:
+    def _on_l3_prev(self) -> None:
         if self._l2_page > 1:
             self._l2_page -= 1
-            self._load_level2()
+            self._load_level3()
 
-    def _on_l2_next(self) -> None:
+    def _on_l3_next(self) -> None:
         if self._l2_page < self._l2_total_pages:
             self._l2_page += 1
-            self._load_level2()
+            self._load_level3()
 
-    def _load_level2(self) -> None:
-        _clear_layout(self._l2_layout)
+    def _load_level3(self) -> None:
+        _clear_layout(self._l3_layout)
         job_id = self._l2_job_id
         page = self._l2_page
 
@@ -396,36 +397,36 @@ class CronTab(QWidget):
         try:
             loop = asyncio.get_event_loop()
             if loop.is_running():
-                _run_async_task(_fetch(), callback=self._on_l2_loaded,
+                _run_async_task(_fetch(), callback=self._on_l3_session_loaded,
                                 task_store=self._async_tasks)
                 return
         except RuntimeError:
             pass
         result = _run_async(_fetch())
-        self._on_l2_loaded(result)
+        self._on_l3_session_loaded(result)
 
-    def _on_l2_loaded(self, result) -> None:
-        _clear_layout(self._l2_layout)
+    def _on_l3_session_loaded(self, result) -> None:
+        _clear_layout(self._l3_layout)
         sessions, total_pages, name = result if result else ([], 1, "")
         self._l2_total_pages = total_pages
-        _update_pagination(self._l2_pagination, self._l2_page, self._l2_total_pages)
-        self._l2_title.setText(name[:40])
-        self._cron_stacked.setCurrentIndex(1)
+        _update_pagination(self._l3_pagination, self._l2_page, self._l2_total_pages)
+        self._l3_title.setText(name[:40])
+        self._cron_stacked.setCurrentIndex(2)
 
         if not sessions:
             lbl = QLabel("실행 기록이 없습니다")
             lbl.setStyleSheet("color: #64748b; border: none;")
             lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            count = self._l2_layout.count()
-            self._l2_layout.insertWidget(count - 1, lbl)
+            count = self._l3_layout.count()
+            self._l3_layout.insertWidget(count - 1, lbl)
             return
 
         for s in sessions:
-            card = self._make_session_card(s, self._l2_job_id or "")
-            count = self._l2_layout.count()
-            self._l2_layout.insertWidget(count - 1, card)
+            card = self._make_l3_session_card(s)
+            count = self._l3_layout.count()
+            self._l3_layout.insertWidget(count - 1, card)
 
-    def _make_session_card(self, s: dict, job_id: str) -> QWidget:
+    def _make_l3_session_card(self, s: dict) -> QWidget:
         frame = QFrame()
         frame.setFrameShape(QFrame.Shape.StyledPanel)
         frame.setStyleSheet(
@@ -456,37 +457,38 @@ class CronTab(QWidget):
             layout.addWidget(resp_lbl)
 
         session_id = s.get("id", "")
-        frame.mousePressEvent = lambda e, sid=session_id: self._on_l2_session_click(sid)
+        frame.mousePressEvent = lambda e, sid=session_id: self._on_l3_session_click(sid)
         return frame
 
-    def _on_l2_session_click(self, session_id: str) -> None:
-        """L2 session click → L3 chat detail."""
+    def _on_l3_session_click(self, session_id: str) -> None:
+        """L3 session click → L4 chat detail."""
         async def _fetch() -> Any:
             return await self._db.get_messages(session_id)
 
         try:
             loop = asyncio.get_event_loop()
             if loop.is_running():
-                _run_async_task(_fetch(), callback=self._on_l3_loaded,
+                _run_async_task(_fetch(), callback=self._on_l4_loaded,
                                 task_store=self._async_tasks)
                 return
         except RuntimeError:
             pass
 
         messages = _run_async(_fetch()) or []
-        self._on_l3_loaded(messages)
+        self._on_l4_loaded(messages)
 
     # ================================================================
-    # Level 3: 세션 상세 채팅 + 타임라인
+    # Level 3: cron 세션 로그 목록
     # ================================================================
 
-    def _build_level3(self) -> QWidget:
+    def _build_level4(self) -> QWidget:
+        """L4: cron/job 로그 상세 채팅 + 타임라인."""
         w = QWidget()
         layout = QVBoxLayout(w)
 
         header = QHBoxLayout()
         back_btn = QPushButton("◀ 세션 목록")
-        back_btn.clicked.connect(lambda: self._cron_stacked.setCurrentIndex(1))
+        back_btn.clicked.connect(lambda: self._cron_stacked.setCurrentIndex(2))
         header.addWidget(back_btn)
         header.addStretch()
         close_btn = QPushButton("✕ 닫기")
@@ -496,32 +498,32 @@ class CronTab(QWidget):
 
         split = QHBoxLayout()
         # left panel: 타임라인
-        self._l3_time_container = QWidget()
-        self._l3_time_layout = QVBoxLayout(self._l3_time_container)
-        self._l3_time_layout.setContentsMargins(4, 4, 4, 4)
-        self._l3_time_layout.setSpacing(2)
-        self._l3_time_layout.addStretch()
+        self._l4_time_container = QWidget()
+        self._l4_time_layout = QVBoxLayout(self._l4_time_container)
+        self._l4_time_layout.setContentsMargins(4, 4, 4, 4)
+        self._l4_time_layout.setSpacing(2)
+        self._l4_time_layout.addStretch()
         time_scroll = QScrollArea()
         time_scroll.setWidgetResizable(True)
-        time_scroll.setWidget(self._l3_time_container)
+        time_scroll.setWidget(self._l4_time_container)
         time_scroll.setMaximumWidth(160)
         split.addWidget(time_scroll)
 
         # right panel: ChatWidget
         from src.ui.chat_widget import ChatWidget
-        self._l3_chat = ChatWidget()
-        split.addWidget(self._l3_chat)
+        self._l4_chat = ChatWidget()
+        split.addWidget(self._l4_chat)
 
         layout.addLayout(split)
         return w
 
-    def _on_l3_loaded(self, messages: Any) -> None:
+    def _on_l4_loaded(self, messages: Any) -> None:
         if not messages:
             messages = []
         msg_dicts = [{"role": m.role, "content": m.content} for m in messages]
-        self._l3_chat.load_messages(msg_dicts)
+        self._l4_chat.load_messages(msg_dicts)
 
-        _clear_layout(self._l3_time_layout)
+        _clear_layout(self._l4_time_layout)
         self._l3_time_list = []
         visible_idx = 0
         for m in messages:
@@ -538,20 +540,21 @@ class CronTab(QWidget):
                 "background-color: #ffffff; }"
                 "QPushButton:hover { background-color: #f0f2f5; border: 1px solid #4f46e5; }"
             )
-            btn.clicked.connect(lambda checked, i=visible_idx: self._on_l3_time_click(i))
+            btn.clicked.connect(lambda checked, i=visible_idx: self._on_l4_time_click(i))
             visible_idx += 1
-            count = self._l3_time_layout.count()
-            self._l3_time_layout.insertWidget(count - 1, btn)
-        self._cron_stacked.setCurrentIndex(2)
+            count = self._l4_time_layout.count()
+            self._l4_time_layout.insertWidget(count - 1, btn)
+        self._cron_stacked.setCurrentIndex(3)
 
-    def _on_l3_time_click(self, idx: int) -> None:
-        self._l3_chat.scroll_to_message(idx)
+    def _on_l4_time_click(self, idx: int) -> None:
+        self._l4_chat.scroll_to_message(idx)
 
     # ================================================================
-    # Level 4: 상세 정보 (CRON or Scheduled)
+    # Level 4: 채팅 상세 (타임라인)
     # ================================================================
 
-    def _build_level4(self) -> QWidget:
+    def _build_level2(self) -> QWidget:
+        """L2: cron/job 상세 페이지."""
         w = QWidget()
         layout = QVBoxLayout(w)
         header = QHBoxLayout()
@@ -566,23 +569,23 @@ class CronTab(QWidget):
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        self._l4_detail_container = QWidget()
-        self._l4_detail_layout = QVBoxLayout(self._l4_detail_container)
-        scroll.setWidget(self._l4_detail_container)
+        self._l2_detail_container = QWidget()
+        self._l2_detail_layout = QVBoxLayout(self._l2_detail_container)
+        scroll.setWidget(self._l2_detail_container)
         layout.addWidget(scroll)
         return w
 
-    def _render_l4_detail(self, job_type: str, job_id: str) -> None:
-        _clear_layout(self._l4_detail_layout)
+    def _render_l2_detail(self, job_type: str, job_id: str) -> None:
+        _clear_layout(self._l2_detail_layout)
 
         if job_type == self.TYPE_CRON:
-            self._render_cron_detail(job_id)
+            self._render_l2_cron_detail(job_id)
         else:
-            self._render_scheduled_detail(job_id)
+            self._render_l2_scheduled_detail(job_id)
 
     # ── CRON detail ──
 
-    def _render_cron_detail(self, job_id: str) -> None:
+    def _render_l2_cron_detail(self, job_id: str) -> None:
         async def _fetch() -> Any:
             job = await self._db.get_cron_job(job_id)
             notes = await self._db.get_cron_notes(job_id)
@@ -592,8 +595,8 @@ class CronTab(QWidget):
             job, notes = result if result else (None, "")
             if not job:
                 return
-            self._cron_stacked.setCurrentIndex(3)
-            layout = self._l4_detail_layout
+            self._cron_stacked.setCurrentIndex(1)
+            layout = self._l2_detail_layout
 
             layout.addWidget(_detail_row("ID", getattr(job, "id", "")))
             layout.addWidget(_detail_row("이름", getattr(job, "name", "") or "-"))
@@ -604,7 +607,7 @@ class CronTab(QWidget):
             layout.addWidget(_detail_row("Updated", str(getattr(job, "updated_at", ""))[:19]))
 
             enable_btn = QPushButton("비활성화" if getattr(job, "status", "") == "enable" else "활성화")
-            enable_btn.clicked.connect(lambda: self._on_cron_l4_toggle(job_id))
+            enable_btn.clicked.connect(lambda: self._on_l2_cron_toggle(job_id))
             layout.addWidget(enable_btn)
 
             notes_box = QPlainTextEdit()
@@ -617,16 +620,16 @@ class CronTab(QWidget):
 
             save_notes_btn = QPushButton("메모 저장")
             save_notes_btn.clicked.connect(
-                lambda: self._on_cron_l4_save_notes(job_id, notes_box.toPlainText()))
+                lambda: self._on_l2_cron_save_notes(job_id, notes_box.toPlainText()))
             layout.addWidget(save_notes_btn)
 
             sess_btn = QPushButton("📋 세션 로그 보기")
-            sess_btn.clicked.connect(lambda: self._on_l4_to_l2(job_id))
+            sess_btn.clicked.connect(lambda: self._on_l2_to_l3(job_id))
             layout.addWidget(sess_btn)
 
             del_btn = QPushButton("삭제")
             del_btn.setStyleSheet("color: #ef4444;")
-            del_btn.clicked.connect(lambda: self._on_cron_l4_delete(job_id))
+            del_btn.clicked.connect(lambda: self._on_l2_cron_delete(job_id))
             layout.addWidget(del_btn)
 
             layout.addStretch()
@@ -642,7 +645,7 @@ class CronTab(QWidget):
         result = _run_async(_fetch())
         _callback(result)
 
-    def _on_cron_l4_toggle(self, job_id: str) -> None:
+    def _on_l2_cron_toggle(self, job_id: str) -> None:
         async def _toggle() -> Any:
             return await self._db.toggle_cron_job(job_id)
 
@@ -661,7 +664,7 @@ class CronTab(QWidget):
         _run_async(_toggle())
         self._load_level1()
 
-    def _on_cron_l4_save_notes(self, job_id: str, notes: str) -> None:
+    def _on_l2_cron_save_notes(self, job_id: str, notes: str) -> None:
         async def _save() -> None:
             return await self._db.update_cron_notes(job_id, notes)
 
@@ -674,7 +677,7 @@ class CronTab(QWidget):
             pass
         _run_async(_save())
 
-    def _on_cron_l4_delete(self, job_id: str) -> None:
+    def _on_l2_cron_delete(self, job_id: str) -> None:
         async def _delete() -> None:
             await self._db.delete_cron_job(job_id)
 
@@ -693,15 +696,15 @@ class CronTab(QWidget):
         self._cron_stacked.setCurrentIndex(0)
         self._load_level1()
 
-    def _on_l4_to_l2(self, job_id: str) -> None:
-        """L4 CRON detail → L2 session log."""
+    def _on_l2_to_l3(self, job_id: str) -> None:
+        """L2 CRON detail → L3 session log list."""
         self._l2_job_id = job_id
         self._l2_page = 1
-        self._load_level2()
+        self._load_level3()
 
     # ── Scheduled detail ──
 
-    def _render_scheduled_detail(self, job_id: str) -> None:
+    def _render_l2_scheduled_detail(self, job_id: str) -> None:
         async def _fetch() -> Any:
             job = await self._db.get_scheduled_job(job_id)
             return job
@@ -710,8 +713,8 @@ class CronTab(QWidget):
             job = result
             if not job:
                 return
-            self._cron_stacked.setCurrentIndex(3)
-            layout = self._l4_detail_layout
+            self._cron_stacked.setCurrentIndex(1)
+            layout = self._l2_detail_layout
 
             layout.addWidget(_detail_row("ID", getattr(job, "id", "")))
             layout.addWidget(_detail_row("이름", getattr(job, "name", "") or "-"))
@@ -727,8 +730,13 @@ class CronTab(QWidget):
             if getattr(job, "status", "") == "pending":
                 cancel_btn = QPushButton("job 취소")
                 cancel_btn.setStyleSheet("color: #ef4444;")
-                cancel_btn.clicked.connect(lambda: self._on_scheduled_cancel(job_id))
+                cancel_btn.clicked.connect(lambda: self._on_l2_scheduled_cancel(job_id))
                 layout.addWidget(cancel_btn)
+
+            # JOB도 세션 로그가 있을 수 있음
+            sess_btn = QPushButton("📋 세션 로그 보기")
+            sess_btn.clicked.connect(lambda: self._on_l2_to_l3(job_id))
+            layout.addWidget(sess_btn)
 
             layout.addStretch()
 
@@ -743,7 +751,7 @@ class CronTab(QWidget):
         result = _run_async(_fetch())
         _callback(result)
 
-    def _on_scheduled_cancel(self, job_id: str) -> None:
+    def _on_l2_scheduled_cancel(self, job_id: str) -> None:
         async def _cancel() -> None:
             from src.models.schemas import ScheduledJob
             job = await self._db.get_scheduled_job(job_id)
