@@ -701,41 +701,19 @@ async def get_accessibility_tree_with_refs(
     page: Page,
 ) -> tuple[str, dict[int, dict[str, Any]]]:
     """접근성 트리 텍스트와 ref 매핑을 함께 가져온다.
-    DOM 정보도 함께 수집하여 refs를 풍부하게 만든다.
 
-    CDP DOM.describeNode로 전체 트리에 속성(tag, class, id, name 등)을
-    심어서 _format_node에서 <tag .class #id name=...> 형태로 출력한다.
+    CDP Accessibility.getFullAXTree를 우선 사용한다.
+    CDP가 실패하면 DOM evaluate fallback.
 
     Returns:
         (포맷팅된 텍스트, {ref: {role, name, tag, _id, _class, ...}})
     """
-    from playwright.async_api import Error as PlaywrightError
-
     try:
-        snapshot = await page.accessibility.snapshot()
-    except (AttributeError, PlaywrightError):
-        snapshot = None
+        return await _get_accessibility_via_cdp_with_refs(page)
     except Exception as e:
-        logger.warning("accessibility.snapshot() failed: %s", e)
-        snapshot = None
-
-    if snapshot is None:
-        try:
-            return await _get_accessibility_via_cdp_with_refs(page)
-        except Exception as e:
-            logger.warning("CDP accessibility failed: %s", e)
-            text = await _fallback_via_evaluate(page)
-            return text, {}
-
-    # CDP 세션으로 snapshot 트리에 DOM 속성(name, class, id 등) 심기
-    try:
-        cdp = await page.context.new_cdp_session(page)
-        await _enrich_cdp_snapshot_with_dom(cdp, snapshot)
-    except Exception as e:
-        logger.debug("CDP tree enrichment failed (non-fatal): %s", e)
-
-    text, refs = await format_accessibility_tree_with_refs(snapshot)
-    return text, refs
+        logger.warning("CDP accessibility failed: %s", e)
+        text = await _fallback_via_evaluate(page)
+        return text, {}
 
 
 # ─────────────────── Detail subtree ───────────────────
@@ -743,12 +721,11 @@ async def get_accessibility_tree_with_refs(
 async def get_subtree_detail(page: Page, ref: int, refs: dict[int, dict[str, Any]]) -> str:
     """특정 ref의 서브트리를 전체 a11y snapshot 포맷 기준으로 반환한다.
 
-    browser_snapshot()과 동일한 _prune_tree → _collapse_tree 파이프라인을 태워
-    토큰 제한 내에서 최대한 많은 정보를 보여준다.
+    동일한 _prune_tree → _collapse_tree → _format_tree 파이프라인을 태운다.
 
     Priority:
-    1. data-psjba-id CSS 선택자 → document.querySelector → accessibility.snapshot(root=)
-    2. (role, name) match → full tree scan / fallback
+    1. data-psjba-id CSS 선택자 → CDP querySelector → getOuterHTML (raw HTML)
+    2. (role, name) match → full CDP tree scan → prune/collapse/format
 
     Args:
         page: Playwright Page
@@ -758,8 +735,6 @@ async def get_subtree_detail(page: Page, ref: int, refs: dict[int, dict[str, Any
     Returns:
         포맷된 서브트리 텍스트
     """
-    from playwright.async_api import Error as PlaywrightError
-
     ref_info = refs.get(ref)
     if not ref_info:
         return f"Subtree detail: ref #{ref} not found. Call browser_snapshot() first."
@@ -768,45 +743,49 @@ async def get_subtree_detail(page: Page, ref: int, refs: dict[int, dict[str, Any
     target_name = ref_info.get("name", "")
     target_selector = ref_info.get("_selector", "")
 
-    # Priority 1: data-psjba-id CSS 선택자로 정확한 요소 찾기
-    snapshot = None
-    if target_selector:
+    # Priority 1: data-psjba-id → CDP getOuterHTML
+    psjba_id = ref_info.get("__psjba_id", "")
+    if psjba_id:
         try:
-            element = await page.query_selector(target_selector)
-            if element:
-                snapshot = await page.accessibility.snapshot(root=element)
-                if snapshot is None:
-                    logger.debug("get_subtree_detail: a11y snapshot(root=%s) returned None", target_selector)
-        except (PlaywrightError, AttributeError, Exception) as e:
-            logger.debug("get_subtree_detail: selector path failed: %s", e)
-
-    # Priority 2: (role, name) match → full tree scan
-    if snapshot is None:
-        logger.debug("get_subtree_detail: selector fallback, using (role=%r, name=%r) match", target_role, target_name)
-        try:
-            full_snapshot = await page.accessibility.snapshot()
-        except (AttributeError, PlaywrightError):
-            full_snapshot = None
+            cdp = await page.context.new_cdp_session(page)
+            await cdp.send("DOM.getDocument", {})
+            found = await cdp.send("DOM.querySelector", {
+                "nodeId": 1,
+                "selector": f'[data-psjba-id="{psjba_id}"]',
+            })
+            found_node_id = found.get("nodeId")
+            if found_node_id and found_node_id != 0:
+                desc = await cdp.send("DOM.describeNode", {"nodeId": found_node_id})
+                node_name = desc.get("node", {}).get("localName", target_role)
+                outer_resp = await cdp.send("DOM.getOuterHTML", {"nodeId": found_node_id})
+                outer = outer_resp.get("outerHTML", "")
+                if outer:
+                    import re
+                    text = re.sub(r'<[^>]+>', '\n', outer).strip()
+                    text = '\n'.join(line.strip() for line in text.split('\n') if line.strip())
+                    if len(text) > 6000:
+                        text = text[:6000] + "\n... (truncated)"
+                    sel = ref_info.get("_selector", "")
+                    sel_line = f"\nselector = {sel}" if sel else ""
+                    return (f"--- Detail for ref #{ref} (<{node_name}>) ---\n{text}{sel_line}")
         except Exception as e:
-            logger.warning("get_subtree_detail accessibility.snapshot() failed: %s", e)
-            full_snapshot = None
+            logger.debug("get_subtree_detail: CDP querySelector failed: %s", e)
 
-        if full_snapshot is None:
-            try:
-                full_snapshot = await _get_cdp_snapshot(page)
-            except Exception as e:
-                return f"Subtree detail error: {e}"
+    # Priority 2: full CDP tree scan → a11y 포맷 파이프라인
+    try:
+        full_snapshot = await _get_cdp_snapshot(page)
+    except Exception as e:
+        return f"Subtree detail error: {e}"
 
-        if full_snapshot is None:
-            return "(No accessibility tree available)"
+    if full_snapshot is None:
+        return "(No accessibility tree available)"
 
-        snapshot = _find_ref_subtree(full_snapshot, target_role, target_name)
-        if snapshot is None:
-            return (f"Subtree detail: could not locate ref #{ref} "
-                    f"({target_role} \"{target_name}\") in current snapshot. "
-                    "Try calling browser_snapshot() again.")
+    snapshot = _find_ref_subtree(full_snapshot, target_role, target_name)
+    if snapshot is None:
+        return (f"Subtree detail: could not locate ref #{ref} "
+                f"({target_role} \"{target_name}\") in current snapshot. "
+                "Try calling browser_snapshot() again.")
 
-    # 동일한 포맷 파이프라인 적용 (refs 미할당 — detail view는 참고용)
     t0 = time.monotonic()
     pruned = (await _prune_tree(snapshot)) or snapshot
     t1 = time.monotonic()
@@ -823,7 +802,6 @@ async def get_subtree_detail(page: Page, ref: int, refs: dict[int, dict[str, Any
     text = "\n".join(lines)
     text = (f"--- Detail for ref #{ref} ({target_role} \"{target_name}\") ---\n{text}")
 
-    # ref_info에 selector가 있으면 추가
     sel = ref_info.get("_selector", "")
     if sel:
         text += f"\nselector = {sel}"
@@ -1025,15 +1003,10 @@ async def _enrich_node(cdp_session: Any, node: dict[str, Any]) -> None:
 
 # ─── Legacy CDP fallback (getFullAXTree → snapshot) ───
 
-async def _get_accessibility_via_cdp(page: Page) -> str:
-    text, _refs = await _get_accessibility_via_cdp_with_refs(page)
-    return text
-
-
 async def _get_cdp_snapshot(page: Page) -> Optional[dict[str, Any]]:
     """CDP Accessibility domain으로 raw snapshot dict를 가져온다.
 
-    page.accessibility.snapshot()이 실패할 때 fallback으로 사용.
+    get_subtree_detail 등에서 full tree 검색용으로 사용한다.
     """
     try:
         cdp = await page.context.new_cdp_session(page)
