@@ -16,6 +16,7 @@ class Session:
     title: str = "새 대화"
     type: str = "chat"
     cron_job_id: Optional[str] = None
+    scheduled_job_id: Optional[str] = None
     created_at: datetime = field(default_factory=datetime.now)
     updated_at: datetime = field(default_factory=datetime.now)
     status: str = "active"

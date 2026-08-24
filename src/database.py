@@ -23,13 +23,14 @@ CREATE TABLE IF NOT EXISTS psjba_meta (
 
 CREATE_TABLE_SESSION = """
 CREATE TABLE IF NOT EXISTS psjba_session (
-    id          TEXT PRIMARY KEY NOT NULL,
-    title       TEXT NOT NULL DEFAULT '새 대화',
-    type        TEXT NOT NULL DEFAULT 'chat' CHECK(type IN ('chat', 'cron')),
-    cron_job_id TEXT REFERENCES psjba_cron_job(id),
-    created_at  TEXT NOT NULL,
-    updated_at  TEXT NOT NULL,
-    status      TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'archived', 'deleted'))
+    id              TEXT PRIMARY KEY NOT NULL,
+    title           TEXT NOT NULL DEFAULT '새 대화',
+    type            TEXT NOT NULL DEFAULT 'chat' CHECK(type IN ('chat', 'cron', 'scheduled')),
+    cron_job_id     TEXT REFERENCES psjba_cron_job(id),
+    scheduled_job_id TEXT REFERENCES psjba_scheduled_job(id),
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'archived', 'deleted'))
 );
 """
 
@@ -219,13 +220,14 @@ class Database:
 
     async def create_session(self, session: Session) -> Session:
         await self.conn.execute(
-            """INSERT INTO psjba_session(id, title, type, cron_job_id, created_at, updated_at, status)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            """INSERT INTO psjba_session(id, title, type, cron_job_id, scheduled_job_id, created_at, updated_at, status)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 session.id,
                 session.title,
                 session.type,
                 session.cron_job_id,
+                session.scheduled_job_id,
                 session.created_at.isoformat(),
                 session.updated_at.isoformat(),
                 session.status,
@@ -535,29 +537,45 @@ class Database:
         )
         await self.conn.commit()
 
-    async def get_cron_session_logs(
+    async def get_job_session_logs(
         self,
-        cron_job_id: str,
+        cron_job_id: Optional[str] = None,
+        scheduled_job_id: Optional[str] = None,
         page: int = 1,
         page_size: int = 20,
     ) -> tuple[list[dict[str, Any]], int]:
+        where_clauses: list[str] = []
+        params: list[str] = []
+
+        if cron_job_id:
+            where_clauses.append("s.cron_job_id = ?")
+            params.append(cron_job_id)
+        if scheduled_job_id:
+            where_clauses.append("s.scheduled_job_id = ?")
+            params.append(scheduled_job_id)
+
+        if not where_clauses:
+            return [], 0
+
+        where_sql = " OR ".join(where_clauses) + " AND s.status != 'deleted'"
+
         count_cursor = await self.conn.execute(
-            "SELECT COUNT(*) FROM psjba_session WHERE cron_job_id = ? AND status != 'deleted'",
-            (cron_job_id,),
+            f"SELECT COUNT(*) FROM psjba_session s WHERE {where_sql}",
+            tuple(params),
         )
         total = (await count_cursor.fetchone())[0]
 
         offset = (page - 1) * page_size
         cursor = await self.conn.execute(
-            """SELECT s.id, s.created_at, s.title,
-                      (SELECT content FROM psjba_message 
-                       WHERE session_id = s.id AND role = 'assistant' 
+            f"""SELECT s.id, s.created_at, s.title,
+                      (SELECT content FROM psjba_message
+                       WHERE session_id = s.id AND role = 'assistant'
                        ORDER BY created_at DESC LIMIT 1) as last_response
                FROM psjba_session s
-               WHERE s.cron_job_id = ? AND s.status != 'deleted'
+               WHERE {where_sql}
                ORDER BY s.created_at DESC
                LIMIT ? OFFSET ?""",
-            (cron_job_id, page_size, offset),
+            (*params, page_size, offset),
         )
         rows = await cursor.fetchall()
         return [dict(r) for r in rows], total
@@ -568,6 +586,7 @@ class Database:
             title=row["title"],
             type=row["type"],
             cron_job_id=row["cron_job_id"],
+            scheduled_job_id=row["scheduled_job_id"],
             created_at=datetime.fromisoformat(row["created_at"]),
             updated_at=datetime.fromisoformat(row["updated_at"]),
             status=row["status"],

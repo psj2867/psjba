@@ -70,6 +70,7 @@ class CronTab(QWidget):
         self._l2_page: int = 1
         self._l2_total_pages: int = 1
         self._l2_job_id: Optional[str] = None
+        self._l2_job_type: Optional[str] = None  # "cron" | "scheduled"
         self._l3_time_list: list[dict] = []
 
         # L4 detail
@@ -382,18 +383,27 @@ class CronTab(QWidget):
     def _load_level3(self) -> None:
         _clear_layout(self._l3_layout)
         job_id = self._l2_job_id
+        job_type = self._l2_job_type or "cron"
         page = self._l2_page
 
         async def _fetch() -> Any:
-            sessions, total = await self._db.get_cron_session_logs(
-                cron_job_id=job_id, page=page, page_size=10,
+            kwargs = {}
+            if job_type == "cron":
+                kwargs["cron_job_id"] = job_id
+            else:
+                kwargs["scheduled_job_id"] = job_id
+            sessions, total = await self._db.get_job_session_logs(
+                **kwargs, page=page, page_size=10,
             ) if job_id else ([], 0)
             total_pages = max(1, (total + 10 - 1) // 10) if total else 1
             name = ""
             if job_id:
-                job = await self._db.get_cron_job(job_id)
+                if job_type == "cron":
+                    job = await self._db.get_cron_job(job_id)
+                else:
+                    job = await self._db.get_scheduled_job(job_id)
                 if job:
-                    name = getattr(job, "name", "") or getattr(job, "schedule", "")
+                    name = getattr(job, "name", "") or "-"
             return sessions, total_pages, name
 
         try:
@@ -627,7 +637,7 @@ class CronTab(QWidget):
             layout.addWidget(save_notes_btn)
 
             sess_btn = QPushButton("📋 세션 로그 보기")
-            sess_btn.clicked.connect(lambda: self._on_l2_to_l3(job_id))
+            sess_btn.clicked.connect(lambda: self._on_l2_to_l3(job_id, "cron"))
             layout.addWidget(sess_btn)
 
             del_btn = QPushButton("삭제")
@@ -699,9 +709,10 @@ class CronTab(QWidget):
         self._cron_stacked.setCurrentIndex(0)
         self._load_level1()
 
-    def _on_l2_to_l3(self, job_id: str) -> None:
-        """L2 CRON detail → L3 session log list."""
+    def _on_l2_to_l3(self, job_id: str, job_type: str = "cron") -> None:
+        """L2 detail → L3 session log list."""
         self._l2_job_id = job_id
+        self._l2_job_type = job_type
         self._l2_page = 1
         self._load_level3()
 
@@ -738,7 +749,7 @@ class CronTab(QWidget):
 
             # JOB도 세션 로그가 있을 수 있음
             sess_btn = QPushButton("📋 세션 로그 보기")
-            sess_btn.clicked.connect(lambda: self._on_l2_to_l3(job_id))
+            sess_btn.clicked.connect(lambda: self._on_l2_to_l3(job_id, "scheduled"))
             layout.addWidget(sess_btn)
 
             layout.addStretch()

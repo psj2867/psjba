@@ -110,7 +110,8 @@ class JobScheduler:
             await self._db.update_scheduled_job(job)
 
             session = Session(
-                title=f"[예약] {job.name}", type="chat"
+                title=f"[예약] {job.name}", type="scheduled",
+                scheduled_job_id=job.id,
             )
             await self._db.create_session(session)
             job.session_id = session.id
