@@ -511,8 +511,8 @@ class ChatWidget(QWidget):
 
             if role == "tool":
                 tc_id = msg.get("tool_call_id", "") or ""
-                label = f"🛠 [{tc_id[:8]}]" if tc_id else "🛠 tool"
-                self.add_ai_block(f"{label} {content}", timestamp=timestamp)
+                name = f"↩ {tc_id[:8]}" if tc_id else "↩ tool"
+                self.add_ai_block("", tool_calls=[{"name": name, "args": {}, "result": content}], timestamp=timestamp)
                 continue
 
         self._scroll_to_bottom()
