@@ -10,6 +10,9 @@ from playwright.async_api import Page
 
 logger = logging.getLogger("psjba.browser.accessibility")
 
+# 트리 포맷 표시용 텍스트 최대 길이
+TEXT_DISPLAY_LEN = 10
+
 MAX_TOKEN_ESTIMATE = 4000
 CHARS_PER_TOKEN = 4
 
@@ -159,14 +162,13 @@ def _format_node(
                 an = an[:10] + "..."
 
             dt = node.get("_text_content", "").strip()
-            if len(dt) > 20:
-                dt = dt[:20] + "..."
+            dt_display = dt[:TEXT_DISPLAY_LEN] + "..." if len(dt) > TEXT_DISPLAY_LEN else dt
 
             parts = []
             if an:
                 parts.append(f'"{an}"')
-            if dt:
-                parts.append(f'text="{dt}"')
+            if dt_display:
+                parts.append(f'text="{dt_display}"')
             _leaf_text = " ".join(parts)
         else:
             # non-leaf: a11y name 표시 (필수)
@@ -918,6 +920,15 @@ _ENRICH_JS = """
   for (const el of elements) {
     const uid = (Math.random().toString(36) + Math.random().toString(36)).slice(2, 10);
     el.setAttribute('data-psjba-id', uid);
+
+    // 모든 aria-* 속성 수집
+    const ariaAttrs = {};
+    for (const attr of el.attributes) {
+      if (attr.name.startsWith('aria-')) {
+        ariaAttrs[attr.name] = attr.value;
+      }
+    }
+
     const text = (el.textContent || '').trim();
     map[uid] = {
       tag: el.tagName.toLowerCase(),
@@ -928,6 +939,7 @@ _ENRICH_JS = """
       aria_label: el.getAttribute('aria-label') || '',
       name: el.getAttribute('name') || '',
       textContent: text.slice(0, 500),
+      ariaAttrs: JSON.stringify(ariaAttrs),
     };
   }
   return map;
@@ -962,7 +974,12 @@ async def _enrich_with_uid_map(cdp_session: Any,
     uid_map에서 속성을 조회한다.
 
     _enrich_node (describeNode + getOuterHTML per node)를 대체한다.
+
+    uid_map에 포함된 ariaAttrs(JSON string)는 파싱하여
+    node["_aria_<name>"] 또는 node["aria-<name>"] 키로 저장한다.
     """
+    import json
+
     # backendDOMNodeId → _backendNodeId 정규화
     async def _normalize(node):
         bid = node.get("backendDOMNodeId")
@@ -1029,7 +1046,25 @@ async def _enrich_with_uid_map(cdp_session: Any,
                 node["_form_name"] = info.get("name", "")
                 tc = info.get("textContent", "")
                 if tc:
-                    node["_text_content"] = tc[:200]
+                    node["_text_content"] = tc[:TEXT_DISPLAY_LEN]
+
+                # ariaAttrs JSON → _aria_* / aria-* 키
+                aria_raw = info.get("ariaAttrs", "")
+                if aria_raw:
+                    try:
+                        aria_map = json.loads(aria_raw)
+                        for akey, aval in aria_map.items():
+                            if akey == "aria-label":
+                                continue  # _aria_label로 이미 처리
+                            # aria-pressed는 _format_node가 node["aria-pressed"]로 읽음
+                            if akey == "aria-pressed":
+                                node["aria-pressed"] = aval
+                                continue
+                            # aria-current → _aria_current
+                            norm_key = "_" + akey.replace("-", "_")
+                            node[norm_key] = aval
+                    except json.JSONDecodeError:
+                        pass
         for child in node.get("children", []):
             await _fill_node(child)
 
