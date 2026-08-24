@@ -153,27 +153,35 @@ def _format_node(
     if name or node.get("_text_content"):
         children = node.get("children", [])
         if not children:
-            # 리프 노드: DOM textContent + accessibility name 둘 다 표시
+            # 리프 노드: a11y name(필수) + DOM text(보조)
+            an = ""
+            if name:
+                an = name.strip()
+                if len(an) > 10:
+                    an = an[:10] + "..."
+
             dom_text = node.get("_text_content", "")
+            dt = ""
             if dom_text:
                 dt = dom_text.strip()
                 if len(dt) > 10:
                     dt = dt[:10] + "..."
-                _leaf_text = f'"{dt}"'
+
+            if an and dt:
+                _leaf_text = f'"{an}" text="{dt}"'
+            elif an:
+                _leaf_text = f'"{an}"'
+            elif dt:
+                _leaf_text = f'text="{dt}"'
             else:
                 _leaf_text = ""
-            # accessibility name이 DOM text와 다르면 따로 표시
-            if name and name.strip() != dom_text.strip():
+        else:
+            # non-leaf: a11y name 표시 (필수)
+            if name:
                 an = name.strip()
                 if len(an) > 10:
                     an = an[:10] + "..."
-                _leaf_text += f' a11y="{an}"' if _leaf_text else f'"{an}"'
-            if not _leaf_text:
-                _leaf_text = ""
-        else:
-            # non-leaf: interactive만 name 표시 (자식이 내용을 대신함)
-            if _is_interactive(role) and name:
-                label_parts.append(f'"{name}"')
+                label_parts.append(f'"{an}"')
             _leaf_text = ""
     else:
         _leaf_text = ""
