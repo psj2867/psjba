@@ -747,7 +747,7 @@ async def get_subtree_detail(page: Page, ref: int, refs: dict[int, dict[str, Any
     토큰 제한 내에서 최대한 많은 정보를 보여준다.
 
     Priority:
-    1. CSS selector (_selector) → document.querySelector → accessibility.snapshot(root=)
+    1. data-psjba-id CSS 선택자 → document.querySelector → accessibility.snapshot(root=)
     2. (role, name) match → full tree scan / fallback
 
     Args:
@@ -768,42 +768,17 @@ async def get_subtree_detail(page: Page, ref: int, refs: dict[int, dict[str, Any
     target_name = ref_info.get("name", "")
     target_selector = ref_info.get("_selector", "")
 
-    # Priority 1: data-psjba-id → CDP로 서브트리 텍스트
+    # Priority 1: data-psjba-id CSS 선택자로 정확한 요소 찾기
     snapshot = None
-    psjba_id = ref_info.get("__psjba_id", "")
-    if psjba_id:
-        try:
-            cdp = await page.context.new_cdp_session(page)
-            await cdp.send("DOM.getDocument", {})
-            found = await cdp.send("DOM.querySelector", {
-                "nodeId": 1,
-                "selector": f'[data-psjba-id="{psjba_id}"]',
-            })
-            found_node_id = found.get("nodeId")
-            if found_node_id and found_node_id != 0:
-                outer_resp = await cdp.send("DOM.getOuterHTML", {"nodeId": found_node_id})
-                outer = outer_resp.get("outerHTML", "")
-                if outer:
-                    import re
-                    text = re.sub(r'<[^>]+>', '\n', outer).strip()
-                    text = '\n'.join(line.strip() for line in text.split('\n') if line.strip())
-                    if len(text) > 6000:
-                        text = text[:6000] + "\n... (truncated)"
-                    sel = ref_info.get("_selector", "")
-                    sel_line = f"\nselector = {sel}" if sel else ""
-                    return (f"--- Detail for ref #{ref} ({target_role} \"{target_name}\") ---\n"
-                            f"{text}{sel_line}")
-        except Exception as e:
-            logger.debug("get_subtree_detail: CDP querySelector failed: %s", e)
-
-    # Fallback: CSS selector → page.accessibility.snapshot (기존 방식)
     if target_selector:
         try:
             element = await page.query_selector(target_selector)
             if element:
                 snapshot = await page.accessibility.snapshot(root=element)
+                if snapshot is None:
+                    logger.debug("get_subtree_detail: a11y snapshot(root=%s) returned None", target_selector)
         except (PlaywrightError, AttributeError, Exception) as e:
-            logger.debug("get_subtree_detail: a11y snapshot(root=%s) failed: %s", target_selector, e)
+            logger.debug("get_subtree_detail: selector path failed: %s", e)
 
     # Priority 2: (role, name) match → full tree scan
     if snapshot is None:
