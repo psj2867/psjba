@@ -467,12 +467,9 @@ class ChatWidget(QWidget):
     def load_messages(self, messages: list[dict[str, Any]]) -> None:
         """DB에서 로드한 메시지 리스트를 UI 형태로 렌더링."""
         self.clear()
-        i = 0
-        while i < len(messages):
-            msg = messages[i]
+        for msg in messages:
             role = msg.get("role", "")
             if role == "developer":
-                i += 1
                 continue
 
             content = msg.get("content", "")
@@ -490,51 +487,35 @@ class ChatWidget(QWidget):
 
             if role == "user":
                 self.add_user_message(content, timestamp=timestamp)
-                i += 1
                 continue
 
             if role == "assistant":
-                # Collect following tool messages by tool_call_id
-                tool_result_map: dict[str, str] = {}
-                j = i + 1
-                while j < len(messages) and messages[j].get("role") == "tool":
-                    tc_id = messages[j].get("tool_call_id", "")
-                    if tc_id:
-                        tool_result_map[tc_id] = messages[j].get("content", "")
-                    j += 1
-
-                tc_json = msg.get("tool_calls", "")
                 tool_calls: list[dict[str, Any]] = []
+                tc_json = msg.get("tool_calls", "")
                 if tc_json:
                     try:
                         tc_list = json.loads(tc_json)
                         for tc in tc_list:
                             tid = tc.get("id", "")
+                            suffix = f"  ({tid[:8]})" if tid else ""
                             tool_calls.append({
-                                "name": f"{tc.get('name', 'tool')}  ({tid[:8]})",
+                                "name": f"{tc.get('name', 'tool')}{suffix}",
                                 "args": tc.get("args", {}),
-                                "result": tool_result_map.get(tid, ""),
+                                "result": "",
                             })
                     except json.JSONDecodeError:
                         pass
-
                 has_content = bool(content and content.strip())
                 if not has_content and not tool_calls:
-                    i = j
                     continue
-
                 self.add_ai_block(content, tool_calls if tool_calls else None, timestamp=timestamp)
-                i = j
                 continue
 
             if role == "tool":
                 tc_id = msg.get("tool_call_id", "") or ""
                 name = f"↩ {tc_id[:8]}" if tc_id else "↩ tool"
                 self.add_ai_block("", tool_calls=[{"name": name, "args": {}, "result": content}], timestamp=timestamp)
-                i += 1
                 continue
-
-            i += 1
 
         self._scroll_to_bottom()
 
