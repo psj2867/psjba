@@ -1,6 +1,7 @@
 """JobScheduler — AsyncIOScheduler + DateTrigger 기반 1회성 job."""
 
 import asyncio
+import json
 import logging
 from datetime import datetime
 from typing import Any, Optional
@@ -178,20 +179,29 @@ class JobScheduler:
             )
 
             for msg in result.get("messages", []):
-                if hasattr(msg, "content") and msg.content:
-                    role = "assistant" if msg.type == "ai" else msg.type
-                    if role in ("user", "assistant", "tool", "system"):
-                        await self._db.save_message(
-                            Message(
-                                session_id=session.id,
-                                role=role,
-                                content=(
-                                    msg.content
-                                    if isinstance(msg.content, str)
-                                    else str(msg.content)
-                                ),
-                            )
+                has_content = bool(getattr(msg, "content", None))
+                has_tool_calls = bool(getattr(msg, "tool_calls", None))
+                if not has_content and not has_tool_calls:
+                    continue
+                role = "assistant" if msg.type == "ai" else msg.type
+                if role in ("user", "assistant", "tool", "system"):
+                    tool_calls_str = None
+                    if has_tool_calls:
+                        tool_calls_str = json.dumps([
+                            {"name": tc.get("name", ""), "args": tc.get("args", {}),
+                             "id": tc.get("id", "")}
+                            for tc in msg.tool_calls
+                        ], ensure_ascii=False)
+                    tool_call_id = getattr(msg, "tool_call_id", "") if role == "tool" else ""
+                    await self._db.save_message(
+                        Message(
+                            session_id=session.id,
+                            role=role,
+                            content=msg.content if isinstance(msg.content, str) else str(msg.content or ""),
+                            tool_calls=tool_calls_str,
+                            tool_call_id=tool_call_id or None,
                         )
+                    )
 
             job.status = "done"
             await self._db.update_scheduled_job(job)

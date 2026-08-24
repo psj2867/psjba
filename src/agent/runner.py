@@ -1,6 +1,7 @@
 """Agent 실행기 — 프롬프트 제출 → LangGraph 그래프 스트리밍 → 결과 저장."""
 
 import asyncio
+import json
 import logging
 import time
 from contextlib import aclosing
@@ -9,6 +10,7 @@ from typing import Any, AsyncIterator, Optional
 from langchain_core.messages import (
     AIMessage,
     HumanMessage,
+    SystemMessage,
     ToolMessage,
 )
 
@@ -70,9 +72,15 @@ async def build_initial_messages(
         if row.role == "user":
             messages.append(HumanMessage(content=row.content))
         elif row.role == "assistant":
-            messages.append(AIMessage(content=row.content))
+            kwargs: dict[str, Any] = {}
+            if row.tool_calls:
+                kwargs["tool_calls"] = json.loads(row.tool_calls)
+            messages.append(AIMessage(content=row.content, **kwargs))
         elif row.role == "tool":
-            messages.append(ToolMessage(content=row.content, tool_call_id=""))
+            kwargs: dict[str, Any] = {}
+            if row.tool_call_id:
+                kwargs["tool_call_id"] = row.tool_call_id
+            messages.append(ToolMessage(content=row.content, **kwargs))
         elif row.role == "system":
             messages.append(SystemMessage(content=row.content))
 
@@ -269,6 +277,14 @@ async def handle_prompt(
                         role=role,
                         content=msg.content if isinstance(msg.content, str) else str(msg.content),
                     )
+                    if role == "assistant":
+                        tool_calls = getattr(msg, "tool_calls", None)
+                        if tool_calls:
+                            db_msg.tool_calls = json.dumps([
+                                {"name": tc.get("name", ""), "args": tc.get("args", {}),
+                                 "id": tc.get("id", "")}
+                                for tc in tool_calls
+                            ], ensure_ascii=False)
                     if role == "tool":
                         db_msg.tool_call_id = getattr(msg, "tool_call_id", "") or ""
                     await db.save_message(db_msg)

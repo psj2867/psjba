@@ -40,6 +40,8 @@ CREATE TABLE IF NOT EXISTS psjba_message (
     session_id  TEXT NOT NULL REFERENCES psjba_session(id),
     role        TEXT NOT NULL CHECK(role IN ('user', 'assistant', 'tool', 'system')),
     content     TEXT NOT NULL,
+    tool_calls  TEXT,
+    tool_call_id TEXT,
     token_usage TEXT,
     model       TEXT,
     created_at  TEXT NOT NULL
@@ -317,13 +319,15 @@ class Database:
 
     async def save_message(self, message: Message) -> Message:
         await self.conn.execute(
-            """INSERT INTO psjba_message(id, session_id, role, content, token_usage, model, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            """INSERT INTO psjba_message(id, session_id, role, content, tool_calls, tool_call_id, token_usage, model, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 message.id,
                 message.session_id,
                 message.role,
                 message.content,
+                message.tool_calls,
+                message.tool_call_id,
                 message.token_usage,
                 message.model,
                 message.created_at.isoformat(),
@@ -598,6 +602,8 @@ class Database:
             session_id=row["session_id"],
             role=row["role"],
             content=row["content"],
+            tool_calls=row["tool_calls"],
+            tool_call_id=row["tool_call_id"],
             token_usage=row["token_usage"],
             model=row["model"],
             created_at=datetime.fromisoformat(row["created_at"]),

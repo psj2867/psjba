@@ -1,6 +1,7 @@
 """CronExecutor — 크론 작업 실행기 (세션 생성 + LangGraph 실행)."""
 
 import asyncio
+import json
 import logging
 from datetime import datetime
 from typing import Any, Optional
@@ -156,25 +157,30 @@ class CronExecutor:
 
             messages = result.get("messages", [])
             for msg in messages:
-                if hasattr(msg, "content") and msg.content:
-                    role = "assistant" if msg.type == "ai" else msg.type
-                    if role in ("user", "assistant", "tool", "system"):
-                        tool_calls = None
-                        if hasattr(msg, "tool_calls") and msg.tool_calls:
-                            tool_calls = [
-                                {
-                                    "name": tc.get("name", ""),
-                                    "args": tc.get("args", {}),
-                                    "id": tc.get("id", ""),
-                                }
-                                for tc in msg.tool_calls
-                            ]
-                        await self._save_message(
-                            session.id,
-                            role,
-                            msg.content if isinstance(msg.content, str) else str(msg.content),
-                            tool_calls=tool_calls,
-                        )
+                has_content = bool(getattr(msg, "content", None))
+                has_tool_calls = bool(getattr(msg, "tool_calls", None))
+                if not has_content and not has_tool_calls:
+                    continue
+                role = "assistant" if msg.type == "ai" else msg.type
+                if role in ("user", "assistant", "tool", "system"):
+                    tool_calls = None
+                    if hasattr(msg, "tool_calls") and msg.tool_calls:
+                        tool_calls = [
+                            {
+                                "name": tc.get("name", ""),
+                                "args": tc.get("args", {}),
+                                "id": tc.get("id", ""),
+                            }
+                            for tc in msg.tool_calls
+                        ]
+                    tool_call_id = getattr(msg, "tool_call_id", "") if role == "tool" else ""
+                    await self._save_message(
+                        session.id,
+                        role,
+                        msg.content if isinstance(msg.content, str) else str(msg.content or ""),
+                        tool_calls=tool_calls,
+                        tool_call_id=tool_call_id,
+                    )
 
             now = datetime.now()
             job.last_run_at = now
@@ -201,20 +207,18 @@ class CronExecutor:
         role: str,
         content: str,
         tool_calls: Optional[list[dict[str, Any]]] = None,
+        tool_call_id: str = "",
     ) -> Message:
+        tool_calls_str = None
         if tool_calls:
-            import json
-            content_with_tc = json.dumps(
-                {"text": content, "tool_calls": tool_calls},
-                ensure_ascii=False,
-            )
-        else:
-            content_with_tc = content
+            tool_calls_str = json.dumps(tool_calls, ensure_ascii=False)
 
         msg = Message(
             session_id=session_id,
             role=role,
-            content=content_with_tc,
+            content=content,
+            tool_calls=tool_calls_str,
+            tool_call_id=tool_call_id or None,
         )
         return await self._db.save_message(msg)
 

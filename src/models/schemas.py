@@ -28,6 +28,8 @@ class Message:
     session_id: str = ""
     role: str = ""
     content: str = ""
+    tool_calls: Optional[str] = None      # assistant 전용: JSON string
+    tool_call_id: Optional[str] = None    # tool 전용
     token_usage: Optional[str] = None
     model: Optional[str] = None
     created_at: datetime = field(default_factory=datetime.now)
