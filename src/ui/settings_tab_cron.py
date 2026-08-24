@@ -532,7 +532,11 @@ class CronTab(QWidget):
     def _on_l4_loaded(self, messages: Any) -> None:
         if not messages:
             messages = []
-        msg_dicts = [{"role": m.role, "content": m.content} for m in messages]
+        msg_dicts = [
+            {"role": m.role, "content": m.content, "tool_calls": m.tool_calls,
+             "tool_call_id": m.tool_call_id, "created_at": m.created_at}
+            for m in messages
+        ]
         self._l4_chat.load_messages(msg_dicts)
 
         _clear_layout(self._l4_time_layout)
@@ -540,12 +544,17 @@ class CronTab(QWidget):
         visible_idx = 0
         for m in messages:
             has_content = m.content and m.content.strip()
-            if m.role in ("assistant", "tool") and not has_content:
+            has_tool_calls = bool(m.tool_calls)
+            if m.role in ("assistant", "tool") and not has_content and not has_tool_calls:
                 continue
             ts = getattr(m, "created_at", None)
             time_str = ts.strftime("%m-%d %H:%M") if isinstance(ts, datetime) else ""
+            role_label = f"[{m.role}]"
+            tool_badge = ""
+            if m.role == "assistant" and m.tool_calls:
+                tool_badge = " 🛠"
             self._l3_time_list.append({"time": time_str, "role": m.role, "content": m.content})
-            btn = QPushButton(f"{time_str} [{m.role}]")
+            btn = QPushButton(f"{time_str} {role_label}{tool_badge}")
             btn.setStyleSheet(
                 "QPushButton { text-align: left; border: 1px solid #dce1e8; "
                 "border-radius: 4px; padding: 4px; font-size: 11px; "

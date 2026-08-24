@@ -87,18 +87,25 @@ class _ToolCallWidget(QFrame):
         self._header.mousePressEvent = self._toggle
         layout.addWidget(self._header)
 
-        # result가 JSON이면 코드블럭으로 포맷팅
-        if _looks_like_json(tool_result):
-            formatted = _format_json_result(tool_result)
-            self._detail = QLabel(
-                f"Input: {tool_input[:300]}\n\nResult:\n```json\n{formatted}\n```"
-            )
-            self._detail.setStyleSheet(CODE_BLOCK_STYLE)
-        else:
-            self._detail = QLabel(
-                f"Input: {tool_input[:300]}\n\nResult: {tool_result[:500]}"
-            )
-            self._detail.setStyleSheet("color: #64748b; font-size: 11px; border: none;")
+        # Build detail text
+        detail_parts = []
+        if tool_input and tool_input not in ("{}", ""):
+            if _looks_like_json(tool_input):
+                detail_parts.append(f"Input:\n```json\n{_format_json_result(tool_input)}\n```")
+            else:
+                detail_parts.append(f"Input: {tool_input[:300]}")
+
+        if tool_result:
+            if _looks_like_json(tool_result):
+                detail_parts.append(f"Result:\n```json\n{_format_json_result(tool_result)}\n```")
+            else:
+                detail_parts.append(f"Result: {tool_result[:500]}")
+
+        if not detail_parts:
+            detail_parts.append("(no args)")
+
+        self._detail = QLabel("\n\n".join(detail_parts))
+        self._detail.setStyleSheet(CODE_BLOCK_STYLE)
         self._detail.setWordWrap(True)
         self._detail.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse
@@ -458,14 +465,12 @@ class ChatWidget(QWidget):
     # --- 세션 로드 / 초기화 ---
 
     def load_messages(self, messages: list[dict[str, Any]]) -> None:
-        """DB에서 로드한 메시지 리스트를 실행중 UI 형태로 렌더링.
+        """DB에서 로드한 메시지 리스트를 UI 형태로 렌더링.
 
         DB에는 role='tool' 메시지가 별도 row로 저장되어 있지만,
         UI에서는 _ToolCallWidget으로 접어서 assistant 블록 안에 표시한다.
         """
         self.clear()
-        # tool 메시지를 assistant와 그룹핑
-        # messages는 created_at ASC 정렬
         i = 0
         while i < len(messages):
             msg = messages[i]
@@ -476,14 +481,13 @@ class ChatWidget(QWidget):
 
             content = msg.get("content", "")
             ts = msg.get("created_at", "")
-            # ISO → HH:MM 변환
             timestamp = ""
             if ts:
                 try:
                     if isinstance(ts, str):
                         dt = datetime.fromisoformat(ts.replace("Z", "+00:00").replace("T", " "))
                     else:
-                        dt = ts  # datetime 객체
+                        dt = ts
                     timestamp = dt.strftime("%m-%d %H:%M")
                 except (ValueError, AttributeError):
                     timestamp = str(ts)[:5]
@@ -494,21 +498,44 @@ class ChatWidget(QWidget):
                 continue
 
             if role == "assistant":
-                # 뒤따르는 tool 메시지들을 수집
+                tool_calls_json = msg.get("tool_calls", "")
                 tool_calls: list[dict[str, Any]] = []
+
+                # Collect following tool messages by tool_call_id
+                tool_msg_map: dict[str, str] = {}
                 j = i + 1
                 while j < len(messages) and messages[j].get("role") == "tool":
-                    tc_content = messages[j].get("content", "")
-                    name = "tool"
-                    result = tc_content
-                    if ":" in tc_content:
-                        parts = tc_content.split(":", 1)
-                        name = parts[0].strip()
-                        rest = parts[1].strip() if len(parts) > 1 else ""
-                        if "\n" in rest:
-                            result = rest.split("\n", 1)[1].strip()
-                    tool_calls.append({"name": name, "args": {}, "result": result})
+                    tc_id = messages[j].get("tool_call_id", "")
+                    if tc_id:
+                        tool_msg_map[tc_id] = messages[j].get("content", "")
                     j += 1
+
+                if tool_calls_json:
+                    try:
+                        tc_list = json.loads(tool_calls_json)
+                        for tc in tc_list:
+                            tc_id = tc.get("id", "")
+                            result = tool_msg_map.get(tc_id, "")
+                            tool_calls.append({
+                                "name": tc.get("name", "tool"),
+                                "args": tc.get("args", {}),
+                                "result": result,
+                            })
+                    except json.JSONDecodeError:
+                        pass
+
+                if not tool_calls:
+                    # Fallback: infer from tool message content
+                    for tc_id, tc_content in tool_msg_map.items():
+                        name = "tool"
+                        result = tc_content
+                        if ":" in tc_content:
+                            parts = tc_content.split(":", 1)
+                            name = parts[0].strip()
+                            rest = parts[1].strip() if len(parts) > 1 else ""
+                            if "\n" in rest:
+                                result = rest.split("\n", 1)[1].strip()
+                        tool_calls.append({"name": name, "args": {}, "result": result})
 
                 has_content = bool(content and content.strip())
                 if not has_content and not tool_calls:
