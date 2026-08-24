@@ -106,16 +106,12 @@ class CronExecutor:
             )
             from langchain_core.messages import HumanMessage, SystemMessage
 
-            # manager → browser_context + current_date
-            browser_context = await self._manager.get_browser_context()
+            # current_date → developer 메시지
             from datetime import datetime
             current_date = datetime.now().strftime("%Y-%m-%d %H:%M")
             info_parts = [f"[Current Date]\n{current_date}"]
-            if browser_context and browser_context != "[Browser: not connected]":
-                info_parts.append(f"[Browser Context]\n{browser_context}")
 
             state_messages: list = [HumanMessage(content=job.prompt)]
-            # info (current_date + browser_context) → developer 메시지
             state_messages.insert(0, HumanMessage(
                 content="\n\n".join(info_parts),
                 additional_kwargs={"role": "developer"},
