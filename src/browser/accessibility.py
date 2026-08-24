@@ -154,27 +154,20 @@ def _format_node(
         children = node.get("children", [])
         if not children:
             # 리프 노드: a11y name(필수) + DOM text(보조)
-            an = ""
-            if name:
-                an = name.strip()
-                if len(an) > 10:
-                    an = an[:10] + "..."
+            an = name.strip() if name else ""
+            if len(an) > 10:
+                an = an[:10] + "..."
 
-            dom_text = node.get("_text_content", "")
-            dt = ""
-            if dom_text:
-                dt = dom_text.strip()
-                if len(dt) > 10:
-                    dt = dt[:10] + "..."
+            dt = node.get("_text_content", "").strip()
+            if len(dt) > 20:
+                dt = dt[:20] + "..."
 
-            if an and dt:
-                _leaf_text = f'"{an}" text="{dt}"'
-            elif an:
-                _leaf_text = f'"{an}"'
-            elif dt:
-                _leaf_text = f'text="{dt}"'
-            else:
-                _leaf_text = ""
+            parts = []
+            if an:
+                parts.append(f'"{an}"')
+            if dt:
+                parts.append(f'text="{dt}"')
+            _leaf_text = " ".join(parts)
         else:
             # non-leaf: a11y name 표시 (필수)
             if name:
