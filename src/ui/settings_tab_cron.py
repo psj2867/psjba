@@ -109,7 +109,7 @@ class CronTab(QWidget):
         header.addStretch()
 
         self._l1_filter_btns: dict[str, QPushButton] = {}
-        for key, label in [("all", "전체"), ("cron", "CRON"), ("scheduled", "예약")]:
+        for key, label in [("all", "전체"), ("cron", "CRON"), ("scheduled", "job")]:
             btn = QPushButton(label)
             btn.setCheckable(True)
             btn.setFixedWidth(70)
@@ -183,16 +183,17 @@ class CronTab(QWidget):
             page_size = 10
             show_archived = self._l1_show_archived
 
-            # CRON: show_archived=False → enable만, True → disable+enable
             cron_jobs, cron_total = await self._db.list_cron_jobs(
-                page=1, page_size=999, include_archived=show_archived,
+                page=1, page_size=999, include_archived=True,
             ) if filt in ("all", "cron") else ([], 0)
 
-            # Scheduled: archived = done/cancelled/error
             sched_jobs, sched_total = await self._db.list_scheduled_jobs_paginated(
                 page=1, page_size=999,
             ) if filt in ("all", "scheduled") else ([], 0)
+
             if not show_archived:
+                # 활성만: cron=enable, scheduled=pending|running
+                cron_jobs = [j for j in (cron_jobs or []) if j.status == "enable"]
                 sched_jobs = [j for j in (sched_jobs or []) if j.status in ("pending", "running")]
 
             combined: list[tuple[str, Any]] = []
@@ -327,14 +328,10 @@ class CronTab(QWidget):
         return frame
 
     def _on_job_card_click(self, job_type: str, job_id: str) -> None:
-        if job_type == self.TYPE_CRON:
-            self._l2_job_id = job_id
-            self._l2_page = 1
-            self._load_level2()
-        else:
-            self._l4_job_type = job_type
-            self._l4_job_id = job_id
-            self._render_l4_detail(job_type, job_id)
+        # 둘 다 L4 상세화면으로
+        self._l4_job_type = job_type
+        self._l4_job_id = job_id
+        self._render_l4_detail(job_type, job_id)
 
     # ================================================================
     # Level 2: CRON job 선택 → 세션 목록
@@ -623,6 +620,10 @@ class CronTab(QWidget):
                 lambda: self._on_cron_l4_save_notes(job_id, notes_box.toPlainText()))
             layout.addWidget(save_notes_btn)
 
+            sess_btn = QPushButton("📋 세션 로그 보기")
+            sess_btn.clicked.connect(lambda: self._on_l4_to_l2(job_id))
+            layout.addWidget(sess_btn)
+
             del_btn = QPushButton("삭제")
             del_btn.setStyleSheet("color: #ef4444;")
             del_btn.clicked.connect(lambda: self._on_cron_l4_delete(job_id))
@@ -692,6 +693,12 @@ class CronTab(QWidget):
         self._cron_stacked.setCurrentIndex(0)
         self._load_level1()
 
+    def _on_l4_to_l2(self, job_id: str) -> None:
+        """L4 CRON detail → L2 session log."""
+        self._l2_job_id = job_id
+        self._l2_page = 1
+        self._load_level2()
+
     # ── Scheduled detail ──
 
     def _render_scheduled_detail(self, job_id: str) -> None:
@@ -718,7 +725,7 @@ class CronTab(QWidget):
                 layout.addWidget(_detail_row("오류", err))
 
             if getattr(job, "status", "") == "pending":
-                cancel_btn = QPushButton("예약 취소")
+                cancel_btn = QPushButton("job 취소")
                 cancel_btn.setStyleSheet("color: #ef4444;")
                 cancel_btn.clicked.connect(lambda: self._on_scheduled_cancel(job_id))
                 layout.addWidget(cancel_btn)
