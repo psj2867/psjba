@@ -465,18 +465,11 @@ class ChatWidget(QWidget):
     # --- 세션 로드 / 초기화 ---
 
     def load_messages(self, messages: list[dict[str, Any]]) -> None:
-        """DB에서 로드한 메시지 리스트를 UI 형태로 렌더링.
-
-        DB에는 role='tool' 메시지가 별도 row로 저장되어 있지만,
-        UI에서는 _ToolCallWidget으로 접어서 assistant 블록 안에 표시한다.
-        """
+        """DB에서 로드한 메시지 리스트를 UI 형태로 렌더링."""
         self.clear()
-        i = 0
-        while i < len(messages):
-            msg = messages[i]
+        for msg in messages:
             role = msg.get("role", "")
             if role == "developer":
-                i += 1
                 continue
 
             content = msg.get("content", "")
@@ -494,64 +487,33 @@ class ChatWidget(QWidget):
 
             if role == "user":
                 self.add_user_message(content, timestamp=timestamp)
-                i += 1
                 continue
 
             if role == "assistant":
-                tool_calls_json = msg.get("tool_calls", "")
                 tool_calls: list[dict[str, Any]] = []
-
-                # Collect following tool messages by tool_call_id
-                tool_msg_map: dict[str, str] = {}
-                j = i + 1
-                while j < len(messages) and messages[j].get("role") == "tool":
-                    tc_id = messages[j].get("tool_call_id", "")
-                    if tc_id:
-                        tool_msg_map[tc_id] = messages[j].get("content", "")
-                    j += 1
-
-                if tool_calls_json:
+                tc_json = msg.get("tool_calls", "")
+                if tc_json:
                     try:
-                        tc_list = json.loads(tool_calls_json)
+                        tc_list = json.loads(tc_json)
                         for tc in tc_list:
-                            tc_id = tc.get("id", "")
-                            result = tool_msg_map.get(tc_id, "")
                             tool_calls.append({
                                 "name": tc.get("name", "tool"),
                                 "args": tc.get("args", {}),
-                                "result": result,
+                                "result": "",
                             })
                     except json.JSONDecodeError:
                         pass
-
-                if not tool_calls:
-                    # Fallback: infer from tool message content
-                    for tc_id, tc_content in tool_msg_map.items():
-                        name = "tool"
-                        result = tc_content
-                        if ":" in tc_content:
-                            parts = tc_content.split(":", 1)
-                            name = parts[0].strip()
-                            rest = parts[1].strip() if len(parts) > 1 else ""
-                            if "\n" in rest:
-                                result = rest.split("\n", 1)[1].strip()
-                        tool_calls.append({"name": name, "args": {}, "result": result})
-
                 has_content = bool(content and content.strip())
                 if not has_content and not tool_calls:
-                    i = j
                     continue
-
                 self.add_ai_block(content, tool_calls if tool_calls else None, timestamp=timestamp)
-                i = j
                 continue
 
             if role == "tool":
-                self.add_ai_block(f"🛠 {content}", timestamp=timestamp)
-                i += 1
+                tc_id = msg.get("tool_call_id", "") or ""
+                label = f"🛠 [{tc_id[:8]}]" if tc_id else "🛠 tool"
+                self.add_ai_block(f"{label} {content}", timestamp=timestamp)
                 continue
-
-            i += 1
 
         self._scroll_to_bottom()
 
