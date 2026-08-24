@@ -5,7 +5,6 @@ import json
 import logging
 import time
 from typing import Any, Optional
-from uuid import uuid4
 
 from playwright.async_api import Page
 
@@ -911,13 +910,57 @@ def _cdp_subtree_to_snapshot(node_id: str, node_map: dict[str, dict]) -> dict[st
     return node
 
 
-async def _enrich_cdp_snapshot_with_dom(cdp_session: Any,
-                                        snapshot: dict[str, Any]) -> None:
-    """CDP DOM.describeNode로 snapshot 트리의 모든 노드에 태그/속성 정보를 추가한다.
+_ENRICH_JS = """
+() => {
+  const map = {};
+  const elements = document.querySelectorAll('*');
+  for (const el of elements) {
+    const uid = (Math.random().toString(36) + Math.random().toString(36)).slice(2, 10);
+    el.setAttribute('data-psjba-id', uid);
+    const text = (el.textContent || '').trim();
+    map[uid] = {
+      tag: el.tagName.toLowerCase(),
+      id: el.id || '',
+      'class': el.className || '',
+      type: el.getAttribute('type') || '',
+      placeholder: el.getAttribute('placeholder') || '',
+      aria_label: el.getAttribute('aria-label') || '',
+      name: el.getAttribute('name') || '',
+      textContent: text.slice(0, 500),
+    };
+  }
+  return map;
+}
+"""
 
-    Playwright snapshot(native)과 CDP snapshot 모두에서 동작:
-    - Playwright: backendDOMNodeId → _backendNodeId로 정규화
-    - CDP: _backendNodeId 직접 보유
+
+async def _js_enrich_all_elements(page: Page) -> dict[str, dict[str, str]]:
+    """page.evaluate() 한 번으로 모든 DOM 요소에 data-psjba-id를 주입하고
+    uid → 속성 맵을 반환한다.
+
+    이 맵은 이후 _enrich_with_uid_map에서 a11y 노드의 _backendNodeId와
+    연결되어 enrichment 데이터를 제공한다.
+
+    Returns:
+        {uid: {tag, id, class, type, placeholder, aria_label, name, textContent}}
+    """
+    try:
+        return await page.evaluate(_ENRICH_JS)
+    except Exception as e:
+        logger.warning("JS DOM enrichment failed: %s", e)
+        return {}
+
+
+async def _enrich_with_uid_map(cdp_session: Any,
+                                snapshot: dict[str, Any],
+                                uid_map: dict[str, dict[str, str]]) -> None:
+    """uid_map으로 snapshot 트리의 모든 노드에 DOM 속성을 채운다.
+
+    CDP pushNodesByBackendIdsToFrontend + getAttributeValue로
+    a11y 노드의 _backendNodeId → data-psjba-id UID를 연결한 후,
+    uid_map에서 속성을 조회한다.
+
+    _enrich_node (describeNode + getOuterHTML per node)를 대체한다.
     """
     # backendDOMNodeId → _backendNodeId 정규화
     async def _normalize(node):
@@ -927,78 +970,71 @@ async def _enrich_cdp_snapshot_with_dom(cdp_session: Any,
         for child in node.get("children", []):
             await _normalize(child)
 
-    async def _enrich_all(node):
-        await _enrich_node(cdp_session, node)
+    # 모든 backendNodeId 수집
+    all_ids: list[int] = []
+
+    async def _collect_ids(node):
+        bid = node.get("_backendNodeId")
+        if bid:
+            all_ids.append(bid)
         for child in node.get("children", []):
-            await _enrich_all(child)
+            await _collect_ids(child)
 
     await _normalize(snapshot)
-    await _enrich_all(snapshot)
+    await _collect_ids(snapshot)
 
-
-async def _enrich_node(cdp_session: Any, node: dict[str, Any]) -> None:
-    """단일 노드의 DOM 속성과 텍스트를 CDP describeNode로 채우고
-    data-psjba-id 속성을 DOM에 주입한다."""
-    backend_id = node.get("_backendNodeId")
-    if not backend_id:
+    if not all_ids:
         return
+
     try:
-        desc = await cdp_session.send("DOM.describeNode", {
-            "backendNodeId": backend_id,
+        # Batch push: backendNodeIds → nodeIds
+        pn = await cdp_session.send("DOM.pushNodesByBackendIdsToFrontend", {
+            "backendNodeIds": all_ids,
         })
-        dom_node = desc.get("node", {})
-        node["tag"] = dom_node.get("localName", "").lower()
-        attrs = dom_node.get("attributes", [])
-        for i in range(0, len(attrs) - 1, 2):
-            attr_name = attrs[i]
-            attr_val = attrs[i + 1]
-            if attr_name == "id":
-                node["_id"] = attr_val
-            elif attr_name == "class":
-                node["_class"] = attr_val
-            elif attr_name == "type":
-                node["_type"] = attr_val
-            elif attr_name == "placeholder":
-                node["_placeholder"] = attr_val
-            elif attr_name in ("aria-label", "aria_label"):
-                node["_aria_label"] = attr_val
-            elif attr_name == "name":
-                node["_form_name"] = attr_val
-            elif attr_name == "aria-current":
-                node["_aria_current"] = attr_val
-            elif attr_name == "aria-pressed":
-                node["aria-pressed"] = attr_val
-            elif attr_name == "aria-haspopup":
-                node["_aria_haspopup"] = attr_val
-
-        # DOM에 data-psjba-id 주입 (ref 기반 조작용 고유 선택자)
-        uid = uuid4().hex[:8]
-        try:
-            await cdp_session.send("DOM.setAttributeValue", {
-                "nodeId": dom_node.get("nodeId"),
-                "name": "data-psjba-id",
-                "value": uid,
-            })
-            node["__psjba_id"] = uid
-        except Exception:
-            pass  # non-fatal; nodeId 없으면 생략
-
-        # DOM getOuterHTML로 순수 텍스트 추출
-        try:
-            html_resp = await cdp_session.send("DOM.getOuterHTML", {
-                "backendNodeId": backend_id,
-            })
-            outer = html_resp.get("outerHTML", "")
-            if outer:
-                import re
-                text = re.sub(r'<[^>]+>', ' ', outer).strip()  # 태그 → 공백
-                text = ' '.join(text.split())  # 연속 공백 제거
-                if text:
-                    node["_text_content"] = text[:200]  # 최대 200자
-        except Exception as e:
-            logger.debug("_enrich_node: getOuterHTML failed for backendId=%s: %s", backend_id, e)
+        node_ids = pn.get("nodeIds", [])
     except Exception as e:
-        logger.debug("_enrich_node: describeNode failed for backendId=%s: %s", backend_id, e)
+        logger.debug("_enrich_with_uid_map: pushNodes failed: %s", e)
+        return
+
+    # backendNodeId → uid 매핑
+    bid_to_uid: dict[int, str] = {}
+    for bid, nid in zip(all_ids, node_ids):
+        if nid and nid != 0:
+            try:
+                resp = await cdp_session.send("DOM.getAttributeValue", {
+                    "nodeId": nid,
+                    "name": "data-psjba-id",
+                })
+                uid = resp.get("value", "")
+                if uid:
+                    bid_to_uid[bid] = uid
+            except Exception as e:
+                logger.debug("_enrich_with_uid_map: getAttributeValue failed for nodeId=%s: %s", nid, e)
+
+    # snapshot 노드에 속성 채우기
+    async def _fill_node(node):
+        bid = node.get("_backendNodeId")
+        uid = bid_to_uid.get(bid) if bid else ""
+        if uid:
+            node["__psjba_id"] = uid
+            info = uid_map.get(uid, {})
+            if info:
+                node["tag"] = info.get("tag", "")
+                node["_id"] = info.get("id", "")
+                node["_class"] = info.get("class", "")
+                node["_type"] = info.get("type", "")
+                node["_placeholder"] = info.get("placeholder", "")
+                node["_aria_label"] = info.get("aria_label", "")
+                node["_form_name"] = info.get("name", "")
+                tc = info.get("textContent", "")
+                if tc:
+                    node["_text_content"] = tc[:200]
+        for child in node.get("children", []):
+            await _fill_node(child)
+
+    await _fill_node(snapshot)
+    logger.debug("_enrich_with_uid_map: %d/%d nodes matched via uid_map",
+                 len(bid_to_uid), len(all_ids))
 
 
 # ─── Legacy CDP fallback (getFullAXTree → snapshot) ───
@@ -1016,10 +1052,12 @@ async def _get_cdp_snapshot(page: Page) -> Optional[dict[str, Any]]:
         if not raw_nodes:
             return None
         snapshot = _cdp_nodes_to_snapshot(raw_nodes)
-        try:
-            await _enrich_cdp_snapshot_with_dom(cdp, snapshot)
-        except Exception as e:
-            logger.debug("CDP DOM enrichment failed: %s", e)
+        uid_map = await _js_enrich_all_elements(page)
+        if uid_map:
+            try:
+                await _enrich_with_uid_map(cdp, snapshot, uid_map)
+            except Exception as e:
+                logger.debug("CDP uid_map enrichment failed: %s", e)
         return snapshot
     except Exception as e:
         logger.warning("CDP snapshot failed: %s", e)
@@ -1029,7 +1067,7 @@ async def _get_cdp_snapshot(page: Page) -> Optional[dict[str, Any]]:
 async def _get_accessibility_via_cdp_with_refs(
     page: Page,
 ) -> tuple[str, dict[int, dict[str, Any]]]:
-    """CDP Accessibility domain 직접 활성화 + getFullAXTree + DOM enrichment."""
+    """CDP Accessibility domain 직접 활성화 + getFullAXTree + JS DOM enrichment."""
     cdp = await page.context.new_cdp_session(page)
     await cdp.send("Accessibility.enable")
     result = await cdp.send("Accessibility.getFullAXTree", {})
@@ -1038,10 +1076,14 @@ async def _get_accessibility_via_cdp_with_refs(
         return "(No accessibility nodes via CDP)", {}
 
     snapshot = _cdp_nodes_to_snapshot(raw_nodes)
-    try:
-        await _enrich_cdp_snapshot_with_dom(cdp, snapshot)
-    except Exception as e:
-        logger.debug("CDP DOM enrichment failed: %s", e)
+
+    # Single JS evaluate: data-psjba-id 주입 + uid → DOM 속성 맵
+    uid_map = await _js_enrich_all_elements(page)
+    if uid_map:
+        try:
+            await _enrich_with_uid_map(cdp, snapshot, uid_map)
+        except Exception as e:
+            logger.debug("CDP uid_map enrichment failed: %s", e)
 
     return await format_accessibility_tree_with_refs(snapshot)
 
