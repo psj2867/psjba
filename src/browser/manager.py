@@ -1395,31 +1395,32 @@ class PlaywrightManager:
         return f"cron_add: job '{name}' created (id={job.id}, schedule={schedule})"
 
     async def cron_list(self) -> str:
-        """등록된 CRON + 1회성 예약 작업 목록을 조회한다."""
+        """등록된 활성 CRON + 1회성 예약 작업 목록을 조회한다."""
         if self._db is None:
             return "cron_list error: database not initialized"
 
-        lines = ["**Registered Jobs:**"]
+        lines = ["**Active Jobs:**"]
 
-        # CRON jobs
+        # CRON jobs — 활성만
         cron_jobs, _ = await self._db.list_cron_jobs(page=1, page_size=999, include_archived=True)
+        cron_jobs = [j for j in (cron_jobs or []) if j.status == "enable"]
         if cron_jobs:
             lines.append("\n**📅 Cron Jobs:**")
             for j in cron_jobs:
-                status_icon = "🟢" if j.status == "enable" else "🔴"
                 next_run = j.next_run_at.strftime("%Y-%m-%d %H:%M") if j.next_run_at else "-"
                 lines.append(
-                    f"- {status_icon} `{j.id[:8]}…` **{j.name}** | "
+                    f"- 🟢 `{j.id[:8]}…` **{j.name}** | "
                     f"schedule=`{j.schedule}` | prompt=`{j.prompt[:60]}` | "
                     f"next={next_run}"
                 )
 
-        # Scheduled jobs
+        # Scheduled jobs — 활성만
         sched_jobs, _ = await self._db.list_scheduled_jobs_paginated(page=1, page_size=999)
+        sched_jobs = [j for j in (sched_jobs or []) if j.status in ("pending", "running")]
         if sched_jobs:
             lines.append("\n**⏰ One-time Jobs:**")
             for j in sched_jobs:
-                status_icon = {"pending": "⏳", "running": "🔄", "done": "✅", "error": "❌", "cancelled": "🚫"}.get(j.status, "⚪")
+                status_icon = {"pending": "⏳", "running": "🔄"}.get(j.status, "⏳")
                 scheduled = j.scheduled_at.strftime("%m-%d %H:%M") if j.scheduled_at else "-"
                 lines.append(
                     f"- {status_icon} `{j.id[:8]}…` **{j.name}** | "

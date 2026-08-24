@@ -368,10 +368,4 @@ class MainWindow(QMainWindow):
                 from PySide6.QtCore import QTimer
                 QTimer.singleShot(0, lambda r=result: callback(r))
 
-        def _schedule() -> None:
-            try:
-                asyncio.ensure_future(_wrapper())
-            except RuntimeError:
-                logger.debug("Background task schedule failed (loop busy)")
-
-        loop.call_soon(_schedule)
+        asyncio.create_task(_wrapper())

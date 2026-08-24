@@ -94,6 +94,11 @@ def _run_async_task(
     callback: Optional[Callable[[Any], None]] = None,
     task_store: Optional[list] = None,
 ) -> None:
+    """이미 실행 중인 이벤트 루프에서 비동기 태스크를 안전하게 스케줄링.
+
+    qasync의 call_soon은 nested task wakeup 충돌을 유발하므로
+    asyncio.create_task를 직접 사용한다.
+    """
     try:
         loop = asyncio.get_event_loop()
     except RuntimeError:
@@ -102,22 +107,20 @@ def _run_async_task(
     if not loop.is_running():
         return
 
-    def _schedule() -> None:
-        try:
-            task = asyncio.ensure_future(coro)
-        except (RuntimeError, ValueError):
-            return
-        if task_store is not None:
-            task_store.append(task)
-            task.add_done_callback(
-                lambda t: task_store.remove(t) if t in task_store else None
-            )
-        if callback:
-            task.add_done_callback(
-                lambda t: callback(t.result() if not t.exception() else None)
-            )
+    try:
+        task = asyncio.create_task(coro)
+    except (RuntimeError, ValueError):
+        return
 
-    loop.call_soon(_schedule)
+    if task_store is not None:
+        task_store.append(task)
+        task.add_done_callback(
+            lambda t: task_store.remove(t) if t in task_store else None
+        )
+    if callback:
+        task.add_done_callback(
+            lambda t: callback(t.result() if not t.exception() else None)
+        )
 
 
 # ─── UI 헬퍼 ───────────────────────────────────────────────────────
