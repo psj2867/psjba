@@ -83,12 +83,16 @@ async def build_initial_messages(
                     f"필요 시 memory_search 도구로 과거 내용을 검색할 수 있습니다."
         ))
 
-    # browser context → developer message
+    # browser context + current date → developer message
+    from datetime import datetime
+    current_date = datetime.now().strftime("%Y-%m-%d %H:%M")
+    info_parts = [f"[Current Date]\n{current_date}"]
     if browser_context and browser_context != "[Browser: not connected]":
-        messages.append(HumanMessage(
-            content=f"[Browser Context]\n{browser_context}",
-            additional_kwargs={"role": "developer"},
-        ))
+        info_parts.append(f"[Browser Context]\n{browser_context}")
+    messages.append(HumanMessage(
+        content="\n\n".join(info_parts),
+        additional_kwargs={"role": "developer"},
+    ))
 
     # 현재 user text
     if user_text:
