@@ -471,7 +471,8 @@ async def _format_tree(
                 if texts:
                     merged = ", ".join(texts)
                     if len(merged) > 60:
-                        merged = merged[:60] + "..."
+                        overflow = len(merged) - 60
+                        merged = merged[:60] + f"... (+{overflow} more)"
                     parts.append(f'texts="{merged}"')
                 lines.append(f"{indent * (depth + 1)}{' '.join(parts)}")
             else:
@@ -877,7 +878,7 @@ _ENRICH_FN = rf"""function() {{
         placeholder: this.getAttribute('placeholder') || '',
         aria_label: this.getAttribute('aria-label') || '',
         name: this.getAttribute('name') || '',
-        textContent: t.length > {TEXT_DISPLAY_LEN} ? t.substring(0, {TEXT_DISPLAY_LEN}) + '...' : t,
+        textContent: t.length > {TEXT_DISPLAY_LEN} ? t.substring(0, {TEXT_DISPLAY_LEN}) + '... (+' + (t.length - {TEXT_DISPLAY_LEN}) + ' more)' : t,
         ariaAttrs: JSON.stringify(ariaAttrs)
     }};
 }}"""
