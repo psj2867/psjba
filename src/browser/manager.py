@@ -962,7 +962,12 @@ class PlaywrightManager:
             DOM.getBoxModel은 page 좌표계(= viewport + document scroll + ancestors scroll).
             scrollIntoViewIfNeeded는 nearest scrollable container를 스크롤하지만
             document scroll과 container scroll 둘 다 보정해야 한다.
-            Returns (success, cx, cy)."""
+            Returns (success, cx, cy). False면 CDP nodeId가 stale하거나 viewport 밖.
+
+            Note: backendNodeId 기반의 nid는 DOM 변경 시 stale 가능.
+            map/type/describeNode는 살아있는 태그명을 반환할 수 있지만
+            실제 좌표는 다른 요소를 가리킬 수 있다. False 반환 시
+            호출자는 CSS selector로 재발견해야 함."""
             try:
                 await cdp_session.send("DOM.scrollIntoViewIfNeeded", {"nodeId": nid})
                 box = await cdp_session.send("DOM.getBoxModel", {"nodeId": nid})
@@ -978,7 +983,7 @@ class PlaywrightManager:
                 diag = await page.evaluate(
                     '(() => {'
                     '  const s = {x: window.pageXOffset || 0, y: window.pageYOffset || 0};'
-                    '  const bcr = this.document ? {x:0,y:0} : {};'
+                    '  const vp = {w: window.innerWidth || 0, h: window.innerHeight || 0};'
                     '  let sc = null, scX = 0, scY = 0;'
                     '  let p = document.querySelector(":scope>*");'
                     '  while (p && p !== document.body && p !== document.documentElement) {'
@@ -993,13 +998,27 @@ class PlaywrightManager:
                     '    }'
                     '    p = p.parentElement;'
                     '  }'
-                    '  return {scroll: s, scrollContainer: sc, containerScroll: {x: scX, y: scY}};'
+                    '  return {scroll: s, viewport: vp, scrollContainer: sc, containerScroll: {x: scX, y: scY}};'
                     '})()'
                 )
                 cx -= diag['scroll']['x']
                 cy -= diag['scroll']['y']
 
-                # 디버그: boxModel content vs bcr vs viewport 좌표 차이 진단
+                # 요소가 viewport 밖이면 CDP click 포기 → Playwright fallback
+                # (CSS position: absolute; left: -9999px 같은 off-screen 요소)
+                viewport_w = diag.get('viewport', {}).get('w', 0)
+                viewport_h = diag.get('viewport', {}).get('h', 0)
+                if viewport_w and viewport_h:
+                    margin = 5  # 살짝만 걸쳐도 클릭 가능
+                    if (cx + margin < 0 or cx - margin >= viewport_w or
+                            cy + margin < 0 or cy - margin >= viewport_h):
+                        logger.debug("_cdp_dispatch: element outside viewport "
+                                     "(cx=%.0f, cy=%.0f, vp=%dx%d) → skip CDP click",
+                                     cx, cy, viewport_w, viewport_h)
+                        return False, 0, 0
+
+                # 디버그: nodeId 기반 좌표 vs live DOM 차이 진단
+                # (stale backendNodeId로 엉뚱한 요소를 잡고 있는지 확인)
                 bcr_info = {}
                 if logger.isEnabledFor(logging.DEBUG):
                     try:
@@ -1023,7 +1042,8 @@ class PlaywrightManager:
                     except Exception:
                         pass
 
-                    logger.debug("_cdp_dispatch: target=%s content_quad=%s bcr=(%.0f,%.0f,%.0f,%.0f) "
+                    logger.debug("_cdp_dispatch: target=%s content_quad=%s "
+                                 "bcr=(%.0f,%.0f,%.0f,%.0f) "
                                  "center=(%.0f,%.0f) diag=%s",
                                  target.get("node", {}).get("nodeName", "?"),
                                  content,
