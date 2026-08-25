@@ -103,6 +103,7 @@ psjba/                          # ← 워크스페이스 루트
 - 변수명: `snake_case`
 - 클래스명: `PascalCase`
 - 상수: `UPPER_SNAKE_CASE`
+- 모든 상수는 모듈 레벨에서 분리하여 명명된 변수로 사용할 것 (리터럴을 함수/템플릿 안에 직접 적지 않음)
 - 모든 public 함수에 docstring 작성
 - 타입 힌트 필수 (Python 3.11+)
 

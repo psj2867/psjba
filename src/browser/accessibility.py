@@ -364,34 +364,110 @@ async def _format_tree(
 
     _IMAGE_ROLES = {"image", "img", "graphic", "icon"}
 
-    # 연속 image 그루핑
+    # 연속 그루핑 (image + text leaf)
+    def _is_text_leaf(n):
+        if n.get("children"):
+            return False
+        if _is_interactive(n.get("role", "")):
+            return False
+        return bool(n.get("_text_content")) or bool(n.get("name"))
+
+    def _text_leaf_key(n):
+        return ((n.get("tag", "") or n.get("_tag", "")).lower(),
+                n.get("role", "").lower())
+
     grouped: list[dict[str, Any] | list[dict[str, Any]]] = []
-    pending: list[dict[str, Any]] = []
+    img_pending: list[dict[str, Any]] = []
+    text_pending: list[dict[str, Any]] = []
     for child in children:
         role = child.get("role", "").lower()
         name = child.get("name", "")
         if role in _IMAGE_ROLES and not name:
-            pending.append(child)
+            if text_pending:
+                grouped.append(text_pending)
+                text_pending = []
+            img_pending.append(child)
         else:
-            if pending:
-                grouped.append(pending)
-                pending = []
-            grouped.append(child)
-    if pending:
-        grouped.append(pending)
+            if img_pending:
+                grouped.append(img_pending)
+                img_pending = []
+            if _is_text_leaf(child):
+                key = _text_leaf_key(child)
+                if not text_pending or key != _text_leaf_key(text_pending[0]):
+                    if text_pending:
+                        grouped.append(text_pending)
+                    text_pending = [child]
+                else:
+                    text_pending.append(child)
+            else:
+                if text_pending:
+                    grouped.append(text_pending)
+                    text_pending = []
+                grouped.append(child)
+    if img_pending:
+        grouped.append(img_pending)
+    if text_pending:
+        grouped.append(text_pending)
 
     for item in grouped:
         if depth > 0 and depth % 4 == 0 and len(lines) % 5 == 0:
             await asyncio.sleep(0)
 
         if isinstance(item, list):
-            # 연속 image 그룹 → "[image] ×N" (depth는 부모+1)
-            img_role = item[0].get("role", "image")
-            n = len(item)
-            if n == 1:
-                lines.append(f"{indent * (depth + 1)}[{img_role}]")
+            first = item[0]
+            role = first.get("role", "").lower()
+            if role in _IMAGE_ROLES:
+                # 연속 image 그룹 → "[image] ×N"
+                img_role = first.get("role", "image")
+                n = len(item)
+                if n == 1:
+                    lines.append(f"{indent * (depth + 1)}[{img_role}]")
+                else:
+                    lines.append(f"{indent * (depth + 1)}[{img_role}] ×{n}")
             else:
-                lines.append(f"{indent * (depth + 1)}[{img_role}] ×{n}")
+                # 연속 text leaf 그룹 (code, paragraph 등)
+                tag = (first.get("tag", "") or first.get("_tag", "") or "").lower()
+                role_display = first.get("role", "")
+                ref_min = ref_max = 0
+                texts: list[str] = []
+                for leaf_node in item:
+                    ref = _next_ref()
+                    if not ref_min:
+                        ref_min = ref
+                    ref_max = ref
+                    if refs is not None:
+                        psjba_id = leaf_node.get("__psjba_id", "")
+                        refs[ref] = {
+                            "role": leaf_node.get("role", ""),
+                            "name": leaf_node.get("name", ""),
+                            "value": leaf_node.get("value", ""),
+                            "tag": leaf_node.get("tag", ""),
+                            "_id": leaf_node.get("_id", ""),
+                            "_class": leaf_node.get("_class", ""),
+                            "_type": leaf_node.get("_type", ""),
+                            "_placeholder": leaf_node.get("_placeholder", ""),
+                            "_form_name": leaf_node.get("_form_name", ""),
+                            "_aria_label": leaf_node.get("_aria_label", ""),
+                            "_backendNodeId": leaf_node.get("_backendNodeId"),
+                            "_text_content": leaf_node.get("_text_content", "") or "",
+                            "_nth_of_type": leaf_node.get("_nth_of_type", 0),
+                            "__psjba_id": psjba_id,
+                        }
+                        if psjba_id:
+                            refs[ref]["_selector"] = f'[data-psjba-id="{psjba_id}"]'
+                    tc = leaf_node.get("_text_content", "").strip()
+                    if tc:
+                        texts.append(tc)
+                parts = [f"[{role_display}]"]
+                if tag:
+                    parts.append(f"<{tag}>")
+                parts.append(f"[#{ref_min}-{ref_max}]")
+                if texts:
+                    merged = ", ".join(texts)
+                    if len(merged) > 60:
+                        merged = merged[:60] + "..."
+                    parts.append(f'texts="{merged}"')
+                lines.append(f"{indent * (depth + 1)}{' '.join(parts)}")
         else:
             await _format_tree(item, depth + 1, lines, indent, refs=refs, detail=detail, max_depth=max_depth)
 
@@ -507,14 +583,16 @@ async def _collapse_tree(
 ) -> dict[str, Any]:
     """비-인터랙티브 서브트리를 요약 라인으로 접어 토큰을 줄인다.
 
-    _prune_tree 로 더 이상 줄일 수 없을 때 호출된다.
-    interactive 요소가 전혀 없는 서브트리를 찾아
+    Phase 1: 최소 20회, 최대 30회 반복하며 non-interactive 서브트리를
     '→ [role] "name", [role] ×N' 형태로 치환한다.
+    Phase 2: 30회로도 부족하면 하단부터 깊은 순으로 collapse하여
+    리프 텍스트가 보이도록 하고 'more below' 표시를 추가한다.
     """
-    for iteration in range(20):
+    # ── Phase 1: 최소 20 / 최대 30 반복 ──────────────────
+    for iteration in range(30):
         await asyncio.sleep(0)
         text = "\n".join(await _format_tree(tree, refs=refs))
-        if _estimate_tokens(text) <= max_tokens:
+        if _estimate_tokens(text) <= max_tokens and iteration >= 20:
             return tree
 
         candidates: list[tuple[int, list[int], dict[str, Any]]] = []
@@ -526,24 +604,19 @@ async def _collapse_tree(
             children = node.get("children", [])
             if not children:
                 return
-            # 자식을 먼저 방문 (bottom-up)
             for i, child in enumerate(children):
                 _find_candidates(child, path + [i])
-
-            # 자기 자신 평가
             if node.get("_collapsed"):
                 return
             if _has_interactive_descendant(node):
                 return
-            savings = _count_descendants(node)
-            candidates.append((savings, path, node))
+            candidates.append((_count_descendants(node), path, node))
 
         _find_candidates(tree, [])
 
         if not candidates:
             break  # 더 이상 접을 게 없음
 
-        # savings 큰 순으로 정렬
         candidates.sort(key=lambda x: x[0], reverse=True)
         _, path, node = candidates[0]
 
@@ -551,6 +624,40 @@ async def _collapse_tree(
         summary = _build_child_summary(children)
         node["_collapsed"] = {"count": len(children), "summary": summary}
         node["children"] = []
+
+    # ── Phase 2: 하단부터 깊은 순 fallback collapse ────
+    text = "\n".join(await _format_tree(tree, refs=refs))
+    if _estimate_tokens(text) <= max_tokens:
+        return tree
+
+    # 하단(깊은 depth) non-interactive 노드부터 collapse
+    bottom_up: list[tuple[int, list[int], dict[str, Any]]] = []
+
+    def _collect_bottom_up(node, path, depth):
+        children = node.get("children", [])
+        if not children:
+            return
+        for i, child in enumerate(children):
+            _collect_bottom_up(child, path + [i], depth + 1)
+        if node.get("_collapsed"):
+            return
+        if _has_interactive_descendant(node):
+            return
+        bottom_up.append((depth, path, node))
+
+    _collect_bottom_up(tree, [], 0)
+    bottom_up.sort(key=lambda x: x[0], reverse=True)  # deep first
+
+    for _depth, _path, node in bottom_up:
+        children = node.get("children", [])
+        if not children:
+            continue
+        summary = _build_child_summary(children)
+        node["_collapsed"] = {"count": len(children), "summary": summary}
+        node["children"] = []
+        text = "\n".join(await _format_tree(tree, refs=refs))
+        if _estimate_tokens(text) <= max_tokens:
+            return tree
 
     return tree
 
@@ -563,7 +670,7 @@ def _truncate_by_token(text: str, max_tokens: int = MAX_TOKEN_ESTIMATE) -> str:
     while lines and _estimate_tokens('\n'.join(lines)) > max_tokens:
         lines.pop()
     text = '\n'.join(lines)
-    text += f"\n... (truncated, ~{_estimate_tokens(text)} tokens)"
+    text += "\n... (more content below — call browser_snapshot(ref=N) to drill into child refs)"
     return text
 
 
