@@ -913,83 +913,56 @@ def _cdp_subtree_to_snapshot(node_id: str, node_map: dict[str, dict]) -> dict[st
     return node
 
 
-_ENRICH_JS = """
-() => {
-  const map = {};
-  const elements = document.querySelectorAll('*');
-  for (const el of elements) {
-    const uid = (Math.random().toString(36) + Math.random().toString(36)).slice(2, 10);
-    el.setAttribute('data-psjba-id', uid);
+# ─── Enrichment: resolveNode + callFunctionOn gather ───
 
-    // 모든 aria-* 속성 수집
-    const ariaAttrs = {};
-    for (const attr of el.attributes) {
-      if (attr.name.startsWith('aria-')) {
-        ariaAttrs[attr.name] = attr.value;
-      }
+_ENRICH_FN = """function() {
+    var uid = (Math.random().toString(36) + Math.random().toString(36)).slice(2, 10);
+    this.setAttribute('data-psjba-id', uid);
+    var ariaAttrs = {};
+    for (var i = 0; i < this.attributes.length; i++) {
+        var a = this.attributes[i];
+        if (a.name.indexOf('aria-') === 0) ariaAttrs[a.name] = a.value;
     }
-
-    const text = (el.textContent || '').trim();
-    map[uid] = {
-      tag: el.tagName.toLowerCase(),
-      id: el.id || '',
-      'class': el.className || '',
-      type: el.getAttribute('type') || '',
-      placeholder: el.getAttribute('placeholder') || '',
-      aria_label: el.getAttribute('aria-label') || '',
-      name: el.getAttribute('name') || '',
-      textContent: text.slice(0, 500),
-      ariaAttrs: JSON.stringify(ariaAttrs),
+    var t = (this.textContent || '').trim();
+    return {
+        uid: uid,
+        tag: this.tagName.toLowerCase(),
+        id: this.id || '',
+        'class': this.className || '',
+        type: this.getAttribute('type') || '',
+        placeholder: this.getAttribute('placeholder') || '',
+        aria_label: this.getAttribute('aria-label') || '',
+        name: this.getAttribute('name') || '',
+        textContent: t.substring(0, 500),
+        ariaAttrs: JSON.stringify(ariaAttrs)
     };
-  }
-  return map;
-}
-"""
+}"""
 
 
-async def _js_enrich_all_elements(page: Page) -> dict[str, dict[str, str]]:
-    """page.evaluate() 한 번으로 모든 DOM 요소에 data-psjba-id를 주입하고
-    uid → 속성 맵을 반환한다.
+async def _enrich_via_resolve_gather(
+    page: Page,
+    snapshot: dict[str, Any],
+) -> None:
+    """snapshot 트리의 모든 a11y 노드를 resolveNode → callFunctionOn gather로
+    enrichment한다.
 
-    이 맵은 이후 _enrich_with_uid_map에서 a11y 노드의 _backendNodeId와
-    연결되어 enrichment 데이터를 제공한다.
+    각 노드에 대해:
+    1. DOM.resolveNode(backendNodeId) → objectId 확보
+    2. Runtime.callFunctionOn으로 data-psjba-id 주입 + 정보 수집 (한 번에)
+    3. Runtime.releaseObject(objectId) 해제
 
     Returns:
-        {uid: {tag, id, class, type, placeholder, aria_label, name, textContent}}
+        None (snapshot 노드를 in-place로 수정)
     """
-    try:
-        return await page.evaluate(_ENRICH_JS)
-    except Exception as e:
-        logger.warning("JS DOM enrichment failed: %s", e)
-        return {}
+    # backendNodeId 수집
+    all_ids: list[int] = []
 
-
-async def _enrich_with_uid_map(cdp_session: Any,
-                                snapshot: dict[str, Any],
-                                uid_map: dict[str, dict[str, str]]) -> None:
-    """uid_map으로 snapshot 트리의 모든 노드에 DOM 속성을 채운다.
-
-    CDP pushNodesByBackendIdsToFrontend + getAttributeValue로
-    a11y 노드의 _backendNodeId → data-psjba-id UID를 연결한 후,
-    uid_map에서 속성을 조회한다.
-
-    _enrich_node (describeNode + getOuterHTML per node)를 대체한다.
-
-    uid_map에 포함된 ariaAttrs(JSON string)는 파싱하여
-    node["_aria_<name>"] 또는 node["aria-<name>"] 키로 저장한다.
-    """
-    import json
-
-    # backendDOMNodeId → _backendNodeId 정규화
     async def _normalize(node):
         bid = node.get("backendDOMNodeId")
         if bid:
             node["_backendNodeId"] = bid
         for child in node.get("children", []):
             await _normalize(child)
-
-    # 모든 backendNodeId 수집
-    all_ids: list[int] = []
 
     async def _collect_ids(node):
         bid = node.get("_backendNodeId")
@@ -1004,73 +977,69 @@ async def _enrich_with_uid_map(cdp_session: Any,
     if not all_ids:
         return
 
-    try:
-        # Batch push: backendNodeIds → nodeIds
-        pn = await cdp_session.send("DOM.pushNodesByBackendIdsToFrontend", {
-            "backendNodeIds": all_ids,
-        })
-        node_ids = pn.get("nodeIds", [])
-    except Exception as e:
-        logger.debug("_enrich_with_uid_map: pushNodes failed: %s", e)
-        return
+    cdp = await page.context.new_cdp_session(page)
 
-    # backendNodeId → uid 매핑
-    bid_to_uid: dict[int, str] = {}
-    for bid, nid in zip(all_ids, node_ids):
-        if nid and nid != 0:
-            try:
-                resp = await cdp_session.send("DOM.getAttributeValue", {
-                    "nodeId": nid,
-                    "name": "data-psjba-id",
-                })
-                uid = resp.get("value", "")
-                if uid:
-                    bid_to_uid[bid] = uid
-            except Exception as e:
-                logger.debug("_enrich_with_uid_map: getAttributeValue failed for nodeId=%s: %s", nid, e)
+    async def _resolve_and_fetch(bid: int) -> Optional[dict[str, Any]]:
+        try:
+            resolved = await cdp.send("DOM.resolveNode", {"backendNodeId": bid})
+            obj_id = resolved["object"]["objectId"]
+            eval_res = await cdp.send("Runtime.callFunctionOn", {
+                "objectId": obj_id,
+                "functionDeclaration": _ENRICH_FN,
+                "returnByValue": True,
+            })
+            await cdp.send("Runtime.releaseObject", {"objectId": obj_id})
+            return eval_res["result"]["value"]
+        except Exception:
+            return None
+
+    results = await asyncio.gather(*[_resolve_and_fetch(bid) for bid in all_ids],
+                                   return_exceptions=False)
+
+    # backendNodeId → enrichment info 맵
+    bid_to_info: dict[int, dict] = {}
+    for bid, res in zip(all_ids, results):
+        if res and isinstance(res, dict) and res.get("uid"):
+            bid_to_info[bid] = res
 
     # snapshot 노드에 속성 채우기
     async def _fill_node(node):
         bid = node.get("_backendNodeId")
-        uid = bid_to_uid.get(bid) if bid else ""
-        if uid:
-            node["__psjba_id"] = uid
-            info = uid_map.get(uid, {})
-            if info:
-                node["tag"] = info.get("tag", "")
-                node["_id"] = info.get("id", "")
-                node["_class"] = info.get("class", "")
-                node["_type"] = info.get("type", "")
-                node["_placeholder"] = info.get("placeholder", "")
-                node["_aria_label"] = info.get("aria_label", "")
-                node["_form_name"] = info.get("name", "")
-                tc = info.get("textContent", "")
-                if tc:
-                    node["_text_content"] = tc[:TEXT_DISPLAY_LEN]
+        info = bid_to_info.get(bid) if bid else None
+        if info:
+            node["__psjba_id"] = info["uid"]
+            node["tag"] = info.get("tag", "")
+            node["_id"] = info.get("id", "")
+            node["_class"] = info.get("class", "")
+            node["_type"] = info.get("type", "")
+            node["_placeholder"] = info.get("placeholder", "")
+            node["_aria_label"] = info.get("aria_label", "")
+            node["_form_name"] = info.get("name", "")
+            tc = info.get("textContent", "")
+            if tc:
+                node["_text_content"] = tc[:TEXT_DISPLAY_LEN]
 
-                # ariaAttrs JSON → _aria_* / aria-* 키
-                aria_raw = info.get("ariaAttrs", "")
-                if aria_raw:
-                    try:
-                        aria_map = json.loads(aria_raw)
-                        for akey, aval in aria_map.items():
-                            if akey == "aria-label":
-                                continue  # _aria_label로 이미 처리
-                            # aria-pressed는 _format_node가 node["aria-pressed"]로 읽음
-                            if akey == "aria-pressed":
-                                node["aria-pressed"] = aval
-                                continue
-                            # aria-current → _aria_current
-                            norm_key = "_" + akey.replace("-", "_")
-                            node[norm_key] = aval
-                    except json.JSONDecodeError:
-                        pass
+            # ariaAttrs JSON 파싱
+            aria_raw = info.get("ariaAttrs", "")
+            if aria_raw:
+                try:
+                    aria_map = json.loads(aria_raw)
+                    for akey, aval in aria_map.items():
+                        if akey == "aria-label":
+                            continue
+                        if akey == "aria-pressed":
+                            node["aria-pressed"] = aval
+                            continue
+                        norm_key = "_" + akey.replace("-", "_")
+                        node[norm_key] = aval
+                except json.JSONDecodeError:
+                    pass
         for child in node.get("children", []):
             await _fill_node(child)
 
     await _fill_node(snapshot)
-    logger.debug("_enrich_with_uid_map: %d/%d nodes matched via uid_map",
-                 len(bid_to_uid), len(all_ids))
+    logger.debug("_enrich_via_resolve_gather: %d/%d nodes enriched",
+                 len(bid_to_info), len(all_ids))
 
 
 # ─── Legacy CDP fallback (getFullAXTree → snapshot) ───
@@ -1088,12 +1057,7 @@ async def _get_cdp_snapshot(page: Page) -> Optional[dict[str, Any]]:
         if not raw_nodes:
             return None
         snapshot = _cdp_nodes_to_snapshot(raw_nodes)
-        uid_map = await _js_enrich_all_elements(page)
-        if uid_map:
-            try:
-                await _enrich_with_uid_map(cdp, snapshot, uid_map)
-            except Exception as e:
-                logger.debug("CDP uid_map enrichment failed: %s", e)
+        await _enrich_via_resolve_gather(page, snapshot)
         return snapshot
     except Exception as e:
         logger.warning("CDP snapshot failed: %s", e)
@@ -1103,7 +1067,7 @@ async def _get_cdp_snapshot(page: Page) -> Optional[dict[str, Any]]:
 async def _get_accessibility_via_cdp_with_refs(
     page: Page,
 ) -> tuple[str, dict[int, dict[str, Any]]]:
-    """CDP Accessibility domain 직접 활성화 + getFullAXTree + JS DOM enrichment."""
+    """CDP Accessibility domain 직접 활성화 + getFullAXTree + resolveNode enrichment."""
     cdp = await page.context.new_cdp_session(page)
     await cdp.send("Accessibility.enable")
     result = await cdp.send("Accessibility.getFullAXTree", {})
@@ -1113,19 +1077,19 @@ async def _get_accessibility_via_cdp_with_refs(
 
     snapshot = _cdp_nodes_to_snapshot(raw_nodes)
 
-    # Single JS evaluate: data-psjba-id 주입 + uid → DOM 속성 맵
-    uid_map = await _js_enrich_all_elements(page)
-    if uid_map:
-        try:
-            await _enrich_with_uid_map(cdp, snapshot, uid_map)
-        except Exception as e:
-            logger.debug("CDP uid_map enrichment failed: %s", e)
+    # resolveNode + callFunctionOn gather: data-psjba-id 주입 + 정보 수집
+    await _enrich_via_resolve_gather(page, snapshot)
 
     return await format_accessibility_tree_with_refs(snapshot)
 
 
 def _cdp_nodes_to_snapshot(nodes: list[dict]) -> dict[str, Any]:
-    """CDP Accessibility.getFullAXTree 노드 리스트 → Playwright 호환 snapshot."""
+    """CDP Accessibility.getFullAXTree 노드 리스트 → Playwright 호환 snapshot + enrichment.
+
+snapshot 구성 후, resolveNode+callFunctionOn gather로 각 a11y 노드에
+data-psjba-id를 주입하고 DOM 속성(textContent, aria-*, tag 등)을
+수집하여 snapshot 노드에 직접 저장한다.
+"""
     node_map: dict[str, dict] = {}
     for n in nodes:
         node_map[n["nodeId"]] = n
