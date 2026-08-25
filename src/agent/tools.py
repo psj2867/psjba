@@ -40,19 +40,37 @@ def create_browser_tools(
         return await manager.browser_click(ref, tab_index)
 
     @tool
-    async def browser_type(selector: str, text: str, clear: bool = False) -> str:
-        """Type text into an input field found by CSS selector."""
-        return await manager.browser_type(selector, text, clear=clear)
+    async def browser_type(ref: int, text: str, clear: bool = False, tab_index: Optional[int] = None) -> str:
+        """Type text into an input field by its accessibility tree ref number. Uses CDP backendNodeId for precise element targeting.
+
+        Args:
+            ref: The [#N] ref number from the accessibility tree
+            text: Text to type into the field
+            clear: If True, clear the field before typing
+            tab_index: Target tab index (default: focused tab)
+        """
+        return await manager.browser_type(ref, text, clear=clear, tab_index=tab_index)
 
     @tool
-    async def browser_select_option(selector: str, value: str) -> str:
-        """Select an option from a dropdown by value."""
-        return await manager.browser_select_option(selector, value)
+    async def browser_select_option(ref: int, value: str, tab_index: Optional[int] = None) -> str:
+        """Select an option from a dropdown by its accessibility tree ref number. Uses CDP backendNodeId for precise element targeting.
+
+        Args:
+            ref: The [#N] ref number from the accessibility tree
+            value: The option value to select
+            tab_index: Target tab index (default: focused tab)
+        """
+        return await manager.browser_select_option(ref, value, tab_index=tab_index)
 
     @tool
-    async def browser_hover(selector: str) -> str:
-        """Hover over an element found by CSS selector."""
-        return await manager.browser_hover(selector)
+    async def browser_hover(ref: int, tab_index: Optional[int] = None) -> str:
+        """Hover over an element by its accessibility tree ref number. Uses CDP backendNodeId for precise element targeting.
+
+        Args:
+            ref: The [#N] ref number from the accessibility tree
+            tab_index: Target tab index (default: focused tab)
+        """
+        return await manager.browser_hover(ref, tab_index=tab_index)
 
     @tool
     async def browser_scroll(direction: str = "down", amount: Optional[int] = None) -> str:
@@ -60,9 +78,14 @@ def create_browser_tools(
         return await manager.browser_scroll(direction, amount)
 
     @tool
-    async def browser_focus(selector: str) -> str:
-        """Focus on an element found by CSS selector."""
-        return await manager.browser_focus(selector)
+    async def browser_focus(ref: int, tab_index: Optional[int] = None) -> str:
+        """Focus on an element by its accessibility tree ref number. Uses CDP backendNodeId for precise element targeting.
+
+        Args:
+            ref: The [#N] ref number from the accessibility tree
+            tab_index: Target tab index (default: focused tab)
+        """
+        return await manager.browser_focus(ref, tab_index=tab_index)
 
     @tool
     async def browser_press_key(key: str) -> str:

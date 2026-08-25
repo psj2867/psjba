@@ -671,64 +671,181 @@ class PlaywrightManager:
 
     async def browser_type(
         self,
-        selector: str,
+        ref: int,
         text: str,
         clear: bool = False,
+        tab_index: Optional[int] = None,
     ) -> str:
-        logger.info("browser_type: selector=%s, text=%s", selector, text[:50])
-        """선택자로 찾은 입력 필드에 텍스트를 입력한다."""
-        page = self._ensure_page()
-        healing = SelfHealingSelector(page)
-        locator = await healing.find_element(selector)
-        if locator is None:
-            return f"Type failed: element not found ({selector})"
+        """접근성 트리 ref 번호로 입력 필드를 찾아 텍스트를 입력한다."""
+        logger.info("browser_type: ref=%s, text=%s", ref, text[:50])
+        session_refs = self._get_session_refs()
+        node = session_refs.get(ref)
+        if node is None:
+            return (f"Type failed: ref #{ref} not found. "
+                    "Call browser_snapshot() first to refresh the tree.")
 
+        page = self._ensure_page(tab_index)
+        idx = tab_index if tab_index is not None else self._focused_tab_index
+        backend_id = node.get("_backendNodeId")
+        role = node.get("role", "")
+        name = node.get("name", "")
+        tag = node.get("tag", "") or node.get("_tag", "")
+        nid_attr = node.get("_id", "")
+        desc = f"ref #{ref} ({role}"
+        if name:
+            desc += f" \"{name}\""
+        if tag:
+            desc += f" <{tag}>"
+        if nid_attr:
+            desc += f" #{nid_attr}"
+        desc += ")"
+
+        # CDP: push backendNodeId → frontend → focus + insertText
         try:
-            if clear:
-                await locator.clear()
-            await locator.fill(text)
-            result = f"Typed into {selector}: {text[:50]}{'...' if len(text) > 50 else ''}"
+            cdp = await page.context.new_cdp_session(page)
+            await cdp.send("DOM.getDocument", {})
+            pn = await cdp.send("DOM.pushNodesByBackendIdsToFrontend", {
+                "backendNodeIds": [backend_id],
+            })
+            nids = pn.get("nodeIds", [])
+            node_id = nids[0] if nids else None
+            if node_id:
+                await cdp.send("DOM.scrollIntoViewIfNeeded", {"nodeId": node_id})
+                obj = await cdp.send("DOM.resolveNode", {"nodeId": node_id})
+                oid = obj.get("object", {}).get("objectId")
+                if oid:
+                    if clear:
+                        await cdp.send("Runtime.callFunctionOn", {
+                            "objectId": oid,
+                            "functionDeclaration": "function() { this.focus(); this.value = ''; }",
+                        })
+                    else:
+                        await cdp.send("Runtime.callFunctionOn", {
+                            "objectId": oid,
+                            "functionDeclaration": "function() { this.focus(); }",
+                        })
+                    await cdp.send("Input.insertText", {"text": text})
+                    if not clear:
+                        # blur로 change 이벤트 트리거 (입력 완료)
+                        await cdp.send("Runtime.callFunctionOn", {
+                            "objectId": oid,
+                            "functionDeclaration": (
+                                "function() { this.dispatchEvent(new Event('input', {bubbles: true})); "
+                                "this.dispatchEvent(new Event('change', {bubbles: true})); }"
+                            ),
+                        })
+                    await self._tabs[idx].update_info()
+                    tab = self._tabs[idx]
+                    result = (f"Typed into {desc}: {text[:50]}{'...' if len(text) > 50 else ''} "
+                              f"[url={tab.url}, title={tab.title}]")
+                    d = await self._tabs[idx].check_dialog()
+                    if d:
+                        result += f"\n⚠️ Dialog recorded: [{d['type']}] {d.get('message','')}"
+                    return result
         except Exception as e:
-            result = f"Type error: {e}"
+            logger.debug("browser_type CDP failed for %s: %s", desc, e)
 
-        d = await self._tabs[self._focused_tab_index].check_dialog()
-        if d:
-            result += f"\n⚠️ Dialog recorded: [{d['type']}] {d.get('message','')}"
-        return result
+        return f"Type failed for {desc}: could not locate element."
 
     async def browser_select_option(
         self,
-        selector: str,
+        ref: int,
         value: str,
+        tab_index: Optional[int] = None,
     ) -> str:
-        logger.info("browser_select_option: selector=%s, value=%s", selector, value)
-        """드롭다운에서 옵션을 선택한다."""
-        page = self._ensure_page()
-        healing = SelfHealingSelector(page)
-        locator = await healing.find_element(selector)
-        if locator is None:
-            return f"Select failed: element not found ({selector})"
+        """접근성 트리 ref 번호로 드롭다운 옵션을 선택한다."""
+        logger.info("browser_select_option: ref=%s, value=%s", ref, value)
+        session_refs = self._get_session_refs()
+        node = session_refs.get(ref)
+        if node is None:
+            return (f"Select failed: ref #{ref} not found. "
+                    "Call browser_snapshot() first to refresh the tree.")
+
+        page = self._ensure_page(tab_index)
+        idx = tab_index if tab_index is not None else self._focused_tab_index
+        backend_id = node.get("_backendNodeId")
+        role = node.get("role", "")
+        name = node.get("name", "")
+        desc = f"ref #{ref} ({role}"
+        if name:
+            desc += f" \"{name}\""
+        desc += ")"
 
         try:
-            await locator.select_option(value=value)
-            return f"Selected option '{value}' in {selector}"
+            cdp = await page.context.new_cdp_session(page)
+            await cdp.send("DOM.getDocument", {})
+            pn = await cdp.send("DOM.pushNodesByBackendIdsToFrontend", {
+                "backendNodeIds": [backend_id],
+            })
+            nids = pn.get("nodeIds", [])
+            node_id = nids[0] if nids else None
+            if node_id:
+                await cdp.send("DOM.scrollIntoViewIfNeeded", {"nodeId": node_id})
+                obj = await cdp.send("DOM.resolveNode", {"nodeId": node_id})
+                oid = obj.get("object", {}).get("objectId")
+                if oid:
+                    await cdp.send("Runtime.callFunctionOn", {
+                        "objectId": oid,
+                        "functionDeclaration": (
+                            "function(val) { this.value = val; "
+                            "this.dispatchEvent(new Event('change', {bubbles: true})); }"
+                        ),
+                        "arguments": [{"value": value}],
+                        "returnByValue": True,
+                    })
+                    return f"Selected option '{value}' in {desc}"
         except Exception as e:
-            return f"Select error: {e}"
+            logger.debug("browser_select_option CDP failed for %s: %s", desc, e)
 
-    async def browser_hover(self, selector: str) -> str:
-        logger.info("browser_hover: %s", selector)
-        """요소 위에 마우스를 호버한다."""
-        page = self._ensure_page()
-        healing = SelfHealingSelector(page)
-        locator = await healing.find_element(selector)
-        if locator is None:
-            return f"Hover failed: element not found ({selector})"
+        return f"Select failed for {desc}: could not locate element."
+
+    async def browser_hover(self, ref: int, tab_index: Optional[int] = None) -> str:
+        """접근성 트리 ref 번호로 요소 위에 마우스를 호버한다."""
+        logger.info("browser_hover: ref=%s", ref)
+        session_refs = self._get_session_refs()
+        node = session_refs.get(ref)
+        if node is None:
+            return (f"Hover failed: ref #{ref} not found. "
+                    "Call browser_snapshot() first to refresh the tree.")
+
+        page = self._ensure_page(tab_index)
+        idx = tab_index if tab_index is not None else self._focused_tab_index
+        backend_id = node.get("_backendNodeId")
+        role = node.get("role", "")
+        name = node.get("name", "")
+        desc = f"ref #{ref} ({role}"
+        if name:
+            desc += f" \"{name}\""
+        desc += ")"
 
         try:
-            await locator.hover(timeout=5000)
-            return f"Hovered: {selector}"
+            cdp = await page.context.new_cdp_session(page)
+            await cdp.send("DOM.getDocument", {})
+            pn = await cdp.send("DOM.pushNodesByBackendIdsToFrontend", {
+                "backendNodeIds": [backend_id],
+            })
+            nids = pn.get("nodeIds", [])
+            node_id = nids[0] if nids else None
+            if node_id:
+                await cdp.send("DOM.scrollIntoViewIfNeeded", {"nodeId": node_id})
+                obj = await cdp.send("DOM.resolveNode", {"nodeId": node_id})
+                oid = obj.get("object", {}).get("objectId")
+                if oid:
+                    await cdp.send("Runtime.callFunctionOn", {
+                        "objectId": oid,
+                        "functionDeclaration": (
+                            "function() { this.dispatchEvent(new MouseEvent('mouseover', "
+                            "{bubbles: true, view: window})); this.dispatchEvent(new "
+                            "MouseEvent('mouseenter', {bubbles: false, view: window})); }"
+                        ),
+                    })
+                    await self._tabs[idx].update_info()
+                    tab = self._tabs[idx]
+                    return (f"Hovered {desc} [url={tab.url}, title={tab.title}]")
         except Exception as e:
-            return f"Hover error: {e}"
+            logger.debug("browser_hover CDP failed for %s: %s", desc, e)
+
+        return f"Hover failed for {desc}: could not locate element."
 
     async def browser_scroll(
         self,
@@ -757,20 +874,49 @@ class PlaywrightManager:
         except Exception as e:
             return f"Scroll error: {e}"
 
-    async def browser_focus(self, selector: str) -> str:
-        logger.info("browser_focus: %s", selector)
-        """요소에 포커스를 맞춘다."""
-        page = self._ensure_page()
-        healing = SelfHealingSelector(page)
-        locator = await healing.find_element(selector)
-        if locator is None:
-            return f"Focus failed: element not found ({selector})"
+    async def browser_focus(self, ref: int, tab_index: Optional[int] = None) -> str:
+        """접근성 트리 ref 번호로 요소에 포커스를 맞춘다."""
+        logger.info("browser_focus: ref=%s", ref)
+        session_refs = self._get_session_refs()
+        node = session_refs.get(ref)
+        if node is None:
+            return (f"Focus failed: ref #{ref} not found. "
+                    "Call browser_snapshot() first to refresh the tree.")
+
+        page = self._ensure_page(tab_index)
+        idx = tab_index if tab_index is not None else self._focused_tab_index
+        backend_id = node.get("_backendNodeId")
+        role = node.get("role", "")
+        name = node.get("name", "")
+        desc = f"ref #{ref} ({role}"
+        if name:
+            desc += f" \"{name}\""
+        desc += ")"
 
         try:
-            await locator.focus(timeout=5000)
-            return f"Focused: {selector}"
+            cdp = await page.context.new_cdp_session(page)
+            await cdp.send("DOM.getDocument", {})
+            pn = await cdp.send("DOM.pushNodesByBackendIdsToFrontend", {
+                "backendNodeIds": [backend_id],
+            })
+            nids = pn.get("nodeIds", [])
+            node_id = nids[0] if nids else None
+            if node_id:
+                await cdp.send("DOM.scrollIntoViewIfNeeded", {"nodeId": node_id})
+                obj = await cdp.send("DOM.resolveNode", {"nodeId": node_id})
+                oid = obj.get("object", {}).get("objectId")
+                if oid:
+                    await cdp.send("Runtime.callFunctionOn", {
+                        "objectId": oid,
+                        "functionDeclaration": "function() { this.focus(); }",
+                    })
+                    await self._tabs[idx].update_info()
+                    tab = self._tabs[idx]
+                    return (f"Focused {desc} [url={tab.url}, title={tab.title}]")
         except Exception as e:
-            return f"Focus error: {e}"
+            logger.debug("browser_focus CDP failed for %s: %s", desc, e)
+
+        return f"Focus failed for {desc}: could not locate element."
 
     async def browser_press_key(self, key: str) -> str:
         logger.info("browser_press_key: %s", key)
@@ -924,7 +1070,7 @@ class PlaywrightManager:
         """접근성 트리 ref 번호로 요소를 찾아 클릭한다.
 
         backendNodeId → CDP getBoxModel + dispatchMouseEvent 로 정확히 클릭.
-        CDP 실패 시 Playwright get_by_role 로 폴백.
+        Viewport 밖 요소(CSS off-screen)는 실패 메시지 반환.
 
         Args:
             ref: browser_snapshot() 결과에 표시된 [#N] 번호
@@ -962,12 +1108,10 @@ class PlaywrightManager:
             DOM.getBoxModel은 page 좌표계(= viewport + document scroll + ancestors scroll).
             scrollIntoViewIfNeeded는 nearest scrollable container를 스크롤하지만
             document scroll과 container scroll 둘 다 보정해야 한다.
-            Returns (success, cx, cy). False면 CDP nodeId가 stale하거나 viewport 밖.
-
-            Note: backendNodeId 기반의 nid는 DOM 변경 시 stale 가능.
-            map/type/describeNode는 살아있는 태그명을 반환할 수 있지만
-            실제 좌표는 다른 요소를 가리킬 수 있다. False 반환 시
-            호출자는 CSS selector로 재발견해야 함."""
+            Returns (ok: bool | str, cx: float, cy: float).
+            - ok=True: 성공, cx/cy는 viewport 클릭 좌표
+            - ok=False: 실패 (stale nodeId 등), 호출자는 CSS selector 재발견
+            - ok="outside": viewport 밖, 호출자는 즉시 리턴"""
             try:
                 await cdp_session.send("DOM.scrollIntoViewIfNeeded", {"nodeId": nid})
                 box = await cdp_session.send("DOM.getBoxModel", {"nodeId": nid})
@@ -1004,97 +1148,31 @@ class PlaywrightManager:
                 cx -= diag['scroll']['x']
                 cy -= diag['scroll']['y']
 
-                # 요소가 viewport 밖이면 CDP click 포기 → Playwright fallback
-                # (CSS position: absolute; left: -9999px 같은 off-screen 요소)
+                # viewport 밖 체크
                 viewport_w = diag.get('viewport', {}).get('w', 0)
                 viewport_h = diag.get('viewport', {}).get('h', 0)
-
-                # 디버그: target node의 data-psjba-id + getBoundingClientRect
-                # viewport 체크 결과와 무관하게 항상 로그 (stale nodeId 식별)
-                bcr_info = {}
-                hit_info = {}
-                target = {}
-                if logger.isEnabledFor(logging.DEBUG):
-                    try:
-                        target = await cdp_session.send("DOM.describeNode", {"nodeId": nid})
-                    except Exception:
-                        target = {}
-                    try:
-                        obj2 = await cdp_session.send("DOM.resolveNode", {"nodeId": nid})
-                        oid2 = obj2.get("object", {}).get("objectId")
-                        if oid2:
-                            bcr_res = await cdp_session.send("Runtime.callFunctionOn", {
-                                "objectId": oid2,
-                                "functionDeclaration": (
-                                    "function() { var r = this.getBoundingClientRect(); "
-                                    "return {left: r.x, top: r.y, w: r.width, h: r.height, "
-                                    "cx: r.x + r.width/2, cy: r.y + r.height/2, "
-                                    "psjba_id: this.getAttribute('data-psjba-id') || ''}; }"
-                                ),
-                                "returnByValue": True,
-                            })
-                            bcr_info = bcr_res.get("result", {}).get("value", {})
-                    except Exception:
-                        pass
-                    # hit: (cx,cy) 좌표에 실제 있는 노드 (+ data-psjba-id 비교)
-                    try:
-                        hit = await cdp_session.send("DOM.getNodeForLocation", {
-                            "x": int(cx), "y": int(cy),
-                            "includeUserAgentShadowDOM": True,
-                            "ignorePointerEventsNone": False,
-                        })
-                        hit_nid = hit.get("nodeId")
-                        if hit_nid:
-                            hit_desc = await cdp_session.send("DOM.describeNode", {"nodeId": hit_nid})
-                            hit_info["nodeName"] = hit_desc.get("node", {}).get("nodeName", "?")
-                            hit_obj = await cdp_session.send("DOM.resolveNode", {"nodeId": hit_nid})
-                            hit_oid = hit_obj.get("object", {}).get("objectId")
-                            if hit_oid:
-                                hit_attr = await cdp_session.send("Runtime.callFunctionOn", {
-                                    "objectId": hit_oid,
-                                    "functionDeclaration": (
-                                        "function() { return this.getAttribute('data-psjba-id') || ''; }"
-                                    ),
-                                    "returnByValue": True,
-                                })
-                                hit_info["psjba_id"] = hit_attr.get("result", {}).get("value", "")
-                    except Exception:
-                        pass
-
-                # viewport 밖 체크 (디버그 로그 확보 후)
+                inside_viewport = True
                 if viewport_w and viewport_h:
                     margin = 5
-                    if (cx + margin < 0 or cx - margin >= viewport_w or
-                            cy + margin < 0 or cy - margin >= viewport_h):
-                        logger.debug("_cdp_dispatch: target=%s psjba_id=%s content_quad=%s "
-                                     "bcr=(%.0f,%.0f,%.0f,%.0f) "
-                                     "hit={node=%s, psjba_id=%s} "
-                                     "center=(%.0f,%.0f) OUTSIDE viewport (%dx%d) → skip CDP click",
-                                     target.get("node", {}).get("nodeName", "?"),
-                                     bcr_info.get("psjba_id", "?"),
-                                     content,
-                                     bcr_info.get("left", 0), bcr_info.get("top", 0),
-                                     bcr_info.get("w", 0), bcr_info.get("h", 0),
-                                     hit_info.get("nodeName", "?"),
-                                     hit_info.get("psjba_id", "?"),
-                                     cx, cy, viewport_w, viewport_h)
-                        return "outside", cx, cy
+                    inside_viewport = not (
+                        cx + margin < 0 or cx - margin >= viewport_w
+                        or cy + margin < 0 or cy - margin >= viewport_h
+                    )
 
-                # viewport 안: 정상 클릭 진입
-                if logger.isEnabledFor(logging.DEBUG):
-                    logger.debug("_cdp_dispatch: target=%s psjba_id=%s content_quad=%s "
-                                 "bcr=(%.0f,%.0f,%.0f,%.0f) "
-                                 "hit={node=%s, psjba_id=%s} "
-                                 "center=(%.0f,%.0f) → CLICK",
-                                 target.get("node", {}).get("nodeName", "?"),
-                                 bcr_info.get("psjba_id", "?"),
-                                 content,
-                                 bcr_info.get("left", 0), bcr_info.get("top", 0),
-                                 bcr_info.get("w", 0), bcr_info.get("h", 0),
-                                 hit_info.get("nodeName", "?"),
-                                 hit_info.get("psjba_id", "?"),
-                                 cx, cy)
+                if not inside_viewport:
+                    if logger.isEnabledFor(logging.DEBUG):
+                        try:
+                            tn = await cdp_session.send("DOM.describeNode", {"nodeId": nid})
+                            logger.debug("_cdp_dispatch: ref #%s psjba_id=%s target=%s "
+                                         "center=(%.0f,%.0f) OUTSIDE viewport",
+                                         ref, node.get("_id", ""),
+                                         tn.get("node", {}).get("nodeName", "?"),
+                                         cx, cy)
+                        except Exception:
+                            pass
+                    return "outside", cx, cy
 
+                # viewport 안: 클릭 실행
                 await cdp_session.send("Input.dispatchMouseEvent", {
                     "type": "mousePressed", "x": cx, "y": cy,
                     "button": "left", "clickCount": 1,
@@ -1103,6 +1181,17 @@ class PlaywrightManager:
                     "type": "mouseReleased", "x": cx, "y": cy,
                     "button": "left", "clickCount": 1,
                 })
+
+                if logger.isEnabledFor(logging.DEBUG):
+                    try:
+                        tn = await cdp_session.send("DOM.describeNode", {"nodeId": nid})
+                        logger.debug("_cdp_dispatch: ref #%s psjba_id=%s target=%s "
+                                     "center=(%.0f,%.0f) CLICK",
+                                     ref, node.get("_id", ""),
+                                     tn.get("node", {}).get("nodeName", "?"),
+                                     cx, cy)
+                    except Exception:
+                        pass
                 return True, cx, cy
             except Exception as e:
                 logger.warning("CDP dispatch failed for nodeId=%s: %s", nid, e)
@@ -1183,73 +1272,15 @@ class PlaywrightManager:
                                     "element is outside viewport. "
                                     "The element is not visible on the page.")
         except Exception as e:
-            logger.warning("CDP re-discovery for %s failed: %s. → PW fallback", click_desc, e)
+            logger.warning("CDP re-discovery for %s failed: %s", click_desc, e)
 
-        # 2차: Playwright locator (CSS selector 먼저, 없으면 get_by_role)
-        try:
-            t1 = time.monotonic()
-            locator = None
-            # selector가 있으면 정확한 요소 지정 가능
-            if selector:
-                locator = page.locator(selector)
-            elif name:
-                locator = page.get_by_role(role, name=name, exact=False)
-            if locator is not None:
-                await locator.first.click(timeout=5000)
-                await self._tabs[idx].update_info()
-                tab = self._tabs[idx]
-                pw_elapsed = int((time.monotonic() - t1) * 1000)
-                total_elapsed = int((time.monotonic() - t0) * 1000)
-                pw_method = "PW:locator" if selector else "PW:get_by_role"
-                logger.info("browser_click: clicked %s via %s (%dms, total=%dms)",
-                             click_desc, pw_method, pw_elapsed, total_elapsed)
-                result = (f"Clicked {click_desc} [{pw_method}] "
-                          f"[url={tab.url}, title={tab.title}]")
-                d = await self._tabs[idx].check_dialog()
-                if d:
-                    result += f"\n⚠️ Dialog recorded: [{d['type']}] {d.get('message','')}"
-                return result
-        except Exception as e:
-            logger.debug("browser_click: PW locator failed for %s: %s", click_desc, e)
-
-        # 3차: SelfHealingSelector (name이 있어야 의미 있음)
-        try:
-            t1 = time.monotonic()
-            healing = SelfHealingSelector(page)
-            locator2 = None
-            if name:
-                locator2 = await healing.find_element(
-                    "", text=name, role=role, aria_label=name,
-                )
-            elif selector:
-                locator2 = await healing.find_element(
-                    selector, role=role, text=node.get("_text_content", ""),
-                )
-            if locator2 is None:
-                total_elapsed = int((time.monotonic() - t0) * 1000)
-                logger.error("browser_click: all strategies failed for %s (%dms)",
-                              click_desc, total_elapsed)
-                return (f"Click by {click_desc} failed: could not uniquely identify element "
-                        f"(role={role!r}, name={name!r}). "
-                        "Try browser_snapshot() again to get a fresh ref.")
-            await locator2.click(timeout=5000)
-            await self._tabs[idx].update_info()
-            tab = self._tabs[idx]
-            heal_elapsed = int((time.monotonic() - t1) * 1000)
-            total_elapsed = int((time.monotonic() - t0) * 1000)
-            logger.info("browser_click: clicked %s via self-healing (%dms, total=%dms)",
-                         click_desc, heal_elapsed, total_elapsed)
-            result = (f"Clicked {click_desc} [heal] "
-                      f"[url={tab.url}, title={tab.title}]")
-            d = await self._tabs[idx].check_dialog()
-            if d:
-                result += f"\n⚠️ Dialog recorded: [{d['type']}] {d.get('message','')}"
-            return result
-        except Exception as e:
-            total_elapsed = int((time.monotonic() - t0) * 1000)
-            logger.error("browser_click: self-healing failed for %s (%dms): %s",
-                          click_desc, total_elapsed, e)
-            return f"Click by {click_desc} failed: {e}"
+        # CDP 경로 실패: 정식 ref 기반 클릭 불가
+        total_elapsed = int((time.monotonic() - t0) * 1000)
+        logger.error("browser_click: CDP click failed for %s (%dms)",
+                      click_desc, total_elapsed)
+        return (f"Click by {click_desc} failed: could not locate element "
+                f"(role={role!r}, name={name!r}). "
+                "Try browser_snapshot() again to get a fresh ref.")
 
     async def browser_get_text(self, ref: int, tab_index: Optional[int] = None) -> str:
         """접근성 트리 ref 번호로 요소의 DOM 텍스트를 가져온다.
