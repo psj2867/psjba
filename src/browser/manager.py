@@ -1008,18 +1008,12 @@ class PlaywrightManager:
                 # (CSS position: absolute; left: -9999px 같은 off-screen 요소)
                 viewport_w = diag.get('viewport', {}).get('w', 0)
                 viewport_h = diag.get('viewport', {}).get('h', 0)
-                if viewport_w and viewport_h:
-                    margin = 5  # 살짝만 걸쳐도 클릭 가능
-                    if (cx + margin < 0 or cx - margin >= viewport_w or
-                            cy + margin < 0 or cy - margin >= viewport_h):
-                        logger.debug("_cdp_dispatch: element outside viewport "
-                                     "(cx=%.0f, cy=%.0f, vp=%dx%d) → skip CDP click",
-                                     cx, cy, viewport_w, viewport_h)
-                        return False, 0, 0
 
-                # 디버그: nodeId 기반 좌표 vs live DOM 차이 진단
-                # (stale backendNodeId로 엉뚱한 요소를 잡고 있는지 확인)
+                # 디버그: target node의 data-psjba-id + getBoundingClientRect
+                # viewport 체크 결과와 무관하게 항상 로그 (stale nodeId 식별)
                 bcr_info = {}
+                hit_info = {}
+                target = {}
                 if logger.isEnabledFor(logging.DEBUG):
                     try:
                         target = await cdp_session.send("DOM.describeNode", {"nodeId": nid})
@@ -1034,40 +1028,72 @@ class PlaywrightManager:
                                 "functionDeclaration": (
                                     "function() { var r = this.getBoundingClientRect(); "
                                     "return {left: r.x, top: r.y, w: r.width, h: r.height, "
-                                    "cx: r.x + r.width/2, cy: r.y + r.height/2}; }"
+                                    "cx: r.x + r.width/2, cy: r.y + r.height/2, "
+                                    "psjba_id: this.getAttribute('data-psjba-id') || ''}; }"
                                 ),
                                 "returnByValue": True,
                             })
                             bcr_info = bcr_res.get("result", {}).get("value", {})
                     except Exception:
                         pass
-
-                    logger.debug("_cdp_dispatch: target=%s content_quad=%s "
-                                 "bcr=(%.0f,%.0f,%.0f,%.0f) "
-                                 "center=(%.0f,%.0f) diag=%s",
-                                 target.get("node", {}).get("nodeName", "?"),
-                                 content,
-                                 bcr_info.get("left", 0), bcr_info.get("top", 0),
-                                 bcr_info.get("w", 0), bcr_info.get("h", 0),
-                                 cx, cy,
-                                 json.dumps(diag))
-
-                    # 별도 try: getNodeForLocation은 실패할 수 있음 (뷰포트 밖 좌표 등)
+                    # hit: (cx,cy) 좌표에 실제 있는 노드 (+ data-psjba-id 비교)
                     try:
                         hit = await cdp_session.send("DOM.getNodeForLocation", {
                             "x": int(cx), "y": int(cy),
                             "includeUserAgentShadowDOM": True,
                             "ignorePointerEventsNone": False,
                         })
-                        hit_desc = await cdp_session.send("DOM.describeNode", {
-                            "nodeId": hit.get("nodeId")
-                        }) if hit.get("nodeId") else {"node": {"nodeName": "(none)"}}
-                        logger.debug("_cdp_dispatch: hit at (%.0f,%.0f) = %s",
-                                     cx, cy,
-                                     hit_desc.get("node", {}).get("nodeName", "?"))
-                    except Exception as e:
-                        logger.debug("_cdp_dispatch: getNodeForLocation at (%.0f,%.0f) failed: %s",
-                                     cx, cy, e)
+                        hit_nid = hit.get("nodeId")
+                        if hit_nid:
+                            hit_desc = await cdp_session.send("DOM.describeNode", {"nodeId": hit_nid})
+                            hit_info["nodeName"] = hit_desc.get("node", {}).get("nodeName", "?")
+                            hit_obj = await cdp_session.send("DOM.resolveNode", {"nodeId": hit_nid})
+                            hit_oid = hit_obj.get("object", {}).get("objectId")
+                            if hit_oid:
+                                hit_attr = await cdp_session.send("Runtime.callFunctionOn", {
+                                    "objectId": hit_oid,
+                                    "functionDeclaration": (
+                                        "function() { return this.getAttribute('data-psjba-id') || ''; }"
+                                    ),
+                                    "returnByValue": True,
+                                })
+                                hit_info["psjba_id"] = hit_attr.get("result", {}).get("value", "")
+                    except Exception:
+                        pass
+
+                # viewport 밖 체크 (디버그 로그 확보 후)
+                if viewport_w and viewport_h:
+                    margin = 5
+                    if (cx + margin < 0 or cx - margin >= viewport_w or
+                            cy + margin < 0 or cy - margin >= viewport_h):
+                        logger.debug("_cdp_dispatch: target=%s psjba_id=%s content_quad=%s "
+                                     "bcr=(%.0f,%.0f,%.0f,%.0f) "
+                                     "hit={node=%s, psjba_id=%s} "
+                                     "center=(%.0f,%.0f) OUTSIDE viewport (%dx%d) → skip CDP click",
+                                     target.get("node", {}).get("nodeName", "?"),
+                                     bcr_info.get("psjba_id", "?"),
+                                     content,
+                                     bcr_info.get("left", 0), bcr_info.get("top", 0),
+                                     bcr_info.get("w", 0), bcr_info.get("h", 0),
+                                     hit_info.get("nodeName", "?"),
+                                     hit_info.get("psjba_id", "?"),
+                                     cx, cy, viewport_w, viewport_h)
+                        return False, 0, 0
+
+                # viewport 안: 정상 클릭 진입
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug("_cdp_dispatch: target=%s psjba_id=%s content_quad=%s "
+                                 "bcr=(%.0f,%.0f,%.0f,%.0f) "
+                                 "hit={node=%s, psjba_id=%s} "
+                                 "center=(%.0f,%.0f) → CLICK",
+                                 target.get("node", {}).get("nodeName", "?"),
+                                 bcr_info.get("psjba_id", "?"),
+                                 content,
+                                 bcr_info.get("left", 0), bcr_info.get("top", 0),
+                                 bcr_info.get("w", 0), bcr_info.get("h", 0),
+                                 hit_info.get("nodeName", "?"),
+                                 hit_info.get("psjba_id", "?"),
+                                 cx, cy)
 
                 await cdp_session.send("Input.dispatchMouseEvent", {
                     "type": "mousePressed", "x": cx, "y": cy,
