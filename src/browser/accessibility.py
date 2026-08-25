@@ -817,7 +817,7 @@ def _collect_lines(node: dict[str, Any], depth: int, lines: list[str], detail: b
 
 # ─── Enrichment: resolveNode + callFunctionOn gather ───
 
-_ENRICH_FN_TPL = r"""function() {{
+_ENRICH_FN = rf"""function() {{
     function getFastNodeText(n) {{
         if (!n) return '';
         if (n.nodeType === Node.TEXT_NODE) return n.nodeValue || '';
@@ -852,7 +852,7 @@ _ENRICH_FN_TPL = r"""function() {{
         placeholder: this.getAttribute('placeholder') || '',
         aria_label: this.getAttribute('aria-label') || '',
         name: this.getAttribute('name') || '',
-        textContent: t.length > {len} ? t.substring(0, {len}) + '...' : t,
+        textContent: t.length > {TEXT_DISPLAY_LEN} ? t.substring(0, {TEXT_DISPLAY_LEN}) + '...' : t,
         ariaAttrs: JSON.stringify(ariaAttrs)
     }};
 }}"""
@@ -904,7 +904,7 @@ async def _enrich_via_resolve_gather(
             obj_id = resolved["object"]["objectId"]
             eval_res = await cdp.send("Runtime.callFunctionOn", {
                 "objectId": obj_id,
-                "functionDeclaration": _ENRICH_FN_TPL.format(len=TEXT_DISPLAY_LEN),
+                "functionDeclaration": _ENRICH_FN,
                 "returnByValue": True,
             })
             await cdp.send("Runtime.releaseObject", {"objectId": obj_id})
