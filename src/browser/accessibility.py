@@ -818,6 +818,23 @@ def _collect_lines(node: dict[str, Any], depth: int, lines: list[str], detail: b
 # ─── Enrichment: resolveNode + callFunctionOn gather ───
 
 _ENRICH_FN_TPL = r"""function() {{
+    function getFastNodeText(n) {{
+        if (!n) return '';
+        if (n.nodeType === Node.TEXT_NODE) return n.nodeValue || '';
+        if (n.nodeType !== Node.ELEMENT_NODE) return '';
+        var childs = n.childNodes, l = childs.length;
+        if (l === 0) return n.textContent.trim();
+        if (l === 1) return getFastNodeText(childs[0]);
+        var r = '';
+        for (var i = 0; i < l; i++) {{
+            var t = getFastNodeText(childs[i]);
+            if (t) {{
+                if (r && !r.endsWith(' ') && !t.startsWith(' ')) r += ' ';
+                r += t;
+            }}
+        }}
+        return r.replace(/\s+/g, ' ').trim();
+    }}
     var uid = (Math.random().toString(36) + Math.random().toString(36)).slice(2, 10);
     this.setAttribute('data-psjba-id', uid);
     var ariaAttrs = {{}};
@@ -825,7 +842,7 @@ _ENRICH_FN_TPL = r"""function() {{
         var a = this.attributes[i];
         if (a.name.indexOf('aria-') === 0) ariaAttrs[a.name] = a.value;
     }}
-    var t = (this.textContent || '').trim();
+    var t = getFastNodeText(this);
     return {{
         uid: uid,
         tag: this.tagName.toLowerCase(),
