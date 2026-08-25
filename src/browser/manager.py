@@ -20,8 +20,9 @@ from playwright.async_api import (
 )
 
 from src.browser.accessibility import (
-    get_accessibility_tree_with_refs,
-    get_subtree_detail,
+    fetch_full_tree,
+    format_subtree_detail,
+    format_tree,
 )
 from src.browser.self_healing import SelfHealingSelector, _SAFE_CLASS_RE
 from src.chrome.launcher import ChromeLauncher
@@ -140,6 +141,8 @@ class PlaywrightManager:
         self._connected: bool = False
         # session_id → refs 매핑 (cron/agent 간 격리)
         self._a11y_refs: dict[str, dict[int, dict[str, Any]]] = {}
+        # session_id → full enriched tree (fetch_full_tree 결과, subtree detail 재사용용)
+        self._a11y_tree: dict[str, dict[str, Any]] = {}
         self._db: Optional[Any] = None
         self._cron_scheduler: Optional[Any] = None
         # 확장 프로그램 (포커스 탭 감지)
@@ -170,6 +173,21 @@ class PlaywrightManager:
         """현재 task의 session a11y refs를 제거한다 (메모리 관리)."""
         sid = session_id or _current_session_id.get()
         self._a11y_refs.pop(sid, None)
+
+    def _get_session_tree(self, session_id: str = "") -> dict[str, Any]:
+        """현재 task의 session에 귀속된 full enriched tree를 반환한다."""
+        sid = session_id or _current_session_id.get()
+        return self._a11y_tree.get(sid, {})
+
+    def _set_session_tree(self, tree: dict[str, Any], session_id: str = "") -> None:
+        """현재 task의 session에 full enriched tree를 저장한다."""
+        sid = session_id or _current_session_id.get()
+        self._a11y_tree[sid] = tree
+
+    def _clear_session_tree(self, session_id: str = "") -> None:
+        """현재 task의 session full tree를 제거한다."""
+        sid = session_id or _current_session_id.get()
+        self._a11y_tree.pop(sid, None)
 
     def update_config(
         self,
@@ -885,8 +903,8 @@ class PlaywrightManager:
         logger.info("browser_snapshot called (ref=%s)", ref)
         """특정 탭의 접근성 트리를 반환하고 ref 매핑을 저장한다.
 
-        ref가 주어지면 해당 ref의 상세 서브트리를 반환한다.
-        ref가 없는 전체 트리 요청 시에는 이전 refs + counter를 초기화한다.
+        ref가 주어지면 session에 저장된 full tree에서 서브트리를 찾아 detail을 반환한다.
+        ref가 없으면 getFullAXTree + enrichment -> format까지 수행하고 session에 저장한다.
 
         Args:
             tab_index: 대상 탭 인덱스 (None이면 포커스 탭)
@@ -900,17 +918,26 @@ class PlaywrightManager:
             if not session_refs:
                 return (tab_info + "\n"
                         "Call browser_snapshot() first to get the accessibility tree.")
-            page = self._ensure_page(tab_index)
-            tree = await get_subtree_detail(page, ref, session_refs)
+            session_tree = self._get_session_tree()
+            if not session_tree:
+                return (tab_info + "\n"
+                        "Stored tree not found. Call browser_snapshot() again.")
+            ref_info = session_refs.get(ref)
+            if not ref_info:
+                return (tab_info + "\n"
+                        f"Subtree detail: ref #{ref} not found. "
+                        "Call browser_snapshot() again to refresh.")
+            ref_info["_ref"] = ref
+            tree = format_subtree_detail(session_tree, ref_info)
             return tab_info + "\n" + tree
 
-        # 전체 트리 요청: 이전 refs + counter 초기화
+        # 전체 트리 요청: 새로 fetch -> format, session에 저장
         self._clear_session_refs()
-        from src.browser.accessibility import _reset_ref_counter
-        _reset_ref_counter()
+        self._clear_session_tree()
 
         page = self._ensure_page(tab_index)
-        text, refs = await get_accessibility_tree_with_refs(page)
+        full_tree = await fetch_full_tree(page)
+        text, refs = await format_tree(full_tree)
 
         if refs:
             logger.info("a11y snapshot: %d interactive refs", len(refs))
@@ -921,6 +948,7 @@ class PlaywrightManager:
                 if sel:
                     node["_selector"] = sel
 
+        self._set_session_tree(full_tree)
         self._set_session_refs(refs)
         return tab_info + "\n" + text
 

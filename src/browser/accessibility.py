@@ -3,7 +3,6 @@
 import asyncio
 import json
 import logging
-import time
 from typing import Any, Optional
 
 from playwright.async_api import Page
@@ -558,76 +557,51 @@ async def _collapse_tree(
     return tree
 
 
-async def format_accessibility_tree(
-    snapshot: Optional[dict[str, Any]],
-    max_tokens: int = MAX_TOKEN_ESTIMATE,
-    *,  # refs는 키워드 전용
-    refs: Optional[dict[int, dict[str, Any]]] = None,
-) -> str:
-    """Playwright accessibility snapshot을 LLM 컨텍스트용 텍스트로 변환한다.
-
-    Args:
-        snapshot: Playwright page.accessibility.snapshot() 결과
-        max_tokens: 최대 토큰 제한
-        refs: ref 번호 → 노드 정보 매핑 (수집용, mutable)
-
-    Returns:
-        계층적 텍스트 문자열
-    """
-    if snapshot is None:
-        return "(No accessibility tree available)"
-
-    t0 = time.monotonic()
-    tree = await _prune_tree(snapshot) or {"role": "Root", "children": []}
-    t1 = time.monotonic()
-    logger.debug("prune_tree: %dms (tree: %d nodes→%d nodes)",
-                 int((t1 - t0) * 1000),
-                 _count_descendants(snapshot),
-                 _count_descendants(tree))
-
-    if max_tokens > 0:
-        tree = await _collapse_tree(tree, max_tokens, refs=refs)
-        t2 = time.monotonic()
-        logger.debug("collapse: %dms (tree: %d nodes)",
-                     int((t2 - t1) * 1000),
-                     _count_descendants(tree))
-    else:
-        t2 = t1
-
-    lines = await _format_tree(tree, refs=refs, max_depth=10)
-    t3 = time.monotonic()
-    logger.debug("format_tree: %dms (%d lines)",
-                 int((t3 - t2) * 1000), len(lines))
-    text = "\n".join(lines)
-
-    token_count = _estimate_tokens(text)
-    if token_count > max_tokens:
-        truncated_lines = lines
-        while truncated_lines and _estimate_tokens("\n".join(truncated_lines)) > max_tokens:
-            truncated_lines.pop()
-        text = "\n".join(truncated_lines)
-        text += f"\n... (truncated, ~{_estimate_tokens(text)} tokens)"
-
-    logger.debug("format_accessibility_tree total: %dms, %d tokens",
-                 int((time.monotonic() - t0) * 1000), _estimate_tokens(text))
+def _truncate_by_token(text: str, max_tokens: int = MAX_TOKEN_ESTIMATE) -> str:
+    """토큰 추정치에 기반하여 텍스트를 자른다."""
+    if _estimate_tokens(text) <= max_tokens:
+        return text
+    lines = text.split('\n')
+    while lines and _estimate_tokens('\n'.join(lines)) > max_tokens:
+        lines.pop()
+    text = '\n'.join(lines)
+    text += f"\n... (truncated, ~{_estimate_tokens(text)} tokens)"
     return text
 
 
-async def format_accessibility_tree_with_refs(
-    snapshot: Optional[dict[str, Any]],
-    max_tokens: int = MAX_TOKEN_ESTIMATE,
-) -> tuple[str, dict[int, dict[str, Any]]]:
-    """접근성 트리를 포맷하고 ref 번호 → 노드 정보 매핑도 함께 반환한다.
+# ─── Public API ──────────────────────────────────
 
-    Returns:
-        (포맷된 텍스트, {ref: {role, name, value, description, tag, ...}})
+
+async def fetch_full_tree(page: Page) -> dict[str, Any]:
+    """getFullAXTree + enrichment까지 완료한 full enriched tree를 반환한다.
+
+    manager가 session_id별로 보관하고, subtree detail/재사용에 사용한다.
     """
+    cdp = await page.context.new_cdp_session(page)
+    await cdp.send("Accessibility.enable")
+    result = await cdp.send("Accessibility.getFullAXTree", {})
+    raw_nodes = result.get("nodes", [])
+    if not raw_nodes:
+        return {"role": "Root", "name": "", "children": []}
+
+    tree = _cdp_nodes_to_snapshot(raw_nodes)
+    await _enrich_via_resolve_gather(page, tree)
+    return tree
+
+
+async def format_tree(tree: dict[str, Any]) -> tuple[str, dict[int, dict[str, Any]]]:
+    """full enriched tree → prune/collapse/format → (text, refs).
+
+    refs는 interactive/리프 노드의 맵 (browser_click, browser_get_text 등에서 사용).
+    """
+    _reset_ref_counter()
+    pruned = (await _prune_tree(tree)) or tree
+    collapsed = await _collapse_tree(pruned)
     refs: dict[int, dict[str, Any]] = {}
-    text = await format_accessibility_tree(snapshot, max_tokens, refs=refs)
+    lines = await _format_tree(collapsed, refs=refs) if collapsed else []
+    text = "\n".join(lines)
+    text = _truncate_by_token(text)
     return text, refs
-
-
-# ─────────────────── Public API ───────────────────
 
 
 async def get_accessibility_tree(page: Page) -> str:
@@ -648,204 +622,92 @@ async def get_accessibility_tree_with_refs(
         (포맷팅된 텍스트, {ref: {role, name, tag, _id, _class, ...}})
     """
     try:
-        cdp = await page.context.new_cdp_session(page)
-        await cdp.send("Accessibility.enable")
-        result = await cdp.send("Accessibility.getFullAXTree", {})
-        raw_nodes = result.get("nodes", [])
-        if not raw_nodes:
-            return "(No accessibility nodes)", {}
-
-        snapshot = _cdp_nodes_to_snapshot(raw_nodes)
-        await _enrich_via_resolve_gather(page, snapshot)
-        return await format_accessibility_tree_with_refs(snapshot)
+        tree = await fetch_full_tree(page)
+        return await format_tree(tree)
     except Exception as e:
         logger.warning("CDP accessibility failed: %s", e)
         return f"(Accessibility error: {e})", {}
 
 
-# ─────────────────── Detail subtree ───────────────────
-
-async def get_subtree_detail(page: Page, ref: int, refs: dict[int, dict[str, Any]]) -> str:
-    """특정 ref의 서브트리를 전체 a11y snapshot 포맷 기준으로 반환한다.
-
-    Priority:
-    1. data-psjba-id CSS 선택자 → CDP querySelector → getOuterHTML
-    2. (role, name) match → full CDP tree scan → prune/collapse/format
-    """
-    ref_info = refs.get(ref)
-    if not ref_info:
-        return f"Subtree detail: ref #{ref} not found. Call browser_snapshot() first."
-
-    target_role = ref_info.get("role", "")
-    target_name = ref_info.get("name", "")
-    target_selector = ref_info.get("_selector", "")
-
-    # Priority 1: data-psjba-id → CDP getOuterHTML
-    psjba_id = ref_info.get("__psjba_id", "")
-    if psjba_id:
-        try:
-            cdp = await page.context.new_cdp_session(page)
-            await cdp.send("DOM.getDocument", {})
-            found = await cdp.send("DOM.querySelector", {
-                "nodeId": 1,
-                "selector": f'[data-psjba-id="{psjba_id}"]',
-            })
-            found_node_id = found.get("nodeId")
-            if found_node_id and found_node_id != 0:
-                desc = await cdp.send("DOM.describeNode", {"nodeId": found_node_id})
-                node_name = desc.get("node", {}).get("localName", target_role)
-                outer_resp = await cdp.send("DOM.getOuterHTML", {"nodeId": found_node_id})
-                outer = outer_resp.get("outerHTML", "")
-                if outer:
-                    import re
-                    text = re.sub(r'<[^>]+>', '\n', outer).strip()
-                    text = '\n'.join(line.strip() for line in text.split('\n') if line.strip())
-                    if len(text) > 6000:
-                        text = text[:6000] + "\n... (truncated)"
-                    sel = ref_info.get("_selector", "")
-                    sel_line = f"\nselector = {sel}" if sel else ""
-                    return (f"--- Detail for ref #{ref} (<{node_name}>) ---\n{text}{sel_line}")
-        except Exception as e:
-            logger.debug("get_subtree_detail: CDP querySelector failed: %s", e)
-
-    # Priority 2: full CDP tree scan → a11y 포맷 파이프라인
-    try:
-        full_snapshot = await _get_cdp_snapshot(page)
-    except Exception as e:
-        return f"Subtree detail error: {e}"
-
-    if full_snapshot is None:
-        return "(No accessibility tree available)"
-
-    snapshot = _find_ref_subtree(full_snapshot, target_role, target_name)
-    if snapshot is None:
-        return (f"Subtree detail: could not locate ref #{ref} "
-                f"({target_role} \"{target_name}\") in current snapshot. "
-                "Try calling browser_snapshot() again.")
-
-    t0 = time.monotonic()
-    pruned = (await _prune_tree(snapshot)) or snapshot
-    t1 = time.monotonic()
-    logger.debug("get_subtree_detail prune_tree: %dms (ref=%d)",
-                 int((t1 - t0) * 1000), ref)
-    collapsed = await _collapse_tree(pruned, refs=refs)
-    t2 = time.monotonic()
-    logger.debug("get_subtree_detail collapse: %dms (ref=%d)",
-                 int((t2 - t1) * 1000), ref)
-    lines = await _format_tree(collapsed, refs=refs) if collapsed else []
-    t3 = time.monotonic()
-    logger.debug("get_subtree_detail format_tree: %dms (ref=%d)",
-                 int((t3 - t2) * 1000), ref)
-    text = "\n".join(lines)
-    text = (f"--- Detail for ref #{ref} ({target_role} \"{target_name}\") ---\n{text}")
-
-    sel = ref_info.get("_selector", "")
-    if sel:
-        text += f"\nselector = {sel}"
-
-    logger.debug("get_subtree_detail total: %dms (ref=%d)",
-                 int((time.monotonic() - t0) * 1000), ref)
-    return text
+# ─── Subtree detail ──────────────────────────────
 
 
 def _find_ref_subtree(
-    snapshot: dict[str, Any],
+    tree: dict[str, Any],
     target_role: str,
     target_name: str,
 ) -> Optional[dict[str, Any]]:
-    """snapshot에서 role+name이 일치하는 서브트리를 찾는다."""
-    if snapshot.get("role") == target_role and snapshot.get("name", "") == target_name:
-        return snapshot
-    for child in snapshot.get("children", []):
+    """tree에서 role+name이 일치하는 첫 번째 서브트리를 찾는다."""
+    if (tree.get("role") == target_role and tree.get("name") == target_name):
+        return tree
+    for child in tree.get("children", []):
         found = _find_ref_subtree(child, target_role, target_name)
         if found:
             return found
     return None
 
 
-def _cdp_subtree_to_snapshot(node_id: str, node_map: dict[str, dict]) -> dict[str, Any]:
-    """CDP node_id 기준으로 서브트리를 snapshot dict로 변환."""
-    cdp_node = node_map.get(node_id, {})
+def _find_node_by_psjba_id(tree: dict[str, Any], psjba_id: str) -> Optional[dict[str, Any]]:
+    """full enriched tree에서 __psjba_id가 일치하는 노드를 찾아 반환한다."""
+    if tree.get("__psjba_id") == psjba_id:
+        return tree
+    for child in tree.get("children", []):
+        found = _find_node_by_psjba_id(child, psjba_id)
+        if found:
+            return found
+    return None
 
-    role = cdp_node.get("role", {}).get("value", "")
-    name = ""
-    value = ""
-    description = ""
-    checked: Optional[bool] = None
-    disabled: Optional[bool] = None
-    focused: Optional[bool] = None
-    expanded: Optional[bool] = None
-    selected: Optional[bool] = None
-    required: Optional[bool] = None
-    readonly: Optional[bool] = None
-    multiline: Optional[bool] = None
-    level: int = 0
 
-    for prop in cdp_node.get("properties", []):
-        pname = prop.get("name", "")
-        pval = prop.get("value", {})
-        pvalue = pval.get("value", "")
-        if pname == "name":
-            name = str(pvalue)
-        elif pname == "value":
-            value = str(pvalue)
-        elif pname == "description":
-            description = str(pvalue)
-        elif pname == "checked":
-            checked = pvalue in ("true", True)
-        elif pname == "disabled":
-            disabled = pvalue in ("true", True)
-        elif pname == "focused":
-            focused = pvalue in ("true", True)
-        elif pname == "expanded":
-            expanded = pvalue in ("true", True)
-        elif pname == "selected":
-            selected = pvalue in ("true", True)
-        elif pname == "required":
-            required = pvalue in ("true", True)
-        elif pname == "readonly":
-            readonly = pvalue in ("true", True)
-        elif pname == "multiline":
-            multiline = pvalue in ("true", True)
-        elif pname == "level":
-            try:
-                level = int(pvalue)
-            except (ValueError, TypeError):
-                pass
+def format_subtree_detail(tree: dict[str, Any], ref_info: dict[str, Any]) -> str:
+    """저장된 full tree + ref_info로 서브트리 detail 텍스트를 반환한다.
 
-    children = []
-    for cid in cdp_node.get("childIds", []):
-        if cid in node_map:
-            children.append(_cdp_subtree_to_snapshot(cid, node_map))
+    Args:
+        tree: fetch_full_tree()로 얻은 enriched tree
+        ref_info: refs 맵에 저장된 노드 정보 (__psjba_id, role, name)
 
-    node: dict[str, Any] = {
-        "role": role,
-        "name": name,
-        "children": children,
-    }
-    if value:
-        node["value"] = value
-    if description:
-        node["description"] = description
-    if checked is not None:
-        node["checked"] = checked
-    if disabled is not None:
-        node["disabled"] = disabled
-    if focused is not None:
-        node["focused"] = focused
-    if expanded is not None:
-        node["expanded"] = expanded
-    if selected is not None:
-        node["selected"] = selected
-    if required is not None:
-        node["required"] = required
-    if readonly is not None:
-        node["readonly"] = readonly
-    if multiline is not None:
-        node["multiline"] = multiline
-    if level > 0:
-        node["level"] = level
-    return node
+    Returns:
+        포맷된 서브트리 텍스트
+    """
+    target_role = ref_info.get("role", "")
+    target_name = ref_info.get("name", "")
+
+    # 1차: __psjba_id로 정확히 찾기
+    psjba_id = ref_info.get("__psjba_id", "")
+    if psjba_id:
+        subtree = _find_node_by_psjba_id(tree, psjba_id)
+        if subtree is not None:
+            lines = [_format_node(subtree, 0, refs=None, detail=True)]
+            for child in subtree.get("children", []):
+                _collect_lines(child, 1, lines, detail=True)
+            text = "\n".join(lines)
+            sel = ref_info.get("_selector", "")
+            sel_line = f"\nselector = {sel}" if sel else ""
+            return (f"--- Detail for ref #{ref_info.get('_ref', '?')} "
+                    f"({target_role} \"{target_name}\") ---\n{text}{sel_line}")
+
+    # 2차: (role, name) match (fallback)
+    subtree = _find_ref_subtree(tree, target_role, target_name)
+    if subtree is None:
+        return (f"Subtree detail: could not locate ref "
+                f"({target_role} \"{target_name}\") in tree. "
+                "Try browser_snapshot() again.")
+
+    lines = [_format_node(subtree, 0, refs=None, detail=True)]
+    for child in subtree.get("children", []):
+        _collect_lines(child, 1, lines, detail=True)
+    text = "\n".join(lines)
+    sel = ref_info.get("_selector", "")
+    if sel:
+        text += f"\nselector = {sel}"
+    return (f"--- Detail for ref #{ref_info.get('_ref', '?')} "
+            f"({target_role} \"{target_name}\") ---\n{text}")
+
+
+def _collect_lines(node: dict[str, Any], depth: int, lines: list[str], detail: bool = False) -> None:
+    """재귀적으로 노드를 포맷하여 라인 리스트에 추가한다."""
+    lines.append(_format_node(node, depth, refs=None, detail=detail))
+    for child in node.get("children", []):
+        _collect_lines(child, depth + 1, lines, detail=detail)
 
 
 # ─── Enrichment: resolveNode + callFunctionOn gather ───
@@ -977,26 +839,7 @@ async def _enrich_via_resolve_gather(
                  len(bid_to_info), len(all_ids))
 
 
-# ─── CDP snapshot (get_subtree_detail용 full tree) ───
-
-async def _get_cdp_snapshot(page: Page) -> Optional[dict[str, Any]]:
-    """CDP Accessibility domain으로 raw snapshot dict를 가져온다.
-
-    get_subtree_detail 등에서 full tree 검색용으로 사용한다.
-    """
-    try:
-        cdp = await page.context.new_cdp_session(page)
-        await cdp.send("Accessibility.enable")
-        result = await cdp.send("Accessibility.getFullAXTree", {})
-        raw_nodes = result.get("nodes", [])
-        if not raw_nodes:
-            return None
-        snapshot = _cdp_nodes_to_snapshot(raw_nodes)
-        await _enrich_via_resolve_gather(page, snapshot)
-        return snapshot
-    except Exception as e:
-        logger.warning("CDP snapshot failed: %s", e)
-        return None
+# ─── CDP raw nodes → Playwright 호환 snapshot 변환 ───
 
 
 def _cdp_nodes_to_snapshot(nodes: list[dict]) -> dict[str, Any]:
