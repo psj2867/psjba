@@ -26,7 +26,6 @@ from src.browser.accessibility import (
     format_subtree_detail,
     format_tree,
 )
-from src.browser.self_healing import SelfHealingSelector
 from src.chrome.launcher import ChromeLauncher
 
 logger = logging.getLogger("psjba.browser.manager")
@@ -666,7 +665,33 @@ class PlaywrightManager:
 
     # ─── 헬퍼: CDP querySelector 로 노드 재발견 ──────────
 
-    @staticmethod
+    async def _cdp_resolve_psjba(self, page, psjba_id: str) -> tuple[Any, int, str] | None:
+        """data-psjba-id로 CDP nodeId + objectId 획득.
+
+        Returns (cdp_session, node_id, object_id) or None.
+        실패 = 페이지 바뀌어서 psjba-id가 사라짐.
+        """
+        try:
+            cdp = await page.context.new_cdp_session(page)
+            doc = await cdp.send("DOM.getDocument", {})
+            root_id = doc.get("root", {}).get("nodeId")
+            if not root_id:
+                return None
+            found = await cdp.send("DOM.querySelector", {
+                "nodeId": root_id,
+                "selector": f'[data-psjba-id="{psjba_id}"]',
+            })
+            node_id = found.get("nodeId", 0)
+            if not node_id:
+                return None
+            obj = await cdp.send("DOM.resolveNode", {"nodeId": node_id})
+            oid = obj.get("object", {}).get("objectId")
+            if not oid:
+                return None
+            return cdp, node_id, oid
+        except Exception:
+            return None
+
     # ─── 요소 조작 ──────────────────────────────────────────
 
     async def browser_type(
@@ -684,68 +709,50 @@ class PlaywrightManager:
             return (f"Type failed: ref #{ref} not found. "
                     "Call browser_snapshot() first to refresh the tree.")
 
+        psjba_id = node.get("_id", "")
+        if not psjba_id:
+            return f"Type failed for ref #{ref}: no data-psjba-id."
+
         page = self._ensure_page(tab_index)
         idx = tab_index if tab_index is not None else self._focused_tab_index
-        backend_id = node.get("_backendNodeId")
-        role = node.get("role", "")
-        name = node.get("name", "")
-        tag = node.get("tag", "") or node.get("_tag", "")
-        nid_attr = node.get("_id", "")
-        desc = f"ref #{ref} ({role}"
-        if name:
-            desc += f" \"{name}\""
-        if tag:
-            desc += f" <{tag}>"
-        if nid_attr:
-            desc += f" #{nid_attr}"
-        desc += ")"
 
-        # CDP: push backendNodeId → frontend → focus + insertText
+        r = await self._cdp_resolve_psjba(page, psjba_id)
+        if r is None:
+            return (f"Type failed for ref #{ref}: "
+                    f'data-psjba-id="{psjba_id}" not found, page may have changed.')
+        cdp, node_id, oid = r
+
         try:
-            cdp = await page.context.new_cdp_session(page)
-            await cdp.send("DOM.getDocument", {})
-            pn = await cdp.send("DOM.pushNodesByBackendIdsToFrontend", {
-                "backendNodeIds": [backend_id],
+            await cdp.send("DOM.scrollIntoViewIfNeeded", {"nodeId": node_id})
+            if clear:
+                await cdp.send("Runtime.callFunctionOn", {
+                    "objectId": oid,
+                    "functionDeclaration": "function() { this.focus(); this.value = ''; }",
+                })
+            else:
+                await cdp.send("Runtime.callFunctionOn", {
+                    "objectId": oid,
+                    "functionDeclaration": "function() { this.focus(); this.select(); }",
+                })
+            await cdp.send("Input.insertText", {"text": text})
+            await cdp.send("Runtime.callFunctionOn", {
+                "objectId": oid,
+                "functionDeclaration": (
+                    "function() { this.dispatchEvent(new Event('input', {bubbles: true})); "
+                    "this.dispatchEvent(new Event('change', {bubbles: true})); }"
+                ),
             })
-            nids = pn.get("nodeIds", [])
-            node_id = nids[0] if nids else None
-            if node_id:
-                await cdp.send("DOM.scrollIntoViewIfNeeded", {"nodeId": node_id})
-                obj = await cdp.send("DOM.resolveNode", {"nodeId": node_id})
-                oid = obj.get("object", {}).get("objectId")
-                if oid:
-                    if clear:
-                        await cdp.send("Runtime.callFunctionOn", {
-                            "objectId": oid,
-                            "functionDeclaration": "function() { this.focus(); this.value = ''; }",
-                        })
-                    else:
-                        await cdp.send("Runtime.callFunctionOn", {
-                            "objectId": oid,
-                            "functionDeclaration": "function() { this.focus(); }",
-                        })
-                    await cdp.send("Input.insertText", {"text": text})
-                    if not clear:
-                        # blur로 change 이벤트 트리거 (입력 완료)
-                        await cdp.send("Runtime.callFunctionOn", {
-                            "objectId": oid,
-                            "functionDeclaration": (
-                                "function() { this.dispatchEvent(new Event('input', {bubbles: true})); "
-                                "this.dispatchEvent(new Event('change', {bubbles: true})); }"
-                            ),
-                        })
-                    await self._tabs[idx].update_info()
-                    tab = self._tabs[idx]
-                    result = (f"Typed into {desc}: {text[:50]}{'...' if len(text) > 50 else ''} "
-                              f"[url={tab.url}, title={tab.title}]")
-                    d = await self._tabs[idx].check_dialog()
-                    if d:
-                        result += f"\n⚠️ Dialog recorded: [{d['type']}] {d.get('message','')}"
-                    return result
+            await self._tabs[idx].update_info()
+            tab = self._tabs[idx]
+            result = (f"Typed into ref #{ref}: {text[:50]}{'...' if len(text) > 50 else ''} "
+                      f"[url={tab.url}, title={tab.title}]")
+            d = await self._tabs[idx].check_dialog()
+            if d:
+                result += f"\n⚠️ Dialog recorded: [{d['type']}] {d.get('message','')}"
+            return result
         except Exception as e:
-            logger.debug("browser_type CDP failed for %s: %s", desc, e)
-
-        return f"Type failed for {desc}: could not locate element."
+            logger.debug("browser_type CDP failed: %s", e)
+            return f"Type failed for ref #{ref}: {e}"
 
     async def browser_select_option(
         self,
@@ -761,43 +768,32 @@ class PlaywrightManager:
             return (f"Select failed: ref #{ref} not found. "
                     "Call browser_snapshot() first to refresh the tree.")
 
+        psjba_id = node.get("_id", "")
+        if not psjba_id:
+            return f"Select failed for ref #{ref}: no data-psjba-id."
+
         page = self._ensure_page(tab_index)
-        idx = tab_index if tab_index is not None else self._focused_tab_index
-        backend_id = node.get("_backendNodeId")
-        role = node.get("role", "")
-        name = node.get("name", "")
-        desc = f"ref #{ref} ({role}"
-        if name:
-            desc += f" \"{name}\""
-        desc += ")"
+
+        r = await self._cdp_resolve_psjba(page, psjba_id)
+        if r is None:
+            return (f"Select failed for ref #{ref}: "
+                    f'data-psjba-id="{psjba_id}" not found, page may have changed.')
+        cdp, node_id, oid = r
 
         try:
-            cdp = await page.context.new_cdp_session(page)
-            await cdp.send("DOM.getDocument", {})
-            pn = await cdp.send("DOM.pushNodesByBackendIdsToFrontend", {
-                "backendNodeIds": [backend_id],
+            await cdp.send("DOM.scrollIntoViewIfNeeded", {"nodeId": node_id})
+            await cdp.send("Runtime.callFunctionOn", {
+                "objectId": oid,
+                "functionDeclaration": (
+                    "function(val) { this.value = val; "
+                    "this.dispatchEvent(new Event('change', {bubbles: true})); }"
+                ),
+                "arguments": [{"value": value}],
             })
-            nids = pn.get("nodeIds", [])
-            node_id = nids[0] if nids else None
-            if node_id:
-                await cdp.send("DOM.scrollIntoViewIfNeeded", {"nodeId": node_id})
-                obj = await cdp.send("DOM.resolveNode", {"nodeId": node_id})
-                oid = obj.get("object", {}).get("objectId")
-                if oid:
-                    await cdp.send("Runtime.callFunctionOn", {
-                        "objectId": oid,
-                        "functionDeclaration": (
-                            "function(val) { this.value = val; "
-                            "this.dispatchEvent(new Event('change', {bubbles: true})); }"
-                        ),
-                        "arguments": [{"value": value}],
-                        "returnByValue": True,
-                    })
-                    return f"Selected option '{value}' in {desc}"
+            return f"Selected option '{value}' in ref #{ref}"
         except Exception as e:
-            logger.debug("browser_select_option CDP failed for %s: %s", desc, e)
-
-        return f"Select failed for {desc}: could not locate element."
+            logger.debug("browser_select_option CDP failed: %s", e)
+            return f"Select failed for ref #{ref}: {e}"
 
     async def browser_hover(self, ref: int, tab_index: Optional[int] = None) -> str:
         """접근성 트리 ref 번호로 요소 위에 마우스를 호버한다."""
@@ -808,44 +804,35 @@ class PlaywrightManager:
             return (f"Hover failed: ref #{ref} not found. "
                     "Call browser_snapshot() first to refresh the tree.")
 
+        psjba_id = node.get("_id", "")
+        if not psjba_id:
+            return f"Hover failed for ref #{ref}: no data-psjba-id."
+
         page = self._ensure_page(tab_index)
         idx = tab_index if tab_index is not None else self._focused_tab_index
-        backend_id = node.get("_backendNodeId")
-        role = node.get("role", "")
-        name = node.get("name", "")
-        desc = f"ref #{ref} ({role}"
-        if name:
-            desc += f" \"{name}\""
-        desc += ")"
+
+        r = await self._cdp_resolve_psjba(page, psjba_id)
+        if r is None:
+            return (f"Hover failed for ref #{ref}: "
+                    f'data-psjba-id="{psjba_id}" not found, page may have changed.')
+        cdp, node_id, oid = r
 
         try:
-            cdp = await page.context.new_cdp_session(page)
-            await cdp.send("DOM.getDocument", {})
-            pn = await cdp.send("DOM.pushNodesByBackendIdsToFrontend", {
-                "backendNodeIds": [backend_id],
+            await cdp.send("DOM.scrollIntoViewIfNeeded", {"nodeId": node_id})
+            await cdp.send("Runtime.callFunctionOn", {
+                "objectId": oid,
+                "functionDeclaration": (
+                    "function() { this.dispatchEvent(new MouseEvent('mouseover', "
+                    "{bubbles: true, view: window})); this.dispatchEvent(new "
+                    "MouseEvent('mouseenter', {bubbles: false, view: window})); }"
+                ),
             })
-            nids = pn.get("nodeIds", [])
-            node_id = nids[0] if nids else None
-            if node_id:
-                await cdp.send("DOM.scrollIntoViewIfNeeded", {"nodeId": node_id})
-                obj = await cdp.send("DOM.resolveNode", {"nodeId": node_id})
-                oid = obj.get("object", {}).get("objectId")
-                if oid:
-                    await cdp.send("Runtime.callFunctionOn", {
-                        "objectId": oid,
-                        "functionDeclaration": (
-                            "function() { this.dispatchEvent(new MouseEvent('mouseover', "
-                            "{bubbles: true, view: window})); this.dispatchEvent(new "
-                            "MouseEvent('mouseenter', {bubbles: false, view: window})); }"
-                        ),
-                    })
-                    await self._tabs[idx].update_info()
-                    tab = self._tabs[idx]
-                    return (f"Hovered {desc} [url={tab.url}, title={tab.title}]")
+            await self._tabs[idx].update_info()
+            tab = self._tabs[idx]
+            return (f"Hovered ref #{ref} [url={tab.url}, title={tab.title}]")
         except Exception as e:
-            logger.debug("browser_hover CDP failed for %s: %s", desc, e)
-
-        return f"Hover failed for {desc}: could not locate element."
+            logger.debug("browser_hover CDP failed: %s", e)
+            return f"Hover failed for ref #{ref}: {e}"
 
     async def browser_scroll(
         self,
@@ -883,40 +870,31 @@ class PlaywrightManager:
             return (f"Focus failed: ref #{ref} not found. "
                     "Call browser_snapshot() first to refresh the tree.")
 
+        psjba_id = node.get("_id", "")
+        if not psjba_id:
+            return f"Focus failed for ref #{ref}: no data-psjba-id."
+
         page = self._ensure_page(tab_index)
         idx = tab_index if tab_index is not None else self._focused_tab_index
-        backend_id = node.get("_backendNodeId")
-        role = node.get("role", "")
-        name = node.get("name", "")
-        desc = f"ref #{ref} ({role}"
-        if name:
-            desc += f" \"{name}\""
-        desc += ")"
+
+        r = await self._cdp_resolve_psjba(page, psjba_id)
+        if r is None:
+            return (f"Focus failed for ref #{ref}: "
+                    f'data-psjba-id="{psjba_id}" not found, page may have changed.')
+        cdp, node_id, oid = r
 
         try:
-            cdp = await page.context.new_cdp_session(page)
-            await cdp.send("DOM.getDocument", {})
-            pn = await cdp.send("DOM.pushNodesByBackendIdsToFrontend", {
-                "backendNodeIds": [backend_id],
+            await cdp.send("DOM.scrollIntoViewIfNeeded", {"nodeId": node_id})
+            await cdp.send("Runtime.callFunctionOn", {
+                "objectId": oid,
+                "functionDeclaration": "function() { this.focus(); }",
             })
-            nids = pn.get("nodeIds", [])
-            node_id = nids[0] if nids else None
-            if node_id:
-                await cdp.send("DOM.scrollIntoViewIfNeeded", {"nodeId": node_id})
-                obj = await cdp.send("DOM.resolveNode", {"nodeId": node_id})
-                oid = obj.get("object", {}).get("objectId")
-                if oid:
-                    await cdp.send("Runtime.callFunctionOn", {
-                        "objectId": oid,
-                        "functionDeclaration": "function() { this.focus(); }",
-                    })
-                    await self._tabs[idx].update_info()
-                    tab = self._tabs[idx]
-                    return (f"Focused {desc} [url={tab.url}, title={tab.title}]")
+            await self._tabs[idx].update_info()
+            tab = self._tabs[idx]
+            return (f"Focused ref #{ref} [url={tab.url}, title={tab.title}]")
         except Exception as e:
-            logger.debug("browser_focus CDP failed for %s: %s", desc, e)
-
-        return f"Focus failed for {desc}: could not locate element."
+            logger.debug("browser_focus CDP failed: %s", e)
+            return f"Focus failed for ref #{ref}: {e}"
 
     async def browser_press_key(self, key: str) -> str:
         logger.info("browser_press_key: %s", key)
@@ -1069,7 +1047,7 @@ class PlaywrightManager:
     async def browser_click(self, ref: int, tab_index: Optional[int] = None) -> str:
         """접근성 트리 ref 번호로 요소를 찾아 클릭한다.
 
-        backendNodeId → CDP getBoxModel + dispatchMouseEvent 로 정확히 클릭.
+        data-psjba-id → CDP querySelector → getBoxModel + dispatchMouseEvent.
         Viewport 밖 요소(CSS off-screen)는 실패 메시지 반환.
 
         Args:
@@ -1084,22 +1062,12 @@ class PlaywrightManager:
             return (f"Click by ref failed: ref #{ref} not found. "
                     "Call browser_snapshot() first to refresh the tree.")
 
+        psjba_id = node.get("_id", "")
+        if not psjba_id:
+            return f"Click by ref #{ref} failed: no data-psjba-id."
+
         page = self._ensure_page(tab_index)
         idx = tab_index if tab_index is not None else self._focused_tab_index
-        role = node.get("role", "")
-        name = node.get("name", "")
-        tag = node.get("tag", "") or node.get("_tag", "")
-        nid = node.get("_id", "")
-        backend_id = node.get("_backendNodeId")
-
-        click_desc = f"ref #{ref} ({role}"
-        if name:
-            click_desc += f" \"{name}\""
-        if tag:
-            click_desc += f" <{tag}>"
-        if nid:
-            click_desc += f" #{nid}"
-        click_desc += ")"
 
         # ─── CDP click helper ──────────────────────────────
         async def _cdp_dispatch(cdp_session, nid: int) -> tuple[bool | str, float, float]:
@@ -1110,7 +1078,6 @@ class PlaywrightManager:
             document scroll과 container scroll 둘 다 보정해야 한다.
             Returns (ok: bool | str, cx: float, cy: float).
             - ok=True: 성공, cx/cy는 viewport 클릭 좌표
-            - ok=False: 실패 (stale nodeId 등), 호출자는 CSS selector 재발견
             - ok="outside": viewport 밖, 호출자는 즉시 리턴"""
             try:
                 await cdp_session.send("DOM.scrollIntoViewIfNeeded", {"nodeId": nid})
@@ -1123,7 +1090,6 @@ class PlaywrightManager:
                 cy = (content[1] + content[5]) / 2 if len(content) >= 8 else content[1] + content[3] / 2
 
                 # getBoxModel = page 좌표 → viewport 좌표 변환
-                # (document scroll + scrollable ancestor scroll 보정)
                 diag = await page.evaluate(
                     '(() => {'
                     '  const s = {x: window.pageXOffset || 0, y: window.pageYOffset || 0};'
@@ -1197,89 +1163,34 @@ class PlaywrightManager:
                 logger.warning("CDP dispatch failed for nodeId=%s: %s", nid, e)
                 return False, 0, 0
 
-        cdp = None
+        # ─── data-psjba-id → CDP querySelector → dispatch ──
+        r = await self._cdp_resolve_psjba(page, psjba_id)
+        if r is None:
+            return (f"Click by ref #{ref} failed: "
+                    f'data-psjba-id="{psjba_id}" not found, page may have changed.')
+        cdp, node_id, oid = r
 
-        # 1차: CDP backendNodeId 기반 정밀 클릭
-        if backend_id is not None:
-            try:
-                cdp = await page.context.new_cdp_session(page)
-                # pushNodesByBackendIdsToFrontend는 DOM document 필요
-                await cdp.send("DOM.getDocument", {})
-                pn = await cdp.send("DOM.pushNodesByBackendIdsToFrontend", {
-                    "backendNodeIds": [backend_id],
-                })
-                nids = pn.get("nodeIds", [])
-                node_id = nids[0] if nids else None
-                if node_id:
-                    ok, cx, cy = await _cdp_dispatch(cdp, node_id)
-                    if ok is True:
-                        await self._tabs[idx].update_info()
-                        tab = self._tabs[idx]
-                        elapsed = int((time.monotonic() - t0) * 1000)
-                        logger.info("browser_click: clicked %s via CDP backendNodeId=%s (%.0f,%.0f) %dms",
-                                     click_desc, backend_id, cx, cy, elapsed)
-                        result = (f"Clicked {click_desc} [CDP] "
-                                  f"[url={tab.url}, title={tab.title}]")
-                        d = await self._tabs[idx].check_dialog()
-                        if d:
-                            result += f"\n⚠️ Dialog recorded: [{d['type']}] {d.get('message','')}"
-                        return result
-                    if ok == "outside":
-                        return (f"Click by {click_desc} failed: "
-                                "element is outside viewport. "
-                                "The element is not visible on the page.")
-            except Exception as e:
-                logger.warning("CDP pushNodesByBackendIdsToFrontend for %s failed: %s. → CDP re-discovery", click_desc, e)
+        ok, cx, cy = await _cdp_dispatch(cdp, node_id)
+        if ok is True:
+            await self._tabs[idx].update_info()
+            tab = self._tabs[idx]
+            elapsed = int((time.monotonic() - t0) * 1000)
+            logger.info("browser_click: clicked ref #%s (%.0f,%.0f) %dms",
+                          ref, cx, cy, elapsed)
+            result = (f"Clicked ref #{ref} [CDP] "
+                      f"[url={tab.url}, title={tab.title}]")
+            d = await self._tabs[idx].check_dialog()
+            if d:
+                result += f"\n⚠️ Dialog recorded: [{d['type']}] {d.get('message','')}"
+            return result
+        if ok == "outside":
+            return (f"Click by ref #{ref} failed: "
+                    "element is outside viewport. "
+                    "The element is not visible on the page.")
 
-        # 1.5차: CSS selector로 CDP 재발견 → CDP 클릭 (backendNodeId=null or stale 모두)
-        try:
-            selector = node.get("_selector", "")
-            if selector:
-                if cdp is None:
-                    cdp = await page.context.new_cdp_session(page)
-                doc = await cdp.send("DOM.getDocument", {})
-                root_id = doc.get("root", {}).get("nodeId")
-                if root_id:
-                    # 중복 선택자 해소 (CDP DOM.querySelectorAll 로 eval 없이)
-                    if selector:
-                        try:
-                            selector = await SelfHealingSelector(page).make_unique_selector(
-                                cdp, root_id, selector, node,
-                            )
-                        except Exception as e:
-                            logger.debug("browser_click: make_unique_selector failed: %s", e)
-                    found = await cdp.send("DOM.querySelector", {
-                        "nodeId": root_id, "selector": selector,
-                    })
-                    found_node_id = found.get("nodeId")
-                    if found_node_id and found_node_id != 0:
-                        ok, cx, cy = await _cdp_dispatch(cdp, found_node_id)
-                        if ok is True:
-                            await self._tabs[idx].update_info()
-                            tab = self._tabs[idx]
-                            elapsed = int((time.monotonic() - t0) * 1000)
-                            logger.info("browser_click: clicked %s via CDP querySelector=%s (%.0f,%.0f) %dms",
-                                         click_desc, selector, cx, cy, elapsed)
-                            result = (f"Clicked {click_desc} [CDP:querySelector] "
-                                      f"[url={tab.url}, title={tab.title}"
-                                      f", selector={selector}]")
-                            d = await self._tabs[idx].check_dialog()
-                            if d:
-                                result += f"\n⚠️ Dialog recorded: [{d['type']}] {d.get('message','')}"
-                            return result
-                        if ok == "outside":
-                            return (f"Click by {click_desc} failed: "
-                                    "element is outside viewport. "
-                                    "The element is not visible on the page.")
-        except Exception as e:
-            logger.warning("CDP re-discovery for %s failed: %s", click_desc, e)
-
-        # CDP 경로 실패: 정식 ref 기반 클릭 불가
-        total_elapsed = int((time.monotonic() - t0) * 1000)
-        logger.error("browser_click: CDP click failed for %s (%dms)",
-                      click_desc, total_elapsed)
-        return (f"Click by {click_desc} failed: could not locate element "
-                f"(role={role!r}, name={name!r}). "
+        logger.error("browser_click: CDP click failed for ref #%s (%dms)",
+                      ref, int((time.monotonic() - t0) * 1000))
+        return (f"Click by ref #{ref} failed: could not locate element. "
                 "Try browser_snapshot() again to get a fresh ref.")
 
     async def browser_get_text(self, ref: int, tab_index: Optional[int] = None) -> str:
