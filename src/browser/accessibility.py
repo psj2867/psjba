@@ -326,8 +326,9 @@ async def _format_tree(
 ) -> list[str]:
     """접근성 스냅샷을 계층적 텍스트 라인 리스트로 변환한다.
 
-    연속된 동일 타입 비-컨테이너 노드는 (tag, role)별로 그루핑된다.
-    MAX_GROUP_PREVIEW(10)개 초과 시 처음 10개만 개별 표시, 나머지는 ×N 요약.
+    동일 타입 비-컨테이너 노드는 그루핑된다:
+    - 텍스트 리프 (non-interactive + text 있음): 무조건 한 줄 요약 [role] <tag> [#ref_min-ref_max]
+    - 기타 리프 (image/button 등): MAX_GROUP_PREVIEW(10)개 초과 시 처음 10개만 개별, 나머지 ×N 요약
     """
     if lines is None:
         lines = []
@@ -365,8 +366,15 @@ async def _format_tree(
             child["_nth_of_type"] = 0
 
     # ── 연속 동일 타입 비-컨테이너 그루핑 ──────────────
+    # 텍스트 리프는 무조건 항상 그루핑; 나머지(image/button 등)는 MAX_GROUP_PREVIEW 기준
+    def _is_text_leaf(n):
+        return not n.get("children") and not _is_interactive(n.get("role", "")) and (bool(n.get("_text_content")) or bool(n.get("name")))
+
+    def _text_leaf_key(n):
+        return ((n.get("tag", "") or n.get("_tag", "")).lower(),
+                n.get("role", "").lower())
+
     def _is_non_container(n):
-        """자식이 없는 노드 (= leaf, 타입 무관)"""
         return not n.get("children")
 
     def _non_container_key(n):
@@ -374,54 +382,117 @@ async def _format_tree(
                 n.get("role", "").lower())
 
     grouped: list[dict[str, Any] | list[dict[str, Any]]] = []
-    pending: list[dict[str, Any]] = []
+    text_pending: list[dict[str, Any]] = []
+    other_pending: list[dict[str, Any]] = []
     for child in children:
-        if _is_non_container(child):
-            key = _non_container_key(child)
-            if not pending or key == _non_container_key(pending[0]):
-                pending.append(child)
+        if _is_text_leaf(child):
+            # 텍스트 리프: 다른 타입 나올 때까지 모으기
+            key = _text_leaf_key(child)
+            if not text_pending or key == _text_leaf_key(text_pending[0]):
+                text_pending.append(child)
             else:
-                grouped.append(pending)
-                pending = [child]
+                if text_pending:
+                    grouped.append(text_pending)
+                text_pending = [child]
+            if other_pending:
+                grouped.append(other_pending)
+                other_pending = []
+        elif _is_non_container(child):
+            # 기타 리프 (image, button, link, checkbox 등)
+            key = _non_container_key(child)
+            if not other_pending or key == _non_container_key(other_pending[0]):
+                other_pending.append(child)
+            else:
+                grouped.append(other_pending)
+                other_pending = [child]
+            if text_pending:
+                grouped.append(text_pending)
+                text_pending = []
         else:
-            if pending:
-                grouped.append(pending)
-                pending = []
+            # 컨테이너: 양쪽 pending 먼저 비우고 push
+            if text_pending:
+                grouped.append(text_pending)
+                text_pending = []
+            if other_pending:
+                grouped.append(other_pending)
+                other_pending = []
             grouped.append(child)
-    if pending:
-        grouped.append(pending)
+    if text_pending:
+        grouped.append(text_pending)
+    if other_pending:
+        grouped.append(other_pending)
 
     for item in grouped:
         if depth > 0 and depth % 4 == 0 and len(lines) % 5 == 0:
             await asyncio.sleep(0)
 
         if isinstance(item, list):
-            # ── 비-컨테이너 그룹 ─────────────────────
             first = item[0]
             n = len(item)
             tag = (first.get("tag", "") or first.get("_tag", "") or "").lower()
             role_display = first.get("role", "")
 
-            if n > MAX_GROUP_PREVIEW:
-                # 처음 MAX_GROUP_PREVIEW 개는 개별 렌더링
-                shown = item[:MAX_GROUP_PREVIEW]
-                remain = n - MAX_GROUP_PREVIEW
-                for leaf_node in shown:
-                    _fmt = _format_node(leaf_node, depth + 1, indent, refs=refs, detail=detail)
-                    if _fmt.strip():
-                        lines.append(_fmt)
-                # 나머지는 요약 한 줄
-                parts = [f"... [{role_display}]"]
+            if _is_text_leaf(first):
+                # ── 텍스트 그룹: 항상 한 줄 요약 ──────
+                ref_min = ref_max = 0
+                texts: list[str] = []
+                for leaf_node in item:
+                    ref = _next_ref()
+                    if not ref_min:
+                        ref_min = ref
+                    ref_max = ref
+                    if refs is not None:
+                        psjba_id = leaf_node.get("__psjba_id", "")
+                        refs[ref] = {
+                            "role": leaf_node.get("role", ""),
+                            "name": leaf_node.get("name", ""),
+                            "value": leaf_node.get("value", ""),
+                            "tag": leaf_node.get("tag", ""),
+                            "_id": leaf_node.get("_id", ""),
+                            "_class": leaf_node.get("_class", ""),
+                            "_type": leaf_node.get("_type", ""),
+                            "_placeholder": leaf_node.get("_placeholder", ""),
+                            "_form_name": leaf_node.get("_form_name", ""),
+                            "_aria_label": leaf_node.get("_aria_label", ""),
+                            "_backendNodeId": leaf_node.get("_backendNodeId"),
+                            "_text_content": leaf_node.get("_text_content", "") or "",
+                            "_nth_of_type": leaf_node.get("_nth_of_type", 0),
+                            "__psjba_id": psjba_id,
+                        }
+                        if psjba_id:
+                            refs[ref]["_selector"] = f'[data-psjba-id="{psjba_id}"]'
+                    tc = leaf_node.get("_text_content", "").strip()
+                    if tc:
+                        texts.append(tc)
+                parts = [f"[{role_display}]"]
                 if tag:
                     parts.append(f"<{tag}>")
-                parts.append(f"×{remain} more")
+                parts.append(f"[#{ref_min}-{ref_max}]")
+                if texts:
+                    merged = ", ".join(texts)
+                    if len(merged) > 60:
+                        merged = merged[:60] + "..."
+                    parts.append(f'texts="{merged}"')
                 lines.append(f"{indent * (depth + 1)}{' '.join(parts)}")
             else:
-                # N ≤ MAX_GROUP_PREVIEW: 전부 개별 렌더링
-                for leaf_node in item:
-                    _fmt = _format_node(leaf_node, depth + 1, indent, refs=refs, detail=detail)
-                    if _fmt.strip():
-                        lines.append(_fmt)
+                # ── 기타 리프 그룹 (image/button 등) ─
+                if n > MAX_GROUP_PREVIEW:
+                    shown = item[:MAX_GROUP_PREVIEW]
+                    remain = n - MAX_GROUP_PREVIEW
+                    for leaf_node in shown:
+                        _fmt = _format_node(leaf_node, depth + 1, indent, refs=refs, detail=detail)
+                        if _fmt.strip():
+                            lines.append(_fmt)
+                    parts = [f"... [{role_display}]"]
+                    if tag:
+                        parts.append(f"<{tag}>")
+                    parts.append(f"×{remain} more")
+                    lines.append(f"{indent * (depth + 1)}{' '.join(parts)}")
+                else:
+                    for leaf_node in item:
+                        _fmt = _format_node(leaf_node, depth + 1, indent, refs=refs, detail=detail)
+                        if _fmt.strip():
+                            lines.append(_fmt)
         else:
             await _format_tree(item, depth + 1, lines, indent, refs=refs, detail=detail, max_depth=max_depth)
 
