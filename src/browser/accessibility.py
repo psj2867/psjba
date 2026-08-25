@@ -33,6 +33,9 @@ DOM_RETURN_MAX_LEN = 10000
 # 연속 동일 타입 비-컨테이너 노드 그루핑: 개별 표시 최대 개수
 MAX_GROUP_PREVIEW = 10
 
+# 연속 동일 타입 컨테이너 노드 (row 등) 그루핑: 개별 표시 최대 개수
+MAX_CONTAINER_GROUP_PREVIEW = 5
+
 # ref 번호 부여용 카운터 (module-level, session 동안 단조 증가)
 _REF_COUNTER = {"n": 0}
 
@@ -233,6 +236,10 @@ def _format_node(
     if collapsed:
         count = collapsed.get("count", 0)
         summary = collapsed.get("summary", [])
+        depth_info = collapsed.get("depth")
+        phase = collapsed.get("phase", 1)
+        if depth_info is not None:
+            label_parts.append(f"depth {depth_info}")
         if summary:
             label_parts.append(f"→ {', '.join(summary)}")
         else:
@@ -402,9 +409,30 @@ async def _format_tree(
         return ((n.get("tag", "") or n.get("_tag", "")).lower(),
                 n.get("role", "").lower())
 
+    def _is_non_container(n):
+        return not n.get("children")
+
+    def _container_key(n):
+        return ((n.get("tag", "") or n.get("_tag", "")).lower(),
+                n.get("role", "").lower())
+
     grouped: list[dict[str, Any] | list[dict[str, Any]]] = []
     text_pending: list[dict[str, Any]] = []
     other_pending: list[dict[str, Any]] = []
+    container_pending: list[dict[str, Any]] = []
+
+    def _flush_pending():
+        nonlocal text_pending, other_pending, container_pending
+        if text_pending:
+            grouped.append(text_pending)
+            text_pending = []
+        if other_pending:
+            grouped.append(other_pending)
+            other_pending = []
+        if container_pending:
+            grouped.append(container_pending)
+            container_pending = []
+
     for child in children:
         if _is_text_leaf(child):
             # 텍스트 리프: 다른 타입 나올 때까지 모으기
@@ -412,36 +440,37 @@ async def _format_tree(
             if not text_pending or key == _text_leaf_key(text_pending[0]):
                 text_pending.append(child)
             else:
-                if text_pending:
-                    grouped.append(text_pending)
+                _flush_pending()
                 text_pending = [child]
             if other_pending:
-                grouped.append(other_pending)
-                other_pending = []
+                _flush_pending()
+            if container_pending:
+                _flush_pending()
         elif _is_non_container(child):
             # 기타 리프 (image, button, link, checkbox 등)
             key = _non_container_key(child)
             if not other_pending or key == _non_container_key(other_pending[0]):
                 other_pending.append(child)
             else:
-                grouped.append(other_pending)
+                _flush_pending()
                 other_pending = [child]
             if text_pending:
-                grouped.append(text_pending)
-                text_pending = []
+                _flush_pending()
+            if container_pending:
+                _flush_pending()
         else:
-            # 컨테이너: 양쪽 pending 먼저 비우고 push
+            # 컨테이너 (row 등): 연속 동일-타입 컨테이너 그루핑
+            key = _container_key(child)
+            if not container_pending or key == _container_key(container_pending[0]):
+                container_pending.append(child)
+            else:
+                _flush_pending()
+                container_pending = [child]
             if text_pending:
-                grouped.append(text_pending)
-                text_pending = []
+                _flush_pending()
             if other_pending:
-                grouped.append(other_pending)
-                other_pending = []
-            grouped.append(child)
-    if text_pending:
-        grouped.append(text_pending)
-    if other_pending:
-        grouped.append(other_pending)
+                _flush_pending()
+    _flush_pending()
 
     for item in grouped:
         if depth > 0 and depth % 4 == 0 and len(lines) % 5 == 0:
@@ -450,6 +479,24 @@ async def _format_tree(
         if isinstance(item, list):
             first = item[0]
             n = len(item)
+
+            # 컨테이너 그룹 (row 등): 첫 N개만 개별 표시, 나머지 ×N more
+            if first.get("children") and not _is_text_leaf(first) and not _is_non_container(first):
+                role_display = first.get("role", "")
+                tag = (first.get("tag", "") or first.get("_tag", "") or "").lower()
+                shown = item[:MAX_CONTAINER_GROUP_PREVIEW]
+                for container_node in shown:
+                    await _format_tree(container_node, depth + 1, lines, indent,
+                                       refs=refs, detail=detail, max_depth=max_depth)
+                if n > MAX_CONTAINER_GROUP_PREVIEW:
+                    remain = n - MAX_CONTAINER_GROUP_PREVIEW
+                    parts = [f"... [{role_display}]"]
+                    if tag:
+                        parts.append(f"<{tag}>")
+                    parts.append(f"×{remain} more")
+                    lines.append(f"{indent * (depth + 1)}{' '.join(parts)}")
+                continue
+
             tag = (first.get("tag", "") or first.get("_tag", "") or "").lower()
             role_display = first.get("role", "")
 
@@ -632,8 +679,9 @@ async def _collapse_tree(
 
     Phase 1: 최소 20회, 최대 30회 반복하며 non-interactive 서브트리를
     '→ [role] "name", [role] ×N' 형태로 치환한다.
-    Phase 2: 30회로도 부족하면 하단부터 깊은 순으로 collapse하여
-    리프 텍스트가 보이도록 하고 'more below' 표시를 추가한다.
+    Phase 2: 하단부터 깊은 순으로 non-interactive 노드 collapse.
+    Phase 3: Phase 1/2로도 부족하면 interactive 노드까지 하단부터 collapse.
+    모든 phase에서 collapse된 노드는 'depth N, → [role] ×N' 형태로 표시된다.
     """
     # ── Phase 1: 최소 20 / 최대 30 반복 ──────────────────
     for iteration in range(30):
@@ -672,7 +720,7 @@ async def _collapse_tree(
         node["_collapsed"] = {"count": len(children), "summary": summary}
         node["children"] = []
 
-    # ── Phase 2: 하단부터 깊은 순 fallback collapse ────
+    # ── Phase 2: 하단부터 깊은 순 collapse (non-interactive) ──
     text = "\n".join(await _format_tree(tree, refs=refs))
     if _estimate_tokens(text) <= max_tokens:
         return tree
@@ -700,7 +748,38 @@ async def _collapse_tree(
         if not children:
             continue
         summary = _build_child_summary(children)
-        node["_collapsed"] = {"count": len(children), "summary": summary}
+        node["_collapsed"] = {"count": len(children), "summary": summary, "depth": _depth, "phase": 2}
+        node["children"] = []
+        text = "\n".join(await _format_tree(tree, refs=refs))
+        if _estimate_tokens(text) <= max_tokens:
+            return tree
+
+    # ── Phase 3: interactive 포함 하단부터 collapse ─────
+    # Phase 1/2로 안 들어가면 interactive(버튼/입력 등)까지도
+    # 하단부터 최소 depth 만큼 접어서 구조 완결성을 유지한다.
+    interactive_bottom_up: list[tuple[int, list[int], dict[str, Any]]] = []
+
+    def _collect_all(node, path, depth):
+        children = node.get("children", [])
+        if not children:
+            return
+        for i, child in enumerate(children):
+            _collect_all(child, path + [i], depth + 1)
+        if node.get("_collapsed"):
+            return
+        if not children:
+            return
+        interactive_bottom_up.append((depth, path, node))
+
+    _collect_all(tree, [], 0)
+    interactive_bottom_up.sort(key=lambda x: x[0], reverse=True)  # deep first
+
+    for _depth, _path, node in interactive_bottom_up:
+        children = node.get("children", [])
+        if not children:
+            continue
+        summary = _build_child_summary(children)
+        node["_collapsed"] = {"count": len(children), "summary": summary, "depth": _depth, "phase": 3}
         node["children"] = []
         text = "\n".join(await _format_tree(tree, refs=refs))
         if _estimate_tokens(text) <= max_tokens:
@@ -714,12 +793,16 @@ def _truncate_by_token(text: str, max_tokens: int = MAX_TOKEN_ESTIMATE) -> str:
     if _estimate_tokens(text) <= max_tokens:
         return text
     lines = text.split('\n')
-    original_line_count = len(lines)
-    while lines and _estimate_tokens('\n'.join(lines)) > max_tokens:
-        lines.pop()
-    text = '\n'.join(lines)
-    overflow = original_line_count - len(lines)
-    text += f"\n... (truncated, +{overflow} lines — call browser_snapshot(ref=N) to drill into child refs)"
+    total = len(lines)
+    keep = total
+    while keep > 1 and _estimate_tokens('\n'.join(lines[:keep])) > max_tokens:
+        keep -= 1
+    kept = lines[:keep]
+    # 하단이 잘린 경우 마지막 접힌 줄 표시 + 몇 줄 접었는지
+    folded = total - keep
+    text = '\n'.join(kept)
+    if folded > 0:
+        text += f"\n...(folded {folded} lines — browser_snapshot() to expand)"
     return text
 
 

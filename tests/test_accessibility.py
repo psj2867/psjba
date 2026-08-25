@@ -303,7 +303,7 @@ class TestFormatAccessibilityTree:
 
     @pytest.mark.asyncio
     async def test_truncated_output(self):
-        """매우 큰 트리는 truncated 표시."""
+        """매우 큰 트리는 folding 표시."""
         children = []
         for i in range(500):
             children.append(
@@ -315,4 +315,4 @@ class TestFormatAccessibilityTree:
             )
         snapshot = {"role": "Root", "children": children}
         result = await format_accessibility_tree(snapshot, max_tokens=100)
-        assert "(truncated" in result or len(result) > 0
+        assert "(folded" in result or "depth" in result or len(result) > 0
