@@ -61,7 +61,8 @@ def _format_json_result(text: str, limit: int = 3000) -> str:
     except (json.JSONDecodeError, ValueError):
         pretty = stripped
     if len(pretty) > limit:
-        pretty = pretty[:limit] + "\n... (truncated)"
+        overflow = len(pretty) - limit
+        pretty = pretty[:limit] + f"\n... (truncated, +{overflow} chars)"
     return pretty
 
 

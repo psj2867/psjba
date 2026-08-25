@@ -9,17 +9,32 @@ from playwright.async_api import Page
 
 logger = logging.getLogger("psjba.browser.accessibility")
 
-# 트리 포맷 표시용 텍스트 최대 길이
+# 트리 포맷 표시용 텍스트 최대 길이 (JS enrichment truncation)
 TEXT_DISPLAY_LEN = 10
 
+# 토큰 예산
 MAX_TOKEN_ESTIMATE = 4000
 CHARS_PER_TOKEN = 4
 
-# ref 번호 부여용 카운터 (module-level, session 동안 단조 증가)
-_REF_COUNTER = {"n": 0}
+# _format_node
+NAME_DISPLAY_LEN = 10          # name 표시 최대 길이
+VALUE_DISPLAY_LEN = 60         # value 표시 최대 길이
+DESC_DISPLAY_LEN = 80          # description 표시 최대 길이
+
+# _format_tree 텍스트 리프 요약
+TEXT_SUMMARY_MAX = 60          # texts="..." 병합 최대 길이
+
+# browser_get_text return 최대 길이
+TEXT_RETURN_MAX_LEN = 5000
+
+# browser_get_dom return 최대 길이
+DOM_RETURN_MAX_LEN = 10000
 
 # 연속 동일 타입 비-컨테이너 노드 그루핑: 개별 표시 최대 개수
 MAX_GROUP_PREVIEW = 10
+
+# ref 번호 부여용 카운터 (module-level, session 동안 단조 증가)
+_REF_COUNTER = {"n": 0}
 
 # a11y role 중 상호작용 가능한 것
 _INTERACTIVE_ROLES = {
@@ -160,8 +175,9 @@ def _format_node(
         if not children:
             # 리프 노드: a11y name(필수) + DOM text(보조)
             an = name.strip() if name else ""
-            if len(an) > 10:
-                an = an[:10] + "..."
+            if len(an) > NAME_DISPLAY_LEN:
+                overflow = len(an) - NAME_DISPLAY_LEN
+                an = an[:NAME_DISPLAY_LEN] + f"... (+{overflow})"
 
             dt = node.get("_text_content", "").strip()
             parts = []
@@ -174,8 +190,9 @@ def _format_node(
             # non-leaf: a11y name 표시 (필수)
             if name:
                 an = name.strip()
-                if len(an) > 10:
-                    an = an[:10] + "..."
+                if len(an) > NAME_DISPLAY_LEN:
+                    overflow = len(an) - NAME_DISPLAY_LEN
+                    an = an[:NAME_DISPLAY_LEN] + f"... (+{overflow})"
                 label_parts.append(f'"{an}"')
             _leaf_text = ""
     else:
@@ -199,12 +216,16 @@ def _format_node(
 
     if value is not None and value != "":
         v = str(value)
-        if len(v) > 60:
-            v = v[:60] + "..."
+        if len(v) > VALUE_DISPLAY_LEN:
+            overflow = len(v) - VALUE_DISPLAY_LEN
+            v = v[:VALUE_DISPLAY_LEN] + f"... (+{overflow})"
         label_parts.append(f"val={v}")
     description = node.get("description", "")
     if description:
-        d = description[:80]
+        d = description[:DESC_DISPLAY_LEN]
+        if len(description) > DESC_DISPLAY_LEN:
+            overflow = len(description) - DESC_DISPLAY_LEN
+            d += f"... (+{overflow})"
         label_parts.append(f"desc={d}")
 
     # 접힌(collapsed) 서브트리 표시 — child_summary와 함께
@@ -470,9 +491,9 @@ async def _format_tree(
                 parts.append(f"[#{ref_min}-{ref_max}]")
                 if texts:
                     merged = ", ".join(texts)
-                    if len(merged) > 60:
-                        overflow = len(merged) - 60
-                        merged = merged[:60] + f"... (+{overflow} more)"
+                    if len(merged) > TEXT_SUMMARY_MAX:
+                        overflow = len(merged) - TEXT_SUMMARY_MAX
+                        merged = merged[:TEXT_SUMMARY_MAX] + f"... (+{overflow})"
                     parts.append(f'texts="{merged}"')
                 lines.append(f"{indent * (depth + 1)}{' '.join(parts)}")
             else:
@@ -693,10 +714,12 @@ def _truncate_by_token(text: str, max_tokens: int = MAX_TOKEN_ESTIMATE) -> str:
     if _estimate_tokens(text) <= max_tokens:
         return text
     lines = text.split('\n')
+    original_line_count = len(lines)
     while lines and _estimate_tokens('\n'.join(lines)) > max_tokens:
         lines.pop()
     text = '\n'.join(lines)
-    text += "\n... (more content below — call browser_snapshot(ref=N) to drill into child refs)"
+    overflow = original_line_count - len(lines)
+    text += f"\n... (truncated, +{overflow} lines — call browser_snapshot(ref=N) to drill into child refs)"
     return text
 
 

@@ -20,6 +20,8 @@ from playwright.async_api import (
 )
 
 from src.browser.accessibility import (
+    TEXT_RETURN_MAX_LEN,
+    DOM_RETURN_MAX_LEN,
     fetch_full_tree,
     format_subtree_detail,
     format_tree,
@@ -1147,17 +1149,24 @@ class PlaywrightManager:
                     if text:
                         if tag_count <= 5:
                             return f"Text for ref #{ref} ({role} \"{name}\"):\n{text}"
-                        return (f"Text for ref #{ref} ({role} \"{name}\"):\n{text[:5000]}\n"
-                                "(truncated — call browser_snapshot(ref=N) to drill into child refs)")
+                        if len(text) > TEXT_RETURN_MAX_LEN:
+                            overflow = len(text) - TEXT_RETURN_MAX_LEN
+                            return (f"Text for ref #{ref} ({role} \"{name}\"):\n{text[:TEXT_RETURN_MAX_LEN]}\n"
+                                    f"(truncated, +{overflow} chars — call browser_snapshot(ref=N) to drill into child refs)")
+                        return f"Text for ref #{ref} ({role} \"{name}\"):\n{text}"
             except Exception as e:
                 logger.warning("CDP getOuterHTML for ref %d failed: %s", ref, e)
 
         # fallback 1: _text_content (CDP enrichment에서 저장된 값)
         text_content = node.get("_text_content", "")
         if text_content:
-            return (f"Text for ref #{ref} ({role} \"{name}\"):\n"
-                    f"{text_content.strip()[:5000]}\n"
-                    "(truncated — call browser_snapshot(ref=N) to drill into child refs)")
+            tc = text_content.strip()
+            if len(tc) > TEXT_RETURN_MAX_LEN:
+                overflow = len(tc) - TEXT_RETURN_MAX_LEN
+                return (f"Text for ref #{ref} ({role} \"{name}\"):\n"
+                        f"{tc[:TEXT_RETURN_MAX_LEN]}\n"
+                        f"(truncated, +{overflow} chars — call browser_snapshot(ref=N) to drill into child refs)")
+            return f"Text for ref #{ref} ({role} \"{name}\"):\n{tc}"
 
         # fallback 2: page.evaluate 로 DOM textContent 직접 추출 (CSS selector)
         try:
@@ -1176,8 +1185,11 @@ class PlaywrightManager:
                     if text:
                         if tag_count <= 5:
                             return f"Text for ref #{ref} ({role} \"{name}\"):\n{text}"
-                        return (f"Text for ref #{ref} ({role} \"{name}\"):\n{text[:5000]}\n"
-                                "(truncated — call browser_snapshot(ref=N) to drill into child refs)")
+                        if len(text) > TEXT_RETURN_MAX_LEN:
+                            overflow = len(text) - TEXT_RETURN_MAX_LEN
+                            return (f"Text for ref #{ref} ({role} \"{name}\"):\n{text[:TEXT_RETURN_MAX_LEN]}\n"
+                                    f"(truncated, +{overflow} chars — call browser_snapshot(ref=N) to drill into child refs)")
+                        return f"Text for ref #{ref} ({role} \"{name}\"):\n{text}"
 
             # 최후: role+name 기반 selector (name이 있을 때만)
             if name:
@@ -1200,8 +1212,11 @@ class PlaywrightManager:
                     if text:
                         if tag_count <= 5:
                             return f"Text for ref #{ref} ({role} \"{name}\"):\n{text}"
-                        return (f"Text for ref #{ref} ({role} \"{name}\"):\n{text[:5000]}\n"
-                                "(truncated — call browser_snapshot(ref=N) to drill into child refs)")
+                        if len(text) > TEXT_RETURN_MAX_LEN:
+                            overflow = len(text) - TEXT_RETURN_MAX_LEN
+                            return (f"Text for ref #{ref} ({role} \"{name}\"):\n{text[:TEXT_RETURN_MAX_LEN]}\n"
+                                    f"(truncated, +{overflow} chars — call browser_snapshot(ref=N) to drill into child refs)")
+                        return f"Text for ref #{ref} ({role} \"{name}\"):\n{text}"
             return f"Text for ref #{ref} ({role} \"{name}\"): (no text found)"
         except Exception as e:
             return f"Get text by ref #{ref} failed: {e}"
@@ -1246,9 +1261,9 @@ class PlaywrightManager:
                 })
                 outer = result.get("outerHTML", "")
                 if outer:
-                    if len(outer) > 10000 and outer.count("<") > 5:
-                        return (f"DOM for {desc}:\n{outer[:10000]}\n"
-                                "... (truncated — call browser_snapshot(ref=N) to drill into child refs)")
+                    if len(outer) > DOM_RETURN_MAX_LEN and outer.count("<") > 5:
+                        return (f"DOM for {desc}:\n{outer[:DOM_RETURN_MAX_LEN]}\n"
+                                f"... (truncated, +{len(outer)-DOM_RETURN_MAX_LEN} chars — call browser_snapshot(ref=N) to drill into child refs)")
                     return f"DOM for {desc}:\n{outer}"
             except Exception as e:
                 logger.warning("CDP getOuterHTML for ref %d failed: %s", ref, e)
@@ -1262,9 +1277,9 @@ class PlaywrightManager:
                 )
                 outer = await page.evaluate(script)
                 if outer:
-                    if len(outer) > 10000 and outer.count("<") > 5:
-                        return (f"DOM for {desc} (via selector):\n{outer[:10000]}\n"
-                                "... (truncated — call browser_snapshot(ref=N) to drill into child refs)")
+                    if len(outer) > DOM_RETURN_MAX_LEN and outer.count("<") > 5:
+                        return (f"DOM for {desc} (via selector):\n{outer[:DOM_RETURN_MAX_LEN]}\n"
+                                f"... (truncated, +{len(outer)-DOM_RETURN_MAX_LEN} chars — call browser_snapshot(ref=N) to drill into child refs)")
                     return f"DOM for {desc} (via selector):\n{outer}"
         except Exception as e:
             logger.warning("Selector fallback for ref %d failed: %s", ref, e)
