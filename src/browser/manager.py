@@ -969,16 +969,24 @@ class PlaywrightManager:
                 cx = (content[0] + content[4]) / 2 if len(content) >= 8 else content[0] + content[2] / 2
                 cy = (content[1] + content[5]) / 2 if len(content) >= 8 else content[1] + content[3] / 2
 
+                # getBoxModel은 page 좌표계(스크롤 포함), dispatchMouseEvent는 viewport 좌표계
+                scroll = await page.evaluate(
+                    '({x: window.scrollX || window.pageXOffset, y: window.scrollY || window.pageYOffset})'
+                )
+                cx -= scroll['x']
+                cy -= scroll['y']
+
                 # 디버그: 누르려는 노드 vs 실제 (cx,cy) 위치의 노드 비교
                 if logger.isEnabledFor(logging.DEBUG):
                     try:
                         target = await cdp_session.send("DOM.describeNode", {"nodeId": nid})
                         # raw_content는 getNodeForLocation 실패와 무관하게 먼저 로그
-                        logger.debug("_cdp_dispatch: target=%s raw_content=%s center=(%.0f,%.0f) viewport=(%s,%s)",
+                        logger.debug("_cdp_dispatch: target=%s raw_content=%s center=(%.0f,%.0f) viewport=(%s,%s) scroll=(%s,%s)",
                                      target.get("node", {}).get("nodeName", "?"),
                                      content,
                                      cx, cy,
-                                     model.get("width", "?"), model.get("height", "?"))
+                                     model.get("width", "?"), model.get("height", "?"),
+                                     scroll['x'], scroll['y'])
                     except Exception as e:
                         logger.debug("_cdp_dispatch describeNode failed: %s", e)
                     # 별도 try: getNodeForLocation은 실패할 수 있음 (뷰포트 밖 좌표 등)
