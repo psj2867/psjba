@@ -161,13 +161,11 @@ def _format_node(
                 an = an[:10] + "..."
 
             dt = node.get("_text_content", "").strip()
-            dt_display = dt[:TEXT_DISPLAY_LEN] + "..." if len(dt) > TEXT_DISPLAY_LEN else dt
-
             parts = []
             if an:
                 parts.append(f'"{an}"')
-            if dt_display:
-                parts.append(f'text="{dt_display}"')
+            if dt:
+                parts.append(f'text="{dt}"')
             _leaf_text = " ".join(parts)
         else:
             # non-leaf: a11y name 표시 (필수)
@@ -236,7 +234,7 @@ def _format_node(
             "_form_name": form_name,
             "_aria_label": node.get("_aria_label", ""),
             "_backendNodeId": node.get("_backendNodeId"),
-            "_text_content": (node.get("_text_content", "") or "")[:500],
+            "_text_content": node.get("_text_content", "") or "",
             "_nth_of_type": node.get("_nth_of_type", 0),
             "__psjba_id": psjba_id,
         }
@@ -712,16 +710,16 @@ def _collect_lines(node: dict[str, Any], depth: int, lines: list[str], detail: b
 
 # ─── Enrichment: resolveNode + callFunctionOn gather ───
 
-_ENRICH_FN = """function() {
+_ENRICH_FN_TPL = r"""function() {{
     var uid = (Math.random().toString(36) + Math.random().toString(36)).slice(2, 10);
     this.setAttribute('data-psjba-id', uid);
-    var ariaAttrs = {};
-    for (var i = 0; i < this.attributes.length; i++) {
+    var ariaAttrs = {{}};
+    for (var i = 0; i < this.attributes.length; i++) {{
         var a = this.attributes[i];
         if (a.name.indexOf('aria-') === 0) ariaAttrs[a.name] = a.value;
-    }
+    }}
     var t = (this.textContent || '').trim();
-    return {
+    return {{
         uid: uid,
         tag: this.tagName.toLowerCase(),
         id: this.id || '',
@@ -730,10 +728,10 @@ _ENRICH_FN = """function() {
         placeholder: this.getAttribute('placeholder') || '',
         aria_label: this.getAttribute('aria-label') || '',
         name: this.getAttribute('name') || '',
-        textContent: t.substring(0, 500),
+        textContent: t.length > {len} ? t.substring(0, {len}) + '...' : t,
         ariaAttrs: JSON.stringify(ariaAttrs)
-    };
-}"""
+    }};
+}}"""
 
 
 async def _enrich_via_resolve_gather(
@@ -782,7 +780,7 @@ async def _enrich_via_resolve_gather(
             obj_id = resolved["object"]["objectId"]
             eval_res = await cdp.send("Runtime.callFunctionOn", {
                 "objectId": obj_id,
-                "functionDeclaration": _ENRICH_FN,
+                "functionDeclaration": _ENRICH_FN_TPL.format(len=TEXT_DISPLAY_LEN),
                 "returnByValue": True,
             })
             await cdp.send("Runtime.releaseObject", {"objectId": obj_id})
@@ -814,7 +812,7 @@ async def _enrich_via_resolve_gather(
             node["_form_name"] = info.get("name", "")
             tc = info.get("textContent", "")
             if tc:
-                node["_text_content"] = tc[:TEXT_DISPLAY_LEN]
+                node["_text_content"] = tc
 
             # ariaAttrs JSON 파싱
             aria_raw = info.get("ariaAttrs", "")
