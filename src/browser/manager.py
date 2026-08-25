@@ -957,36 +957,45 @@ class PlaywrightManager:
 
         # ─── CDP click helper ──────────────────────────────
         async def _cdp_dispatch(cdp_session, nid: int) -> tuple[bool, float, float]:
-            """CDP nodeId로 scrollIntoView + getBoxModel + mouse click.
+            """CDP nodeId로 scrollIntoView + getBoundingClientRect + mouse click.
+
+            DOM.getBoxModel 대신 getBoundingClientRect()로 viewport 좌표 직접 획득.
+            scrollIntoViewIfNeeded는 nearest scrollable container를 스크롤하지만
+            getBoxModel은 여전히 document 기준 좌표를 반환하기 때문.
             Returns (success, cx, cy)."""
             try:
                 await cdp_session.send("DOM.scrollIntoViewIfNeeded", {"nodeId": nid})
-                box = await cdp_session.send("DOM.getBoxModel", {"nodeId": nid})
-                model = box.get("model", {})
-                content = model.get("content", [])
-                if len(content) < 4:
+                # DOM.resolveNode → Runtime.callFunctionOn(getBoundingClientRect)
+                obj = await cdp_session.send("DOM.resolveNode", {"nodeId": nid})
+                obj_id = obj.get("object", {}).get("objectId")
+                if not obj_id:
                     return False, 0, 0
-                cx = (content[0] + content[4]) / 2 if len(content) >= 8 else content[0] + content[2] / 2
-                cy = (content[1] + content[5]) / 2 if len(content) >= 8 else content[1] + content[3] / 2
-
-                # getBoxModel은 page 좌표계(스크롤 포함), dispatchMouseEvent는 viewport 좌표계
-                scroll = await page.evaluate(
-                    '({x: window.scrollX || window.pageXOffset, y: window.scrollY || window.pageYOffset})'
-                )
-                cx -= scroll['x']
-                cy -= scroll['y']
+                rect = await cdp_session.send("Runtime.callFunctionOn", {
+                    "objectId": obj_id,
+                    "functionDeclaration": (
+                        "function() {"
+                        "  var r = this.getBoundingClientRect();"
+                        "  return {x: r.left + r.width/2, y: r.top + r.height/2,"
+                        "          left: r.left, top: r.top,"
+                        "          width: r.width, height: r.height};"
+                        "}"
+                    ),
+                    "returnByValue": True,
+                })
+                props = rect.get("result", {}).get("value", {})
+                cx = props.get("x", 0)
+                cy = props.get("y", 0)
 
                 # 디버그: 누르려는 노드 vs 실제 (cx,cy) 위치의 노드 비교
                 if logger.isEnabledFor(logging.DEBUG):
                     try:
                         target = await cdp_session.send("DOM.describeNode", {"nodeId": nid})
                         # raw_content는 getNodeForLocation 실패와 무관하게 먼저 로그
-                        logger.debug("_cdp_dispatch: target=%s raw_content=%s center=(%.0f,%.0f) viewport=(%s,%s) scroll=(%s,%s)",
+                        logger.debug("_cdp_dispatch: target=%s rect=(%.0f,%.0f) size=(%.0f,%.0f) center=(%.0f,%.0f)",
                                      target.get("node", {}).get("nodeName", "?"),
-                                     content,
-                                     cx, cy,
-                                     model.get("width", "?"), model.get("height", "?"),
-                                     scroll['x'], scroll['y'])
+                                     props.get("left", 0), props.get("top", 0),
+                                     props.get("width", 0), props.get("height", 0),
+                                     cx, cy)
                     except Exception as e:
                         logger.debug("_cdp_dispatch describeNode failed: %s", e)
                     # 별도 try: getNodeForLocation은 실패할 수 있음 (뷰포트 밖 좌표 등)
