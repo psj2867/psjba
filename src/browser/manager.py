@@ -709,7 +709,7 @@ class PlaywrightManager:
             return (f"Type failed: ref #{ref} not found. "
                     "Call browser_snapshot() first to refresh the tree.")
 
-        psjba_id = node.get("_id", "")
+        psjba_id = node.get("__psjba_id", "")
         if not psjba_id:
             return f"Type failed for ref #{ref}: no data-psjba-id."
 
@@ -768,7 +768,7 @@ class PlaywrightManager:
             return (f"Select failed: ref #{ref} not found. "
                     "Call browser_snapshot() first to refresh the tree.")
 
-        psjba_id = node.get("_id", "")
+        psjba_id = node.get("__psjba_id", "")
         if not psjba_id:
             return f"Select failed for ref #{ref}: no data-psjba-id."
 
@@ -804,7 +804,7 @@ class PlaywrightManager:
             return (f"Hover failed: ref #{ref} not found. "
                     "Call browser_snapshot() first to refresh the tree.")
 
-        psjba_id = node.get("_id", "")
+        psjba_id = node.get("__psjba_id", "")
         if not psjba_id:
             return f"Hover failed for ref #{ref}: no data-psjba-id."
 
@@ -870,7 +870,7 @@ class PlaywrightManager:
             return (f"Focus failed: ref #{ref} not found. "
                     "Call browser_snapshot() first to refresh the tree.")
 
-        psjba_id = node.get("_id", "")
+        psjba_id = node.get("__psjba_id", "")
         if not psjba_id:
             return f"Focus failed for ref #{ref}: no data-psjba-id."
 
@@ -1062,7 +1062,7 @@ class PlaywrightManager:
             return (f"Click by ref failed: ref #{ref} not found. "
                     "Call browser_snapshot() first to refresh the tree.")
 
-        psjba_id = node.get("_id", "")
+        psjba_id = node.get("__psjba_id", "")
         if not psjba_id:
             return f"Click by ref #{ref} failed: no data-psjba-id."
 
@@ -1131,7 +1131,7 @@ class PlaywrightManager:
                             tn = await cdp_session.send("DOM.describeNode", {"nodeId": nid})
                             logger.debug("_cdp_dispatch: ref #%s psjba_id=%s target=%s "
                                          "center=(%.0f,%.0f) OUTSIDE viewport",
-                                         ref, node.get("_id", ""),
+                                         ref, node.get("__psjba_id", ""),
                                          tn.get("node", {}).get("nodeName", "?"),
                                          cx, cy)
                         except Exception:
@@ -1153,7 +1153,7 @@ class PlaywrightManager:
                         tn = await cdp_session.send("DOM.describeNode", {"nodeId": nid})
                         logger.debug("_cdp_dispatch: ref #%s psjba_id=%s target=%s "
                                      "center=(%.0f,%.0f) CLICK",
-                                     ref, node.get("_id", ""),
+                                     ref, node.get("__psjba_id", ""),
                                      tn.get("node", {}).get("nodeName", "?"),
                                      cx, cy)
                     except Exception:
@@ -1301,7 +1301,7 @@ class PlaywrightManager:
         role = node.get("role", "")
         name = node.get("name", "")
         tag = node.get("tag", "") or node.get("_tag", "")
-        nid = node.get("_id", "")
+        nid = node.get("__psjba_id", "")
         backend_id = node.get("_backendNodeId")
 
         desc = f"ref #{ref} ({role}"
