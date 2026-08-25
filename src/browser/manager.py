@@ -956,7 +956,7 @@ class PlaywrightManager:
         click_desc += ")"
 
         # ─── CDP click helper ──────────────────────────────
-        async def _cdp_dispatch(cdp_session, nid: int) -> tuple[bool, float, float]:
+        async def _cdp_dispatch(cdp_session, nid: int) -> tuple[bool | str, float, float]:
             """CDP nodeId로 scrollIntoView + getBoxModel + mouse click.
 
             DOM.getBoxModel은 page 좌표계(= viewport + document scroll + ancestors scroll).
@@ -1078,7 +1078,7 @@ class PlaywrightManager:
                                      hit_info.get("nodeName", "?"),
                                      hit_info.get("psjba_id", "?"),
                                      cx, cy, viewport_w, viewport_h)
-                        return False, 0, 0
+                        return "outside", cx, cy
 
                 # viewport 안: 정상 클릭 진입
                 if logger.isEnabledFor(logging.DEBUG):
@@ -1123,7 +1123,7 @@ class PlaywrightManager:
                 node_id = nids[0] if nids else None
                 if node_id:
                     ok, cx, cy = await _cdp_dispatch(cdp, node_id)
-                    if ok:
+                    if ok is True:
                         await self._tabs[idx].update_info()
                         tab = self._tabs[idx]
                         elapsed = int((time.monotonic() - t0) * 1000)
@@ -1135,6 +1135,10 @@ class PlaywrightManager:
                         if d:
                             result += f"\n⚠️ Dialog recorded: [{d['type']}] {d.get('message','')}"
                         return result
+                    if ok == "outside":
+                        return (f"Click by {click_desc} failed: "
+                                "element is outside viewport. "
+                                "The element is not visible on the page.")
             except Exception as e:
                 logger.warning("CDP pushNodesByBackendIdsToFrontend for %s failed: %s. → CDP re-discovery", click_desc, e)
 
@@ -1161,7 +1165,7 @@ class PlaywrightManager:
                     found_node_id = found.get("nodeId")
                     if found_node_id and found_node_id != 0:
                         ok, cx, cy = await _cdp_dispatch(cdp, found_node_id)
-                        if ok:
+                        if ok is True:
                             await self._tabs[idx].update_info()
                             tab = self._tabs[idx]
                             elapsed = int((time.monotonic() - t0) * 1000)
@@ -1174,6 +1178,10 @@ class PlaywrightManager:
                             if d:
                                 result += f"\n⚠️ Dialog recorded: [{d['type']}] {d.get('message','')}"
                             return result
+                        if ok == "outside":
+                            return (f"Click by {click_desc} failed: "
+                                    "element is outside viewport. "
+                                    "The element is not visible on the page.")
         except Exception as e:
             logger.warning("CDP re-discovery for %s failed: %s. → PW fallback", click_desc, e)
 
