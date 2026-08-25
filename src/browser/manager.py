@@ -24,7 +24,7 @@ from src.browser.accessibility import (
     format_subtree_detail,
     format_tree,
 )
-from src.browser.self_healing import SelfHealingSelector, _SAFE_CLASS_RE
+from src.browser.self_healing import SelfHealingSelector
 from src.chrome.launcher import ChromeLauncher
 
 logger = logging.getLogger("psjba.browser.manager")
@@ -630,73 +630,6 @@ class PlaywrightManager:
     # ─── 헬퍼: CDP querySelector 로 노드 재발견 ──────────
 
     @staticmethod
-    def _build_click_selector(node: dict[str, Any]) -> str:
-        """ref 노드 정보로 CDP DOM.querySelector용 CSS 선택자를 만든다.
-
-        Fallback chain (높은 정확도 순):
-          1. tag#id                          — id가 가장 정확
-          2. tag[role="X"]:nth-of-type(N)    — role + nth-of-type으로 unique
-          3. tag[attr="val"]                 — aria-label, placeholder, name, type
-          4. tag.safe-class[role="X"]        — 위험 문자 없는 클래스만
-        """
-        tag = node.get("tag", "") or node.get("_tag", "")
-        nid = node.get("_id", "")
-        aria_label = node.get("_aria_label", "")
-        nclass = node.get("_class", "")
-        ntype = node.get("_type", "")
-        name = node.get("name", "")
-        role = node.get("role", "")
-        placeholder = node.get("_placeholder", "")
-        form_name = node.get("_form_name", "")
-        nth = node.get("_nth_of_type", 0)
-
-        if not tag:
-            return ""
-
-        # 1차: id
-        if nid:
-            return f"{tag}#{nid}"
-
-        # 2차: role + nth-of-type (aria/name/type보다 nth가 더 unique)
-        if role:
-            parts = [tag]
-            if nclass:
-                safe_classes = [
-                    c for c in nclass.split()
-                    if _SAFE_CLASS_RE.match(c)
-                ]
-                if safe_classes:
-                    parts.append("." + ".".join(safe_classes))
-            parts.append(f'[role="{role}"]')
-            if nth > 0:
-                parts.append(f":nth-of-type({nth})")
-            return "".join(parts)
-
-        # 3차: HTML attribute (중복 가능성 높음, selector 검증 시 refined)
-        if aria_label:
-            escaped = aria_label.replace('"', '\\"').replace("'", "\\'")
-            return f'{tag}[aria-label="{escaped}"]'
-        if placeholder:
-            return f'{tag}[placeholder="{placeholder}"]'
-        if form_name:
-            return f'{tag}[name="{form_name}"]'
-        if name:
-            escaped = name.replace('"', '\\"').replace("'", "\\'")
-            return f'{tag}[aria-label="{escaped}"]'
-        if ntype:
-            return f'{tag}[type="{ntype}"]'
-
-        # 4차: tag + safe class만 (role 없음, attr 없음)
-        parts = [tag]
-        if nclass:
-            safe_classes = [
-                c for c in nclass.split()
-                if _SAFE_CLASS_RE.match(c)
-            ]
-            if safe_classes:
-                parts.append("." + ".".join(safe_classes))
-        return "".join(parts)
-
     # ─── 요소 조작 ──────────────────────────────────────────
 
     async def browser_type(
@@ -942,11 +875,9 @@ class PlaywrightManager:
         if refs:
             logger.info("a11y snapshot: %d interactive refs", len(refs))
             for ref, node in refs.items():
-                if node.get("_selector"):
-                    continue
-                sel = self._build_click_selector(node)
-                if sel:
-                    node["_selector"] = sel
+                psjba_id = node.get("__psjba_id", "")
+                if psjba_id:
+                    node["_selector"] = f'[data-psjba-id="{psjba_id}"]'
 
         self._set_session_tree(full_tree)
         self._set_session_refs(refs)
