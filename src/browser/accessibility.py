@@ -627,70 +627,7 @@ async def format_accessibility_tree_with_refs(
     return text, refs
 
 
-# ─────────────────── DOM enrichment ───────────────────
-
-_DOM_ENRICH_JS = r"""
-() => {
-    const results = {};
-    const candidates = document.querySelectorAll(
-        'button, a, input, select, textarea, [role], [tabindex]'
-    );
-    candidates.forEach(el => {
-        const role = el.getAttribute('role') || el.tagName.toLowerCase();
-        const ariaLabel = el.getAttribute('aria-label') || '';
-        const placeholder = el.getAttribute('placeholder') || '';
-        const text = (el.textContent || '').trim().slice(0, 100);
-        const name = ariaLabel || placeholder || text;
-        if (!name) return;
-        const key = role + '|' + name;
-        if (results[key]) return;  // first match wins
-        results[key] = {
-            tag: el.tagName.toLowerCase(),
-            id: el.id || '',
-            className: (el.className && typeof el.className === 'string')
-                ? el.className.trim().slice(0, 100) : '',
-            type: el.getAttribute('type') || '',
-            placeholder: placeholder,
-            name: el.getAttribute('name') || '',
-            aria_label: ariaLabel,
-        };
-    });
-    return results;
-};
-"""
-
-
-async def enrich_with_dom_info(page: Page, refs: dict[int, dict[str, Any]]) -> dict[int, dict[str, Any]]:
-    """JS injection으로 DOM 속성(tag, id, class, type, placeholder 등)을
-    refs 맵에 추가한다. (role, name) 쌍으로 매칭한다.
-
-    Returns:
-        동일한 refs 딕셔너리 (in-place + 반환)
-    """
-    try:
-        dom_map: dict[str, dict] = await page.evaluate(_DOM_ENRICH_JS)
-    except Exception as e:
-        logger.warning("DOM enrichment JS failed: %s", e)
-        return refs
-
-    matched = 0
-    for ref, info in refs.items():
-        role = info.get("role", "")
-        name = info.get("name", "")
-        key = f"{role}|{name}"
-        dom = dom_map.get(key)
-        if dom:
-            info["tag"] = dom.get("tag", "")
-            info["_id"] = dom.get("id", "")
-            info["_class"] = dom.get("className", "")
-            info["_type"] = dom.get("type", "")
-            info["_placeholder"] = dom.get("placeholder", "")
-            info["_form_name"] = dom.get("name", "")
-            info["_aria_label"] = dom.get("aria_label", "")
-            matched += 1
-
-    logger.debug("DOM enrichment: %d/%d refs matched", matched, len(refs))
-    return refs
+# ─────────────────── Public API ───────────────────
 
 
 async def get_accessibility_tree(page: Page) -> str:
@@ -704,18 +641,26 @@ async def get_accessibility_tree_with_refs(
 ) -> tuple[str, dict[int, dict[str, Any]]]:
     """접근성 트리 텍스트와 ref 매핑을 함께 가져온다.
 
-    CDP Accessibility.getFullAXTree를 우선 사용한다.
-    CDP가 실패하면 DOM evaluate fallback.
+    CDP Accessibility.getFullAXTree → resolveNode enrichment → format.
+    CDP가 실패하면 빈 결과를 반환한다.
 
     Returns:
         (포맷팅된 텍스트, {ref: {role, name, tag, _id, _class, ...}})
     """
     try:
-        return await _get_accessibility_via_cdp_with_refs(page)
+        cdp = await page.context.new_cdp_session(page)
+        await cdp.send("Accessibility.enable")
+        result = await cdp.send("Accessibility.getFullAXTree", {})
+        raw_nodes = result.get("nodes", [])
+        if not raw_nodes:
+            return "(No accessibility nodes)", {}
+
+        snapshot = _cdp_nodes_to_snapshot(raw_nodes)
+        await _enrich_via_resolve_gather(page, snapshot)
+        return await format_accessibility_tree_with_refs(snapshot)
     except Exception as e:
         logger.warning("CDP accessibility failed: %s", e)
-        text = await _fallback_via_evaluate(page)
-        return text, {}
+        return f"(Accessibility error: {e})", {}
 
 
 # ─────────────────── Detail subtree ───────────────────
@@ -723,19 +668,9 @@ async def get_accessibility_tree_with_refs(
 async def get_subtree_detail(page: Page, ref: int, refs: dict[int, dict[str, Any]]) -> str:
     """특정 ref의 서브트리를 전체 a11y snapshot 포맷 기준으로 반환한다.
 
-    동일한 _prune_tree → _collapse_tree → _format_tree 파이프라인을 태운다.
-
     Priority:
-    1. data-psjba-id CSS 선택자 → CDP querySelector → getOuterHTML (raw HTML)
+    1. data-psjba-id CSS 선택자 → CDP querySelector → getOuterHTML
     2. (role, name) match → full CDP tree scan → prune/collapse/format
-
-    Args:
-        page: Playwright Page
-        ref: 대상 ref 번호
-        refs: 현재 a11y refs 맵 (browser_snapshot()에서 얻은 것)
-
-    Returns:
-        포맷된 서브트리 텍스트
     """
     ref_info = refs.get(ref)
     if not ref_info:
@@ -1042,7 +977,7 @@ async def _enrich_via_resolve_gather(
                  len(bid_to_info), len(all_ids))
 
 
-# ─── Legacy CDP fallback (getFullAXTree → snapshot) ───
+# ─── CDP snapshot (get_subtree_detail용 full tree) ───
 
 async def _get_cdp_snapshot(page: Page) -> Optional[dict[str, Any]]:
     """CDP Accessibility domain으로 raw snapshot dict를 가져온다.
@@ -1064,32 +999,12 @@ async def _get_cdp_snapshot(page: Page) -> Optional[dict[str, Any]]:
         return None
 
 
-async def _get_accessibility_via_cdp_with_refs(
-    page: Page,
-) -> tuple[str, dict[int, dict[str, Any]]]:
-    """CDP Accessibility domain 직접 활성화 + getFullAXTree + resolveNode enrichment."""
-    cdp = await page.context.new_cdp_session(page)
-    await cdp.send("Accessibility.enable")
-    result = await cdp.send("Accessibility.getFullAXTree", {})
-    raw_nodes = result.get("nodes", [])
-    if not raw_nodes:
-        return "(No accessibility nodes via CDP)", {}
-
-    snapshot = _cdp_nodes_to_snapshot(raw_nodes)
-
-    # resolveNode + callFunctionOn gather: data-psjba-id 주입 + 정보 수집
-    await _enrich_via_resolve_gather(page, snapshot)
-
-    return await format_accessibility_tree_with_refs(snapshot)
-
-
 def _cdp_nodes_to_snapshot(nodes: list[dict]) -> dict[str, Any]:
-    """CDP Accessibility.getFullAXTree 노드 리스트 → Playwright 호환 snapshot + enrichment.
+    """CDP Accessibility.getFullAXTree 노드 리스트 → Playwright 호환 snapshot.
 
-snapshot 구성 후, resolveNode+callFunctionOn gather로 각 a11y 노드에
-data-psjba-id를 주입하고 DOM 속성(textContent, aria-*, tag 등)을
-수집하여 snapshot 노드에 직접 저장한다.
-"""
+    a11y 속성(role, name, value, description, flags)만 추출하고,
+    DOM 속성(tag, class, aria-* 등)은 _enrich_via_resolve_gather에서 채운다.
+    """
     node_map: dict[str, dict] = {}
     for n in nodes:
         node_map[n["nodeId"]] = n
@@ -1207,57 +1122,3 @@ data-psjba-id를 주입하고 DOM 속성(textContent, aria-*, tag 등)을
 
     snapshot = _to_playwright(root_ids[0])
     return snapshot
-
-
-async def _fallback_via_evaluate(page: Page, max_tokens: int = 2000) -> str:
-    """page.evaluate() 로 DOM 기반 접근성 정보를 추출한다.
-
-    _get_accessibility_via_cdp_with_refs와 동일한 format_accessibility_tree 파이프라인을 태운다.
-    """
-    try:
-        js = r"""
-        () => {
-            const root = {
-                role: "Root",
-                name: document.title || "",
-                children: []
-            };
-            const selectors = [
-                "nav", "main", "section", "article", "aside",
-                "header", "footer", "form", "search",
-                "h1", "h2", "h3",
-                "a[href]", "button", "select", "textarea",
-                "input:not([type=hidden])",
-                '[tabindex]:not([tabindex="-1"])',
-                '[role="button"]', '[role="link"]', '[role="combobox"]',
-                '[role="dialog"]', '[role="alert"]', '[role="menu"]',
-            ];
-            const seen = new Set();
-            document.querySelectorAll(selectors.join(",")).forEach(el => {
-                const tag = el.tagName.toLowerCase();
-                const text = (el.textContent || "").trim().slice(0, 100);
-                const aria = el.getAttribute("aria-label") || "";
-                const name = aria || text;
-                if (!name || seen.has(name)) return;
-                seen.add(name);
-                const role = el.getAttribute("role") || tag;
-                const node = {
-                    role: role,
-                    name: name,
-                    tag: tag,
-                    _id: el.id || "",
-                    _class: el.className || "",
-                };
-                root.children.push(node);
-            });
-            return JSON.stringify(root);
-        }
-        """
-        json_str = await page.evaluate(js)
-        snapshot = json.loads(json_str)
-
-        text, _refs = await format_accessibility_tree_with_refs(snapshot, max_tokens=max_tokens)
-        return text or "(Empty page)"
-    except Exception as e:
-        logger.error("Fallback evaluate failed: %s", e)
-        return f"(Error getting page structure: {e})"

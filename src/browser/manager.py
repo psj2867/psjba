@@ -885,8 +885,8 @@ class PlaywrightManager:
         logger.info("browser_snapshot called (ref=%s)", ref)
         """특정 탭의 접근성 트리를 반환하고 ref 매핑을 저장한다.
 
-        ref가 주어지면 해당 ref의 상세 서브트리(3 depth, detail 모드)를 반환한다.
-        ref가 없는 전체 트리 요청 시에는 이전 refs + counter를 초기화한다 (메모리 관리).
+        ref가 주어지면 해당 ref의 상세 서브트리를 반환한다.
+        ref가 없는 전체 트리 요청 시에는 이전 refs + counter를 초기화한다.
 
         Args:
             tab_index: 대상 탭 인덱스 (None이면 포커스 탭)
@@ -914,8 +914,6 @@ class PlaywrightManager:
 
         if refs:
             logger.info("a11y snapshot: %d interactive refs", len(refs))
-            # refs에 _selector가 없는 경우만 건너뛴다
-            # (format_accessibility_tree_with_refs에서 __psjba_id 기반으로 이미 설정함)
             for ref, node in refs.items():
                 if node.get("_selector"):
                     continue
