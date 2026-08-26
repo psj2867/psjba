@@ -594,7 +594,7 @@ async def _format_tree(
                     if len(merged) > TEXT_SUMMARY_MAX:
                         overflow = len(merged) - TEXT_SUMMARY_MAX
                         merged = merged[:TEXT_SUMMARY_MAX] + f"... (+{overflow})"
-                    parts.append(f'texts="{merged}"')
+                    parts.append(f'text="{merged}"')
                 lines.append(f"{indent * (depth + 1)}{' '.join(parts)}")
             else:
                 # ── 기타 리프 그룹 (image/button 등) ─
