@@ -803,7 +803,7 @@ async def fetch_full_tree(page: Page) -> dict[str, Any]:
 
     tree = _cdp_nodes_to_snapshot(raw_nodes)
     t3 = time.monotonic()
-    await _enrich_via_resolve_gather(page, tree)
+    await _enrich_via_batch(page, tree)
     t4 = time.monotonic()
     if logger.isEnabledFor(logging.DEBUG):
         logger.debug("fetch_full_tree timing: enable=%dms getFullAXTree=%dms build=%dms enrich=%dms total=%dms | %d raw nodes",
@@ -940,7 +940,220 @@ def _collect_lines(node: dict[str, Any], depth: int, lines: list[str], detail: b
         _collect_lines(child, depth + 1, lines, detail=detail)
 
 
-# ─── Enrichment: resolveNode + callFunctionOn gather ───
+# ─── Enrichment: batch CDP (captureSnapshot) ─────────────────
+
+# MAX_CHARS for text display truncation
+TEXT_ENRICH_MAX_LEN: int = 3000
+
+
+async def _enrich_via_batch(
+    page: Page,
+    snapshot: dict[str, Any],
+) -> None:
+    """Batch CDP enrichment: 2~3회 CDP 호출로 모든 a11y 노드 enrichment.
+
+    현재 _enrich_via_resolve_gather가 노드마다 3 CDP 호출(25초) 하는 것을
+    3회 CDP 호출로 대체:
+      1. Runtime.evaluate: 모든 DOM element에 data-psjba-id 주입 + textContent 수집
+      2. DOMSnapshot.captureSnapshot: 모든 DOM element의 attributes + backendNodeId
+      3. Python: backendNodeId 기준으로 a11y 트리에 매핑
+
+    Returns:
+        None (snapshot 노드를 in-place로 수정)
+    """
+    # backendNodeId 수집 (a11y tree normalization)
+    all_ids: list[int] = []
+    for node in _iter_nodes(snapshot):
+        bid = node.get("_backendNodeId")
+        if bid:
+            all_ids.append(bid)
+
+    if not all_ids:
+        return
+
+    try:
+        # Step 1 + 3 통합: uid 주입 + textContent 한 번에
+        uid_text_map: dict[str, str] = await page.evaluate("""() => {
+            const els = document.querySelectorAll('*');
+            const map = {};
+            for (let i = 0; i < els.length; i++) {
+                const existing = els[i].getAttribute('data-psjba-id');
+                const uid = existing || (Math.random().toString(36) + Math.random().toString(36)).slice(2, 10);
+                if (!existing) els[i].setAttribute('data-psjba-id', uid);
+                map[uid] = (els[i].textContent || '').trim();
+            }
+            return map;
+        }""")
+
+        # Step 2: captureSnapshot (한 번에 모든 attributes)
+        cdp = await page.context.new_cdp_session(page)
+        snap_result = await cdp.send("DOMSnapshot.captureSnapshot", {
+            "computedStyles": [],
+        })
+    except Exception as e:
+        logger.warning("batch enrichment failed (%s), fallback to resolve gather", e)
+        await _enrich_via_resolve_gather(page, snapshot)
+        return
+
+    strings: list[str] = snap_result.get("strings", [])
+    if not strings:
+        logger.warning("captureSnapshot returned no strings, fallback")
+        await _enrich_via_resolve_gather(page, snapshot)
+        return
+
+    # captureSnapshot 결과에서 bid → info 매핑
+    documents = snap_result.get("documents", [])
+    if not documents:
+        logger.warning("captureSnapshot returned no documents, fallback")
+        await _enrich_via_resolve_gather(page, snapshot)
+        return
+
+    doc = documents[0]
+    nodes = doc.get("nodes", {})
+    backend_ids_list: list[int] = nodes.get("backendNodeId", [])
+    node_types: list[int] = nodes.get("nodeType", [])
+    node_names: list[int] = nodes.get("nodeName", [])
+    attrs_list = nodes.get("attributes", [])
+    input_values: list[int] = nodes.get("inputValue", [])
+
+    t0 = time.monotonic()
+    bid_to_info: dict[int, dict[str, Any]] = {}
+    tag_counter: dict[str, int] = {}
+
+    for i, bid in enumerate(backend_ids_list):
+        if not bid or bid <= 0:
+            continue
+        nt = node_types[i] if i < len(node_types) else 1
+        if nt != 1:
+            # Element node (Node.ELEMENT_NODE == 1)만 처리
+            continue
+
+        # nodeName → tag string
+        name_idx = node_names[i] if i < len(node_names) else -1
+        tag = strings[name_idx].lower() if 0 <= name_idx < len(strings) else ""
+
+        info: dict[str, Any] = {"tag": tag}
+        uid: str | None = None
+
+        # attributes 파싱 (NameValue[] → flat dict)
+        attrs_raw = attrs_list[i] if i < len(attrs_list) else None
+        if attrs_raw:
+            for attr_pair in attrs_raw:
+                if not isinstance(attr_pair, dict):
+                    continue
+                key_idx = attr_pair.get("name", -1)
+                val_idx = attr_pair.get("value", -1)
+                if not (0 <= key_idx < len(strings) and 0 <= val_idx < len(strings)):
+                    continue
+                key = strings[key_idx]
+                val = strings[val_idx]
+                if key == "data-psjba-id":
+                    uid = val
+                elif key == "id":
+                    info["id"] = val
+                elif key == "class":
+                    info["class"] = val
+                elif key == "type":
+                    info["type"] = val
+                elif key == "placeholder":
+                    info["placeholder"] = val
+                elif key == "aria-label":
+                    info["aria_label"] = val
+                elif key == "name":
+                    info["name"] = val
+                elif key.startswith("aria-"):
+                    if key in ("aria-label",):
+                        continue
+                    if "aria_attrs" not in info:
+                        info["aria_attrs"] = {}
+                    norm_key = key.replace("-", "_")
+                    info["aria_attrs"][norm_key] = val
+
+        # inputValue (input/textarea의 현재값)
+        if i < len(input_values):
+            iv_idx = input_values[i]
+            if iv_idx >= 0 and iv_idx < len(strings):
+                iv = strings[iv_idx]
+                if iv:
+                    info["input_value"] = iv
+
+        if uid:
+            info["uid"] = uid
+            # textContent는 step 1에서 수집한 맵에서 uid로 조회
+            raw_text = uid_text_map.get(uid, "")
+            if raw_text:
+                if len(raw_text) > TEXT_ENRICH_MAX_LEN:
+                    raw_text = raw_text[:TEXT_ENRICH_MAX_LEN] + f"... (+{len(raw_text) - TEXT_ENRICH_MAX_LEN} more)"
+                info["textContent"] = raw_text
+
+        # _nth_of_type 계산 (tag별 순차 카운터)
+        if tag:
+            tag_counter.setdefault(tag, 0)
+            tag_counter[tag] += 1
+            if tag_counter[tag] > 1:
+                info["_nth_of_type"] = tag_counter[tag]
+
+        bid_to_info[bid] = info
+
+    t1 = time.monotonic()
+
+    # a11y snapshot 노드에 속성 채우기 (sync)
+    _fill_node_enrich(snapshot, bid_to_info)
+    t2 = time.monotonic()
+
+    enriched_count = sum(1 for n in _iter_nodes(snapshot) if n.get("__psjba_id"))
+    logger.debug("_enrich_via_batch: %d/%d nodes enriched, parse=%dms fill=%dms total=%dms",
+                 enriched_count, len(all_ids),
+                 int((t1 - t0) * 1000), int((t2 - t1) * 1000),
+                 int((t2 - t0) * 1000))
+
+
+def _iter_nodes(tree: dict[str, Any]) -> list[dict[str, Any]]:
+    """BFS/DFS로 모든 노드를 flat 리스트로 반환."""
+    result: list[dict[str, Any]] = []
+    stack = [tree]
+    while stack:
+        node = stack.pop()
+        result.append(node)
+        children = node.get("children", [])
+        # 역순으로 append해서 pop 순서 보존은 신경 안 씀 (flat만 중요)
+        for child in children:
+            stack.append(child)
+    return result
+
+
+def _fill_node_enrich(node: dict[str, Any], bid_to_info: dict[int, dict[str, Any]]) -> None:
+    """sync in-place enrichment: bid_to_info 맵에서 정보를 읽어 노드에 채운다."""
+    bid = node.get("_backendNodeId")
+    info = bid_to_info.get(bid) if bid else None
+    if info:
+        node["__psjba_id"] = info.get("uid", "")
+        node["tag"] = info.get("tag", "")
+        node["_id"] = info.get("id", "")
+        node["_class"] = info.get("class", "")
+        node["_type"] = info.get("type", "")
+        node["_placeholder"] = info.get("placeholder", "")
+        node["_aria_label"] = info.get("aria_label", "")
+        node["_form_name"] = info.get("name", "")
+        tc = info.get("textContent", "")
+        if tc:
+            node["_text_content"] = tc
+        iv = info.get("input_value", "")
+        if iv:
+            node["_input_value"] = iv
+        nth = info.get("_nth_of_type", 0)
+        if nth:
+            node["_nth_of_type"] = nth
+        aria_attrs = info.get("aria_attrs", {})
+        if aria_attrs:
+            for akey, aval in aria_attrs.items():
+                node[akey] = aval
+
+    for child in node.get("children", []):
+        _fill_node_enrich(child, bid_to_info)
+
+
+# ─── Fallback: per-node resolve + callFunctionOn ──────────
 
 _ENRICH_FN = rf"""function() {{
     function getFastNodeText(n) {{
@@ -977,7 +1190,7 @@ _ENRICH_FN = rf"""function() {{
         placeholder: this.getAttribute('placeholder') || '',
         aria_label: this.getAttribute('aria-label') || '',
         name: this.getAttribute('name') || '',
-        textContent: t.length > {TEXT_DISPLAY_LEN} ? t.substring(0, {TEXT_DISPLAY_LEN}) + '... (+' + (t.length - {TEXT_DISPLAY_LEN}) + ' more)' : t,
+        textContent: t.length > {TEXT_ENRICH_MAX_LEN} ? t.substring(0, {TEXT_ENRICH_MAX_LEN}) + '... (+' + (t.length - {TEXT_ENRICH_MAX_LEN}) + ' more)' : t,
         ariaAttrs: JSON.stringify(ariaAttrs)
     }};
 }}"""
@@ -987,37 +1200,16 @@ async def _enrich_via_resolve_gather(
     page: Page,
     snapshot: dict[str, Any],
 ) -> None:
-    """snapshot 트리의 모든 a11y 노드를 resolveNode → callFunctionOn gather로
-    enrichment한다.
+    """Fallback: resolveNode → callFunctionOn gather로 모든 노드 enrichment.
 
-    각 노드에 대해:
-    1. DOM.resolveNode(backendNodeId) → objectId 확보
-    2. Runtime.callFunctionOn으로 data-psjba-id 주입 + 정보 수집 (한 번에)
-    3. Runtime.releaseObject(objectId) 해제
-
-    Returns:
-        None (snapshot 노드를 in-place로 수정)
+    각 노드에 대해 DOM.resolveNode + Runtime.callFunctionOn + releaseObject.
+    _enrich_via_batch 실패 시 호출.
     """
-    # backendNodeId 수집
     all_ids: list[int] = []
-
-    async def _normalize(node):
-        bid = node.get("backendDOMNodeId")
-        if bid:
-            node["_backendNodeId"] = bid
-        for child in node.get("children", []):
-            await _normalize(child)
-
-    async def _collect_ids(node):
+    for node in _iter_nodes(snapshot):
         bid = node.get("_backendNodeId")
         if bid:
             all_ids.append(bid)
-        for child in node.get("children", []):
-            await _collect_ids(child)
-
-    await _normalize(snapshot)
-    await _collect_ids(snapshot)
-
     if not all_ids:
         return
 
@@ -1042,51 +1234,17 @@ async def _enrich_via_resolve_gather(
                                    return_exceptions=False)
     t1 = time.monotonic()
 
-    # backendNodeId → enrichment info 맵
     bid_to_info: dict[int, dict] = {}
     for bid, res in zip(all_ids, results):
         if res and isinstance(res, dict) and res.get("uid"):
             bid_to_info[bid] = res
 
-    # snapshot 노드에 속성 채우기
-    async def _fill_node(node):
-        bid = node.get("_backendNodeId")
-        info = bid_to_info.get(bid) if bid else None
-        if info:
-            node["__psjba_id"] = info["uid"]
-            node["tag"] = info.get("tag", "")
-            node["_id"] = info.get("id", "")
-            node["_class"] = info.get("class", "")
-            node["_type"] = info.get("type", "")
-            node["_placeholder"] = info.get("placeholder", "")
-            node["_aria_label"] = info.get("aria_label", "")
-            node["_form_name"] = info.get("name", "")
-            tc = info.get("textContent", "")
-            if tc:
-                node["_text_content"] = tc
-
-            # ariaAttrs JSON 파싱
-            aria_raw = info.get("ariaAttrs", "")
-            if aria_raw:
-                try:
-                    aria_map = json.loads(aria_raw)
-                    for akey, aval in aria_map.items():
-                        if akey == "aria-label":
-                            continue
-                        if akey == "aria-pressed":
-                            node["aria-pressed"] = aval
-                            continue
-                        norm_key = "_" + akey.replace("-", "_")
-                        node[norm_key] = aval
-                except json.JSONDecodeError:
-                    pass
-        for child in node.get("children", []):
-            await _fill_node(child)
-
-    await _fill_node(snapshot)
+    _fill_node_enrich(snapshot, bid_to_info)
     t2 = time.monotonic()
+
+    enriched_count = sum(1 for n in _iter_nodes(snapshot) if n.get("__psjba_id"))
     logger.debug("_enrich_via_resolve_gather: %d/%d nodes enriched, cdp=%dms fill=%dms total=%dms",
-                 len(bid_to_info), len(all_ids),
+                 enriched_count, len(all_ids),
                  int((t1 - t0) * 1000), int((t2 - t1) * 1000),
                  int((t2 - t0) * 1000))
 
