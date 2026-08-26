@@ -396,6 +396,10 @@ async def _format_tree(
     if formatted.strip():
         lines.append(formatted)
 
+    # hidden 요소는 자식도 포함해서 통째로 제외 (트리에 없었던 것처럼)
+    if snapshot.get("_visible") is False:
+        return lines
+
     # accessibility expanded=false면 자식 생략 (aria-expanded collapsed)
     if snapshot.get("expanded") is False and not snapshot.get("_collapsed"):
         return lines
