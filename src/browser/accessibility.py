@@ -569,8 +569,8 @@ async def _format_tree(
     return lines
 
 
-async def _prune_tree(snapshot: dict[str, Any]) -> Optional[dict[str, Any]]:
-    """불필요한 노드를 제거하고 단일-자식 체인을 병합한다.
+def _prune_tree(snapshot: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """불필요한 노드를 제거하고 단일-자식 체인을 병합한다. (sync)
 
     1. 내용 없는 StaticText 제거
     2. 이름/값/설명이 없고 자식도 없는 wrapper 노드 제거
@@ -600,10 +600,7 @@ async def _prune_tree(snapshot: dict[str, Any]) -> Optional[dict[str, Any]]:
         and bool(children)
     )
     if is_pure_container:
-        results = await asyncio.gather(
-            *(_prune_tree(c) for c in children),
-        )
-        pruned_all = [r for r in results if r is not None]
+        pruned_all = [r for r in (_prune_tree(c) for c in children) if r is not None]
         if len(pruned_all) == 1:
             return pruned_all[0]
         if pruned_all:
@@ -628,16 +625,13 @@ async def _prune_tree(snapshot: dict[str, Any]) -> Optional[dict[str, Any]]:
         and not has_interactive_child
     ):
         child = children[0]
-        child_pruned = await _prune_tree(child)
+        child_pruned = _prune_tree(child)
         if child_pruned is not None:
             return child_pruned
         return None
 
-    # 일반 노드: 자식들을 병렬로 prune
-    results = await asyncio.gather(
-        *(_prune_tree(c) for c in children),
-    )
-    pruned_children = [r for r in results if r is not None]
+    # 일반 노드: 자식들을 병렬로 prune (sync list comprehension)
+    pruned_children = [r for r in (_prune_tree(c) for c in children) if r is not None]
 
     # --- post-prune 재검사: 자식이 모두 제거되어 빈 wrapper가 된 경우 제거 ---
     if (
@@ -825,7 +819,7 @@ async def format_tree(tree: dict[str, Any]) -> tuple[str, dict[int, dict[str, An
     """
     t0 = time.monotonic()
     _reset_ref_counter()
-    pruned = (await _prune_tree(tree)) or tree
+    pruned = _prune_tree(tree) or tree
     t1 = time.monotonic()
     collapsed = await _collapse_tree(pruned)
     t2 = time.monotonic()
