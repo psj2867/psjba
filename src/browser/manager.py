@@ -46,7 +46,7 @@ def _format_text_result(
     (ref, role, name) prefix + text, tag_count ≤5면 그대로 반환.
     len > TEXT_RETURN_MAX_LEN이면 +overflow chars 메시지 추가.
     """
-    prefix = f"Text for ref #{ref} ({role} \"{name}\"):\n"
+    prefix = f"Text for [{ref}] ({role} \"{name}\"):\n"
     if tag_count is not None and tag_count <= 5:
         return prefix + text
     if len(text) > TEXT_RETURN_MAX_LEN:
@@ -177,7 +177,7 @@ class PlaywrightManager:
         self._focused_tab_index: int = 0
         self._connected: bool = False
         # session_id → refs 매핑 (cron/agent 간 격리)
-        self._a11y_refs: dict[str, dict[int, dict[str, Any]]] = {}
+        self._a11y_refs: dict[str, dict[str, dict[str, Any]]] = {}
         # session_id → full enriched tree (fetch_full_tree 결과, subtree detail 재사용용)
         self._a11y_tree: dict[str, dict[str, Any]] = {}
         self._db: Optional[Any] = None
@@ -196,12 +196,12 @@ class PlaywrightManager:
             return self._tabs[self._focused_tab_index].page
         return None
 
-    def _get_session_refs(self, session_id: str = "") -> dict[int, dict[str, Any]]:
-        """현재 task의 session에 귀속된 a11y refs를 반환한다."""
+    def _get_session_refs(self, session_id: str = "") -> dict[str, dict[str, Any]]:
+        """현재 task의 session에 귀속된 a11y refs (psjba_id → node info)를 반환한다."""
         sid = session_id or _current_session_id.get()
         return self._a11y_refs.get(sid, {})
 
-    def _set_session_refs(self, refs: dict[int, dict[str, Any]], session_id: str = "") -> None:
+    def _set_session_refs(self, refs: dict[str, dict[str, Any]], session_id: str = "") -> None:
         """현재 task의 session에 a11y refs를 저장한다."""
         sid = session_id or _current_session_id.get()
         self._a11y_refs[sid] = refs
@@ -499,6 +499,10 @@ class PlaywrightManager:
         except (IndexError, AttributeError):
             return f"[Tab {idx}] (unknown)"
 
+    def _lookup_ref(self, ref: str, session_refs: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
+        """psjba_id로 ref lookup. str/bytes/숫자 모두 처리."""
+        return session_refs.get(str(ref) if not isinstance(ref, str) else ref)
+
     # ─── 탭 관리 ────────────────────────────────────────────
 
     async def browser_new_tab(self, url: Optional[str] = None) -> str:
@@ -733,21 +737,21 @@ class PlaywrightManager:
         """접근성 트리 ref 번호로 입력 필드를 찾아 텍스트를 입력한다."""
         logger.info("browser_type: ref=%s, text=%s", ref, text[:50])
         session_refs = self._get_session_refs()
-        node = session_refs.get(ref)
+        node = self._lookup_ref(ref, session_refs)
         if node is None:
-            return (f"Type failed: ref #{ref} not found. "
+            return (f"Type failed: [{ref}] not found. "
                     "Call browser_snapshot() first to refresh the tree.")
 
         psjba_id = node.get("__psjba_id", "")
         if not psjba_id:
-            return f"Type failed for ref #{ref}: no data-psjba-id."
+            return f"Type failed for [{ref}]: no data-psjba-id."
 
         page = self._ensure_page(tab_index)
         idx = tab_index if tab_index is not None else self._focused_tab_index
 
         r = await self._cdp_resolve_fallback(page, node)
         if r is None:
-            return (f"Type failed for ref #{ref}: "
+            return (f"Type failed for [{ref}]: "
                     "could not locate element, page may have changed.")
         cdp, node_id, oid = r
 
@@ -773,7 +777,7 @@ class PlaywrightManager:
             })
             await self._tabs[idx].update_info()
             tab = self._tabs[idx]
-            result = (f"Typed into ref #{ref}: {text[:50]}{'...' if len(text) > 50 else ''} "
+            result = (f"Typed into [{ref}]: {text[:50]}{'...' if len(text) > 50 else ''} "
                       f"[url={tab.url}, title={tab.title}]")
             d = await self._tabs[idx].check_dialog()
             if d:
@@ -781,7 +785,7 @@ class PlaywrightManager:
             return result
         except Exception as e:
             logger.debug("browser_type CDP failed: %s", e)
-            return f"Type failed for ref #{ref}: {e}"
+            return f"Type failed for [{ref}]: {e}"
 
     async def browser_select_option(
         self,
@@ -792,20 +796,20 @@ class PlaywrightManager:
         """접근성 트리 ref 번호로 드롭다운 옵션을 선택한다."""
         logger.info("browser_select_option: ref=%s, value=%s", ref, value)
         session_refs = self._get_session_refs()
-        node = session_refs.get(ref)
+        node = self._lookup_ref(ref, session_refs)
         if node is None:
-            return (f"Select failed: ref #{ref} not found. "
+            return (f"Select failed: [{ref}] not found. "
                     "Call browser_snapshot() first to refresh the tree.")
 
         psjba_id = node.get("__psjba_id", "")
         if not psjba_id:
-            return f"Select failed for ref #{ref}: no data-psjba-id."
+            return f"Select failed for [{ref}]: no data-psjba-id."
 
         page = self._ensure_page(tab_index)
 
         r = await self._cdp_resolve_fallback(page, node)
         if r is None:
-            return (f"Select failed for ref #{ref}: "
+            return (f"Select failed for [{ref}]: "
                     "could not locate element, page may have changed.")
         cdp, node_id, oid = r
 
@@ -819,30 +823,30 @@ class PlaywrightManager:
                 ),
                 "arguments": [{"value": value}],
             })
-            return f"Selected option '{value}' in ref #{ref}"
+            return f"Selected option '{value}' in [{ref}]"
         except Exception as e:
             logger.debug("browser_select_option CDP failed: %s", e)
-            return f"Select failed for ref #{ref}: {e}"
+            return f"Select failed for [{ref}]: {e}"
 
     async def browser_hover(self, ref: int, tab_index: Optional[int] = None) -> str:
         """접근성 트리 ref 번호로 요소 위에 마우스를 호버한다."""
         logger.info("browser_hover: ref=%s", ref)
         session_refs = self._get_session_refs()
-        node = session_refs.get(ref)
+        node = self._lookup_ref(ref, session_refs)
         if node is None:
-            return (f"Hover failed: ref #{ref} not found. "
+            return (f"Hover failed: [{ref}] not found. "
                     "Call browser_snapshot() first to refresh the tree.")
 
         psjba_id = node.get("__psjba_id", "")
         if not psjba_id:
-            return f"Hover failed for ref #{ref}: no data-psjba-id."
+            return f"Hover failed for [{ref}]: no data-psjba-id."
 
         page = self._ensure_page(tab_index)
         idx = tab_index if tab_index is not None else self._focused_tab_index
 
         r = await self._cdp_resolve_fallback(page, node)
         if r is None:
-            return (f"Hover failed for ref #{ref}: "
+            return (f"Hover failed for [{ref}]: "
                     "could not locate element, page may have changed.")
         cdp, node_id, oid = r
 
@@ -858,10 +862,10 @@ class PlaywrightManager:
             })
             await self._tabs[idx].update_info()
             tab = self._tabs[idx]
-            return (f"Hovered ref #{ref} [url={tab.url}, title={tab.title}]")
+            return (f"Hovered [{ref}] [url={tab.url}, title={tab.title}]")
         except Exception as e:
             logger.debug("browser_hover CDP failed: %s", e)
-            return f"Hover failed for ref #{ref}: {e}"
+            return f"Hover failed for [{ref}]: {e}"
 
     async def browser_scroll(
         self,
@@ -894,21 +898,21 @@ class PlaywrightManager:
         """접근성 트리 ref 번호로 요소에 포커스를 맞춘다."""
         logger.info("browser_focus: ref=%s", ref)
         session_refs = self._get_session_refs()
-        node = session_refs.get(ref)
+        node = self._lookup_ref(ref, session_refs)
         if node is None:
-            return (f"Focus failed: ref #{ref} not found. "
+            return (f"Focus failed: [{ref}] not found. "
                     "Call browser_snapshot() first to refresh the tree.")
 
         psjba_id = node.get("__psjba_id", "")
         if not psjba_id:
-            return f"Focus failed for ref #{ref}: no data-psjba-id."
+            return f"Focus failed for [{ref}]: no data-psjba-id."
 
         page = self._ensure_page(tab_index)
         idx = tab_index if tab_index is not None else self._focused_tab_index
 
         r = await self._cdp_resolve_fallback(page, node)
         if r is None:
-            return (f"Focus failed for ref #{ref}: "
+            return (f"Focus failed for [{ref}]: "
                     "could not locate element, page may have changed.")
         cdp, node_id, oid = r
 
@@ -920,10 +924,10 @@ class PlaywrightManager:
             })
             await self._tabs[idx].update_info()
             tab = self._tabs[idx]
-            return (f"Focused ref #{ref} [url={tab.url}, title={tab.title}]")
+            return (f"Focused [{ref}] [url={tab.url}, title={tab.title}]")
         except Exception as e:
             logger.debug("browser_focus CDP failed: %s", e)
-            return f"Focus failed for ref #{ref}: {e}"
+            return f"Focus failed for [{ref}]: {e}"
 
     async def browser_press_key(self, key: str) -> str:
         logger.info("browser_press_key: %s", key)
@@ -1050,16 +1054,16 @@ class PlaywrightManager:
             if not session_tree:
                 return (tab_info + "\n"
                         "Stored tree not found. Call browser_snapshot() again.")
-            ref_info = session_refs.get(ref)
+            ref_info = self._lookup_ref(ref, session_refs)
             if not ref_info:
                 return (tab_info + "\n"
-                        f"Subtree detail: ref #{ref} not found. "
+                        f"Subtree detail: [{ref}] not found. "
                         "Call browser_snapshot() again to refresh.")
-            ref_info["_ref"] = ref
             t0 = time.monotonic()
             tree = format_subtree_detail(session_tree, ref_info, context=context)
             t1 = time.monotonic()
-            logger.debug("browser_snapshot ref=#%d: format_subtree_detail=%dms", ref, int((t1 - t0) * 1000))
+            id_label = ref_info.get("_id_label", ref)
+            logger.debug("browser_snapshot ref=%s: format_subtree_detail=%dms", id_label, int((t1 - t0) * 1000))
             return tab_info + "\n" + tree
 
         # 전체 트리 요청: 새로 fetch -> format, session에 저장
@@ -1108,7 +1112,7 @@ class PlaywrightManager:
         await self._tabs[idx].update_info()
         tab = self._tabs[idx]
         elapsed = int((time.monotonic() - t0) * 1000)
-        result = (f"Clicked ref #{ref} "
+        result = (f"Clicked [{ref}] "
                   f"[url={tab.url}, title={tab.title}] {elapsed}ms")
         d = await self._tabs[idx].check_dialog()
         if d:
@@ -1130,9 +1134,9 @@ class PlaywrightManager:
         import time
         t0 = time.monotonic()
         session_refs = self._get_session_refs()
-        node = session_refs.get(ref)
+        node = self._lookup_ref(ref, session_refs)
         if node is None:
-            return (f"Click by ref failed: ref #{ref} not found. "
+            return (f"Click by ref failed: [{ref}] not found. "
                     "Call browser_snapshot() first to refresh the tree.")
 
         psjba_id = node.get("__psjba_id", "")
@@ -1144,7 +1148,7 @@ class PlaywrightManager:
         tag = node.get("tag", "") or node.get("_tag", "")
 
         if not psjba_id and not backend_id:
-            return f"Click by ref #{ref} failed: no data-psjba-id or backendNodeId."
+            return f"Click by [{ref}] failed: no data-psjba-id or backendNodeId."
 
         page = self._ensure_page(tab_index)
         idx = tab_index if tab_index is not None else self._focused_tab_index
@@ -1203,7 +1207,7 @@ class PlaywrightManager:
                     if logger.isEnabledFor(logging.DEBUG):
                         try:
                             tn = await cdp_session.send("DOM.describeNode", {"nodeId": nid})
-                            logger.debug("_cdp_dispatch: ref #%s psjba_id=%s target=%s "
+                            logger.debug("_cdp_dispatch: [%s] psjba_id=%s target=%s "
                                          "center=(%.0f,%.0f) OUTSIDE viewport",
                                          ref, node.get("__psjba_id", ""),
                                          tn.get("node", {}).get("nodeName", "?"),
@@ -1224,7 +1228,7 @@ class PlaywrightManager:
                 if logger.isEnabledFor(logging.DEBUG):
                     try:
                         tn = await cdp_session.send("DOM.describeNode", {"nodeId": nid})
-                        logger.debug("_cdp_dispatch: ref #%s psjba_id=%s target=%s "
+                        logger.debug("_cdp_dispatch: [%s] psjba_id=%s target=%s "
                                      "center=(%.0f,%.0f) CLICK",
                                      ref, node.get("__psjba_id", ""),
                                      tn.get("node", {}).get("nodeName", "?"),
@@ -1242,7 +1246,7 @@ class PlaywrightManager:
             cdp, node_id, oid = r
             ok, cx, cy = await _cdp_dispatch(cdp, node_id)
             if ok is True:
-                logger.info("browser_click: CDP hit ref #%s (%.0f,%.0f)", ref, cx, cy)
+                logger.info("browser_click: CDP hit [%s] (%.0f,%.0f)", ref, cx, cy)
                 return await self._after_click(idx, ref, t0)
             if ok == "outside":
                 logger.debug("browser_click: CDP outside viewport, fall through")
@@ -1268,15 +1272,15 @@ class PlaywrightManager:
         if locator is not None:
             try:
                 await locator.click(timeout=3000)
-                logger.info("browser_click: healing locator hit ref #%s", ref)
+                logger.info("browser_click: healing locator hit [%s]", ref)
                 return await self._after_click(idx, ref, t0)
             except Exception as e:
                 logger.debug("browser_click: healing locator click failed: %s", e)
 
         # ─── All fallbacks failed ──────────────────────────
-        logger.error("browser_click: all fallbacks failed for ref #%s (%dms)",
+        logger.error("browser_click: all fallbacks failed for [%s] (%dms)",
                       ref, int((time.monotonic() - t0) * 1000))
-        return (f"Click by ref #{ref} failed: could not locate element. "
+        return (f"Click by [{ref}] failed: could not locate element. "
                 "Try browser_snapshot() again to get a fresh ref.")
 
     async def browser_get_text(self, ref: int, tab_index: Optional[int] = None) -> str:
@@ -1291,9 +1295,9 @@ class PlaywrightManager:
             tab_index: 대상 탭 인덱스 (None이면 포커스 탭)
         """
         session_refs = self._get_session_refs()
-        node = session_refs.get(ref)
+        node = self._lookup_ref(ref, session_refs)
         if node is None:
-            return (f"Get text by ref failed: ref #{ref} not found. "
+            return (f"Get text by ref failed: [{ref}] not found. "
                     "Call browser_snapshot() first to refresh the tree.")
 
         page = self._ensure_page(tab_index)
@@ -1363,9 +1367,9 @@ class PlaywrightManager:
                     text = ' '.join(text.split())
                     if text:
                         return _format_text_result(ref, role, name, text, tag_count)
-            return f"Text for ref #{ref} ({role} \"{name}\"): (no text found)"
+            return f"Text for [{ref}] ({role} \"{name}\"): (no text found)"
         except Exception as e:
-            return f"Get text by ref #{ref} failed: {e}"
+            return f"Get text by [{ref}] failed: {e}"
 
     async def browser_get_by_ref(self, ref: int, tab_index: Optional[int] = None) -> str:
         """접근성 트리 ref 번호로 요소의 전체 DOM outerHTML을 가져온다.
@@ -1378,9 +1382,9 @@ class PlaywrightManager:
             tab_index: 대상 탭 인덱스 (None이면 포커스 탭)
         """
         session_refs = self._get_session_refs()
-        node = session_refs.get(ref)
+        node = self._lookup_ref(ref, session_refs)
         if node is None:
-            return (f"Get by ref failed: ref #{ref} not found. "
+            return (f"Get by ref failed: [{ref}] not found. "
                     "Call browser_snapshot() first to refresh the tree.")
 
         page = self._ensure_page(tab_index)
@@ -1390,7 +1394,7 @@ class PlaywrightManager:
         nid = node.get("__psjba_id", "")
         backend_id = node.get("_backendNodeId")
 
-        desc = f"ref #{ref} ({role}"
+        desc = f"[{ref}] ({role}"
         if name:
             desc += f" \"{name}\""
         if tag:

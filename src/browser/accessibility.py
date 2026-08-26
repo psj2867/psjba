@@ -96,12 +96,6 @@ def _next_ref() -> int:
     return _REF_COUNTER["n"]
 
 
-def node_first_psjba(refs: dict[int, dict], ref_num: int) -> str | None:
-    """refs 맵에서 ref 번호에 해당하는 __psjba_id를 반환."""
-    n = refs.get(ref_num, {})
-    return n.get("__psjba_id", "") or None
-
-
 def _is_interactive(role: str) -> bool:
     return role in _INTERACTIVE_ROLES
 
@@ -264,14 +258,16 @@ def _format_node(
         else:
             label_parts.append(f"→ {count} children")
 
-    # 모든 노드에 ref 부여 (리프=텍스트 조회, 인터랙티브=클릭, 컨테이너=드릴다운)
+    # 모든 노드에 ref 저장 (키 = psjba_id)
     if refs is not None:
         ref = _next_ref()
         psjba_id = node.get("__psjba_id", "")
-        # display: psjba_id 앞 6자 (없으면 ref 번호 fallback)
+        # psjba_id가 없으면 ref 번호로 fallback
+        key = psjba_id if psjba_id else f"_noid_{ref}"
+        # display: psjba_id 앞 6자
         id_label = psjba_id[:6] if psjba_id else str(ref)
         label_parts.append(f"[{id_label}]")
-        refs[ref] = {
+        refs[key] = {
             "role": role,
             "name": name,
             "value": value,
@@ -293,9 +289,10 @@ def _format_node(
             "_h": node.get("_h", 0),
             "_visible": node.get("_visible", True),
             "__psjba_id": psjba_id,
+            "_id_label": id_label,
         }
         if psjba_id:
-            refs[ref]["_selector"] = f'[data-psjba-id="{psjba_id}"]'
+            refs[key]["_selector"] = f'[data-psjba-id="{psjba_id}"]'
 
         # 필요할 때 position 계산할 수 있도록 rect 계산식 유도는 안 함 (이미 evaluate에서 수집)
 
@@ -545,7 +542,8 @@ async def _format_tree(
                     ref_max = ref
                     if refs is not None:
                         psjba_id = leaf_node.get("__psjba_id", "")
-                        refs[ref] = {
+                        key = psjba_id if psjba_id else f"_noid_{ref}"
+                        refs[key] = {
                             "role": leaf_node.get("role", ""),
                             "name": leaf_node.get("name", ""),
                             "value": leaf_node.get("value", ""),
@@ -568,22 +566,26 @@ async def _format_tree(
                             "__psjba_id": psjba_id,
                         }
                         if psjba_id:
-                            refs[ref]["_selector"] = f'[data-psjba-id="{psjba_id}"]'
+                            refs[key]["_selector"] = f'[data-psjba-id="{psjba_id}"]'
                     tc = leaf_node.get("_text_content", "").strip()
                     if tc:
                         texts.append(tc)
                 parts = [f"[{role_display}]"]
-                # text group: psjba-id 범위
-                id_label = None
-                if ref_min == ref_max:
-                    n = node_first_psjba(refs, ref_min) or ""
-                    if n:
-                        id_label = n[:6]
+                # text group: psjba-id 범위 (item의 첫 노드와 마지막 노드 기준)
+                first_node = item[0] if item else {}
+                last_node = item[-1] if item else {}
+                first_id = first_node.get("__psjba_id", "")
+                last_id = last_node.get("__psjba_id", "")
+                if first_id and last_id and first_id == last_id:
+                    id_label = first_id[:6]
+                elif first_id and last_id:
+                    id_label = f"{first_id[:4]}-{last_id[:4]}"
+                elif first_id:
+                    id_label = first_id[:6]
+                elif last_id:
+                    id_label = last_id[:6]
                 else:
-                    n1 = node_first_psjba(refs, ref_min) or ""
-                    n2 = node_first_psjba(refs, ref_max) or ""
-                    if n1 and n2:
-                        id_label = f"{n1[:4]}-{n2[:4]}"
+                    id_label = None
                 if id_label:
                     parts.append(f"[{id_label}]")
                 else:
@@ -878,10 +880,11 @@ async def fetch_full_tree(page: Page) -> dict[str, Any]:
     return tree
 
 
-async def format_tree(tree: dict[str, Any], hide_collapsed: bool = False) -> tuple[str, dict[int, dict[str, Any]]]:
+async def format_tree(tree: dict[str, Any], hide_collapsed: bool = False) -> tuple[str, dict[str, dict[str, Any]]]:
     """full enriched tree → prune/collapse/format → (text, refs).
 
-    refs는 interactive/리프 노드의 맵 (browser_click, browser_get_text 등에서 사용).
+    refs는 psjba_id를 키로 하는 노드 정보 맵
+    (browser_click, browser_get_text 등에서 ref 파라미터로 psjba_id 사용).
 
     Args:
         tree: full enriched accessibility tree
@@ -984,7 +987,8 @@ def format_subtree_detail(tree: dict[str, Any], ref_info: dict[str, Any], contex
                 text = "\n".join(lines)
                 sel = ref_info.get("_selector", "")
                 sel_line = f"\nselector = {sel}" if sel else ""
-                return (f"--- Context for ref #{ref_info.get('_ref', '?')} "
+                id_label = ref_info.get("_id_label", "?")
+                return (f"--- Context for [{id_label}] "
                         f"({target_role} \"{target_name}\") ---\n{text}{sel_line}")
             lines = [_format_node(subtree, 0, refs=None, detail=True)]
             for child in subtree.get("children", []):
@@ -992,7 +996,8 @@ def format_subtree_detail(tree: dict[str, Any], ref_info: dict[str, Any], contex
             text = "\n".join(lines)
             sel = ref_info.get("_selector", "")
             sel_line = f"\nselector = {sel}" if sel else ""
-            return (f"--- Detail for ref #{ref_info.get('_ref', '?')} "
+            id_label = ref_info.get("_id_label", "?")
+            return (f"--- Detail for [{id_label}] "
                     f"({target_role} \"{target_name}\") ---\n{text}{sel_line}")
 
     # 2차: (role, name) match (fallback)
@@ -1013,7 +1018,8 @@ def format_subtree_detail(tree: dict[str, Any], ref_info: dict[str, Any], contex
     sel = ref_info.get("_selector", "")
     if sel:
         text += f"\nselector = {sel}"
-    return (f"--- Detail for ref #{ref_info.get('_ref', '?')} "
+    id_label = ref_info.get("_id_label", "?")
+    return (f"--- Detail for [{id_label}] "
             f"({target_role} \"{target_name}\") ---\n{text}")
 
 

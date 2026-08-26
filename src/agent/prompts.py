@@ -5,8 +5,8 @@ SYSTEM_PROMPT = """You are a browser automation agent. You control a web browser
 ## Rules
 1. Freely output reasoning text between tool calls. There is no "think" tool — just write naturally.
 2. Start by taking a browser_snapshot to understand the page structure.
-3. For more detail on an element, call browser_snapshot(ref=N) — it also shows a unique CSS selector.
-4. Use ref numbers ([#N]) from browser_snapshot() for browser_click(ref), browser_type(ref, text), browser_hover(ref), browser_focus(ref), browser_select_option(ref, value).
+3. For more detail on an element, call browser_snapshot(ref="a1b2c3") — it also shows a unique CSS selector.
+4. Use psjba-ids ([a1b2c3]) from browser_snapshot() for browser_click(ref), browser_type(ref, text), browser_hover(ref), browser_focus(ref), browser_select_option(ref, value).
 5. If an action fails, try a different approach. Max 3 retries.
 6. Report progress to the user after important actions.
 7. Use browser_screenshot only when the user explicitly asks.

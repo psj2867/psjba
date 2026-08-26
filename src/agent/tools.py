@@ -30,21 +30,21 @@ def create_browser_tools(
         return await manager.browser_navigate(url)
 
     @tool
-    async def browser_click(ref: int, tab_index: Optional[int] = None) -> str:
-        """Click an element by its accessibility tree ref number. After calling browser_snapshot(), each interactive or leaf element has a [#N] tag. Uses CDP backendNodeId for precise element targeting. Pass tab_index to target a specific tab.
+    async def browser_click(ref: str, tab_index: Optional[int] = None) -> str:
+        """Click an element by its accessibility tree ref number. After calling browser_snapshot(), each interactive or leaf element has a [psjba-id] tag. Uses CDP backendNodeId for precise element targeting. Pass tab_index to target a specific tab.
 
         Args:
-            ref: The [#N] ref number from the accessibility tree
+            ref: The psjba-id from the accessibility tree
             tab_index: Target tab index (default: focused tab)
         """
         return await manager.browser_click(ref, tab_index)
 
     @tool
-    async def browser_type(ref: int, text: str, clear: bool = False, tab_index: Optional[int] = None) -> str:
+    async def browser_type(ref: str, text: str, clear: bool = False, tab_index: Optional[int] = None) -> str:
         """Type text into an input field by its accessibility tree ref number. Uses CDP backendNodeId for precise element targeting.
 
         Args:
-            ref: The [#N] ref number from the accessibility tree
+            ref: The psjba-id from the accessibility tree
             text: Text to type into the field
             clear: If True, clear the field before typing
             tab_index: Target tab index (default: focused tab)
@@ -52,22 +52,22 @@ def create_browser_tools(
         return await manager.browser_type(ref, text, clear=clear, tab_index=tab_index)
 
     @tool
-    async def browser_select_option(ref: int, value: str, tab_index: Optional[int] = None) -> str:
+    async def browser_select_option(ref: str, value: str, tab_index: Optional[int] = None) -> str:
         """Select an option from a dropdown by its accessibility tree ref number. Uses CDP backendNodeId for precise element targeting.
 
         Args:
-            ref: The [#N] ref number from the accessibility tree
+            ref: The psjba-id from the accessibility tree
             value: The option value to select
             tab_index: Target tab index (default: focused tab)
         """
         return await manager.browser_select_option(ref, value, tab_index=tab_index)
 
     @tool
-    async def browser_hover(ref: int, tab_index: Optional[int] = None) -> str:
+    async def browser_hover(ref: str, tab_index: Optional[int] = None) -> str:
         """Hover over an element by its accessibility tree ref number. Uses CDP backendNodeId for precise element targeting.
 
         Args:
-            ref: The [#N] ref number from the accessibility tree
+            ref: The psjba-id from the accessibility tree
             tab_index: Target tab index (default: focused tab)
         """
         return await manager.browser_hover(ref, tab_index=tab_index)
@@ -78,11 +78,11 @@ def create_browser_tools(
         return await manager.browser_scroll(direction, amount)
 
     @tool
-    async def browser_focus(ref: int, tab_index: Optional[int] = None) -> str:
+    async def browser_focus(ref: str, tab_index: Optional[int] = None) -> str:
         """Focus on an element by its accessibility tree ref number. Uses CDP backendNodeId for precise element targeting.
 
         Args:
-            ref: The [#N] ref number from the accessibility tree
+            ref: The psjba-id from the accessibility tree
             tab_index: Target tab index (default: focused tab)
         """
         return await manager.browser_focus(ref, tab_index=tab_index)
@@ -128,17 +128,17 @@ def create_browser_tools(
         return await manager.browser_screenshot(full_page=full_page, tab_index=tab_index)
 
     @tool
-    async def browser_snapshot(tab_index: Optional[int] = None, ref: Optional[int] = None) -> str:
+    async def browser_snapshot(tab_index: Optional[int] = None, ref: Optional[str] = None) -> str:
         """Get the accessibility tree of a page. Use this to understand the page structure before taking actions.
 
         Result includes a tab info header line like '[Tab 0] url | title'.
         If ref is provided, returns a detailed subtree view (up to 3 levels deep with full tag/attribute info)
-        for that specific [#N] ref from a previous snapshot. Call browser_snapshot() (without ref) first to
-        get the overall tree and ref numbers.
+        for that specific [psjba-id] ref from a previous snapshot. Call browser_snapshot() (without ref) first to
+        get the overall tree and psjba-ids.
 
         Args:
             tab_index: Target tab index (default: focused tab)
-            ref: Optional [#N] ref number to show detailed subtree
+            ref: Optional psjba-id to show detailed subtree
         """
         return await manager.browser_snapshot(tab_index, ref=ref)
 
@@ -158,21 +158,21 @@ def create_browser_tools(
         return await manager.browser_execute_script(script, tab_index)
 
     @tool
-    async def browser_get_text(ref: int, tab_index: Optional[int] = None) -> str:
-        """Get the visible DOM text content of an element by its [#N] ref number. Use this to read text that doesn't appear in the accessibility tree (e.g. links with empty accessible names, custom components, or dynamically loaded content). Call browser_snapshot() first to get ref numbers.
+    async def browser_get_text(ref: str, tab_index: Optional[int] = None) -> str:
+        """Get the visible DOM text content of an element by its psjba-id. Use this to read text that doesn't appear in the accessibility tree (e.g. links with empty accessible names, custom components, or dynamically loaded content). Call browser_snapshot() first to get psjba-ids.
 
         Args:
-            ref: The [#N] ref number from the accessibility tree
+            ref: The psjba-id from the accessibility tree
             tab_index: Target tab index (default: focused tab)
         """
         return await manager.browser_get_text(ref, tab_index)
 
     @tool
-    async def browser_get_by_ref(ref: int, tab_index: Optional[int] = None) -> str:
-        """Get the full DOM outerHTML of an element by its [#N] ref number. Use this to inspect the exact DOM structure of an element (for debugging, testing, or when you need to see the complete HTML of a component). Call browser_snapshot() first to get ref numbers.
+    async def browser_get_by_ref(ref: str, tab_index: Optional[int] = None) -> str:
+        """Get the full DOM outerHTML of an element by its psjba-id. Use this to inspect the exact DOM structure of an element (for debugging, testing, or when you need to see the complete HTML of a component). Call browser_snapshot() first to get psjba-ids.
 
         Args:
-            ref: The [#N] ref number from the accessibility tree
+            ref: The psjba-id from the accessibility tree
             tab_index: Target tab index (default: focused tab)
         """
         return await manager.browser_get_by_ref(ref, tab_index)
