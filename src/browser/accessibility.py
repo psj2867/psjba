@@ -140,7 +140,7 @@ def _format_node(
     node: dict[str, Any],
     depth: int = 0,
     indent: str = "  ",
-    refs: Optional[dict[int, dict[str, Any]]] = None,
+    refs: dict[str, dict[str, Any]] = {},
     detail: bool = False,
 ) -> str:
     """단일 노드를 계층 텍스트로 포맷팅한다.
@@ -195,10 +195,10 @@ def _format_node(
     else:
         _leaf_text = ""
 
-    # image: name/alt 없으면 role만 표시하고 디테일 생략
+    # image: name/alt 없으면 role만 표시하고 디테일 생략 (ref는 위에서 이미 저장됨)
     is_image = role.lower() in ("image", "img", "graphic", "icon")
     if is_image and not _leaf_text and not name:
-        return f"{indent * depth}[{role}] {_leaf_text}".rstrip()
+        return f"{indent * depth}[{role}]".rstrip()
 
     # 타이핑에 중요한 속성들
     input_type = node.get("_type", "")
@@ -253,43 +253,42 @@ def _format_node(
         else:
             label_parts.append(f"→ {count} children")
 
-    # 모든 노드에 ref 저장 (키 = psjba_id)
-    if refs is not None:
-        ref = _next_ref()
-        psjba_id = node.get("__psjba_id", "")
-        # psjba_id가 없으면 ref 번호로 fallback
-        key = psjba_id if psjba_id else f"_noid_{ref}"
-        # display: psjba_id 앞 6자
-        id_label = psjba_id[:6] if psjba_id else str(ref)
-        label_parts.append(f"[{id_label}]")
-        refs[key] = {
-            "role": role,
-            "name": name,
-            "value": value,
-            "description": description,
-            "tag": node.get("tag", ""),
-            "_id": node.get("_id", ""),
-            "_class": node.get("_class", ""),
-            "_type": input_type,
-            "_placeholder": placeholder,
-            "_form_name": form_name,
-            "_aria_label": node.get("_aria_label", ""),
-            "_backendNodeId": node.get("_backendNodeId"),
-            "_text_content": node.get("_text_content", "") or "",
-            "_nth_of_type": node.get("_nth_of_type", 0),
-            "_alt": node.get("_alt", ""),
-            "_x": node.get("_x", 0),
-            "_y": node.get("_y", 0),
-            "_w": node.get("_w", 0),
-            "_h": node.get("_h", 0),
-            "_visible": node.get("_visible", True),
-            "__psjba_id": psjba_id,
-            "_id_label": id_label,
-        }
-        if psjba_id:
-            refs[key]["_selector"] = f'[data-psjba-id="{psjba_id}"]'
+    # 모든 노드에 ref 저장 (호출자는 항상 refs=dict() 전달)
+    ref = _next_ref()
+    psjba_id = node.get("__psjba_id", "")
+    # psjba_id가 없으면 ref 번호로 fallback
+    key = psjba_id if psjba_id else f"_noid_{ref}"
+    # display: psjba_id 앞 6자
+    id_label = psjba_id[:6] if psjba_id else str(ref)
+    label_parts.append(f"[{id_label}]")
+    refs[key] = {
+        "role": role,
+        "name": name,
+        "value": value,
+        "description": description,
+        "tag": node.get("tag", ""),
+        "_id": node.get("_id", ""),
+        "_class": node.get("_class", ""),
+        "_type": input_type,
+        "_placeholder": placeholder,
+        "_form_name": form_name,
+        "_aria_label": node.get("_aria_label", ""),
+        "_backendNodeId": node.get("_backendNodeId"),
+        "_text_content": node.get("_text_content", "") or "",
+        "_nth_of_type": node.get("_nth_of_type", 0),
+        "_alt": node.get("_alt", ""),
+        "_x": node.get("_x", 0),
+        "_y": node.get("_y", 0),
+        "_w": node.get("_w", 0),
+        "_h": node.get("_h", 0),
+        "_visible": node.get("_visible", True),
+        "__psjba_id": psjba_id,
+        "_id_label": id_label,
+    }
+    if psjba_id:
+        refs[key]["_selector"] = f'[data-psjba-id="{psjba_id}"]'
 
-        # 필요할 때 position 계산할 수 있도록 rect 계산식 유도는 안 함 (이미 evaluate에서 수집)
+    # 필요할 때 position 계산할 수 있도록 rect 계산식 유도는 안 함 (이미 evaluate에서 수집)
 
     # detail 모드에서 추가 정보
     auto = node.get("_autocomplete", "")
@@ -369,7 +368,7 @@ async def _format_tree(
     depth: int = 0,
     lines: Optional[list[str]] = None,
     indent: str = "  ",
-    refs: Optional[dict[int, dict[str, Any]]] = None,
+    refs: dict[str, dict[str, Any]] = {},
     detail: bool = False,
     max_depth: int = 999,
     hide_collapsed: bool = False,
@@ -718,7 +717,7 @@ def _count_descendants(node: dict[str, Any]) -> int:
 async def _collapse_tree(
     tree: dict[str, Any],
     max_tokens: int = MAX_TOKEN_ESTIMATE,
-    refs: Optional[dict[int, dict[str, Any]]] = None,
+    refs: dict[str, dict[str, Any]] = {},
 ) -> dict[str, Any]:
     """비-인터랙티브 서브트리를 요약 라인으로 접어 토큰을 줄인다.
 
@@ -893,9 +892,9 @@ async def format_tree(tree: dict[str, Any], hide_collapsed: bool = False) -> tup
     _reset_ref_counter()
     pruned = _prune_tree(tree) or tree
     t1 = time.monotonic()
-    collapsed = await _collapse_tree(pruned)
+    refs: dict[str, dict[str, Any]] = {}
+    collapsed = await _collapse_tree(pruned, refs=refs)
     t2 = time.monotonic()
-    refs: dict[int, dict[str, Any]] = {}
     lines = await _format_tree(collapsed, refs=refs, hide_collapsed=hide_collapsed) if collapsed else []
     text = "\n".join(lines)
     t3 = time.monotonic()
@@ -914,7 +913,7 @@ async def get_accessibility_tree(page: Page) -> str:
 
 async def get_accessibility_tree_with_refs(
     page: Page,
-) -> tuple[str, dict[int, dict[str, Any]]]:
+) -> tuple[str, dict[str, dict[str, Any]]]:
     """접근성 트리 텍스트와 ref 매핑을 함께 가져온다.
 
     CDP Accessibility.getFullAXTree → resolveNode enrichment → format.
