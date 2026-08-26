@@ -1035,14 +1035,11 @@ async def _enrich_via_batch(
         info: dict[str, Any] = {"tag": tag}
         uid: str | None = None
 
-        # attributes 파싱 (NameValue[] → flat dict)
+        # attributes 파싱 (flat [key_idx, val_idx, ...] 배열)
         attrs_raw = attrs_list[i] if i < len(attrs_list) else None
-        if attrs_raw:
-            for attr_pair in attrs_raw:
-                if not isinstance(attr_pair, dict):
-                    continue
-                key_idx = attr_pair.get("name", -1)
-                val_idx = attr_pair.get("value", -1)
+        if attrs_raw and isinstance(attrs_raw, list):
+            it = iter(attrs_raw)
+            for key_idx, val_idx in zip(it, it):
                 if not (0 <= key_idx < len(strings) and 0 <= val_idx < len(strings)):
                     continue
                 key = strings[key_idx]
