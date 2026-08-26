@@ -231,11 +231,6 @@ def _format_node(
         al = alt[:ALT_DISPLAY_LEN] if len(alt) > ALT_DISPLAY_LEN else alt
         label_parts.append(f'alt="{al}"')
 
-    # visible / hidden (hidden만 표시)
-    vis = node.get("_visible")
-    if vis is False:
-        label_parts.append("[hidden]")
-
     # position (x, y, width, height) — 있으면 모두 표시
     nx = node.get("_x")
     if nx is not None:
