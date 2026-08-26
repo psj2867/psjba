@@ -163,16 +163,8 @@ def _format_node(
         semantic = _LANDMARK_LABELS.get(role.lower())
         label_parts.append(f"[{semantic or role}]")
 
-    # 태그 정보
-    tag = node.get("tag", "")
-    nid = node.get("_id", "")
-    cls = node.get("_class", "")
-    if tag:
-        attr_parts = [tag]
-        if nid:
-            attr_parts.append(f"#{nid}")
-        if attr_parts:
-            label_parts.append(f"<{' '.join(attr_parts)}>")
+    # 태그 정보 — 필요없어서 생략
+    # (tag/#id/class는 필요시 selector fallback 용도로만 metadata에 유지)
 
     if name or node.get("_text_content"):
         children = node.get("children", [])
@@ -256,9 +248,9 @@ def _format_node(
             "name": name,
             "value": value,
             "description": description,
-            "tag": tag,
-            "_id": nid,
-            "_class": cls,
+            "tag": node.get("tag", ""),
+            "_id": node.get("_id", ""),
+            "_class": node.get("_class", ""),
             "_type": input_type,
             "_placeholder": placeholder,
             "_form_name": form_name,
@@ -356,7 +348,7 @@ async def _format_tree(
     """접근성 스냅샷을 계층적 텍스트 라인 리스트로 변환한다.
 
     동일 타입 비-컨테이너 노드는 그루핑된다:
-    - 텍스트 리프 (non-interactive + text 있음): 무조건 한 줄 요약 [role] <tag> [#ref_min-ref_max]
+    - 텍스트 리프 (non-interactive + text 있음): 무조건 한 줄 요약 [role] [#ref_min-ref_max]
     - 기타 리프 (image/button 등): MAX_GROUP_PREVIEW(10)개 초과 시 처음 10개만 개별, 나머지 ×N 요약
     """
     if lines is None:
@@ -484,21 +476,16 @@ async def _format_tree(
             # 컨테이너 그룹 (row 등): 첫 N개만 개별 표시, 나머지 ×N more
             if first.get("children") and not _is_text_leaf(first) and not _is_non_container(first):
                 role_display = first.get("role", "")
-                tag = (first.get("tag", "") or first.get("_tag", "") or "").lower()
                 shown = item[:MAX_CONTAINER_GROUP_PREVIEW]
                 for container_node in shown:
                     await _format_tree(container_node, depth + 1, lines, indent,
                                        refs=refs, detail=detail, max_depth=max_depth)
                 if n > MAX_CONTAINER_GROUP_PREVIEW:
                     remain = n - MAX_CONTAINER_GROUP_PREVIEW
-                    parts = [f"... [{role_display}]"]
-                    if tag:
-                        parts.append(f"<{tag}>")
-                    parts.append(f"×{remain} more")
+                    parts = [f"... [{role_display}]", f"×{remain} more"]
                     lines.append(f"{indent * (depth + 1)}{' '.join(parts)}")
                 continue
 
-            tag = (first.get("tag", "") or first.get("_tag", "") or "").lower()
             role_display = first.get("role", "")
 
             if _is_text_leaf(first):
@@ -534,8 +521,6 @@ async def _format_tree(
                     if tc:
                         texts.append(tc)
                 parts = [f"[{role_display}]"]
-                if tag:
-                    parts.append(f"<{tag}>")
                 parts.append(f"[#{ref_min}-{ref_max}]")
                 if texts:
                     merged = ", ".join(texts)
@@ -553,10 +538,7 @@ async def _format_tree(
                         _fmt = _format_node(leaf_node, depth + 1, indent, refs=refs, detail=detail)
                         if _fmt.strip():
                             lines.append(_fmt)
-                    parts = [f"... [{role_display}]"]
-                    if tag:
-                        parts.append(f"<{tag}>")
-                    parts.append(f"×{remain} more")
+                    parts = [f"... [{role_display}]", f"×{remain} more"]
                     lines.append(f"{indent * (depth + 1)}{' '.join(parts)}")
                 else:
                     for leaf_node in item:
@@ -972,15 +954,32 @@ async def _enrich_via_batch(
         return
 
     try:
-        # Step 1 + 3 통합: uid 주입 + textContent 한 번에
+        # Step 1 + 3 통합: uid 주입 + textContent (getFastNodeText) 한 번에
         uid_text_map: dict[str, str] = await page.evaluate("""() => {
+            function getFastNodeText(n) {
+                if (!n) return '';
+                if (n.nodeType === Node.TEXT_NODE) return n.nodeValue || '';
+                if (n.nodeType !== Node.ELEMENT_NODE) return '';
+                var childs = n.childNodes, l = childs.length;
+                if (l === 0) return n.textContent.trim();
+                if (l === 1) return getFastNodeText(childs[0]);
+                var r = '';
+                for (var i = 0; i < l; i++) {
+                    var t = getFastNodeText(childs[i]);
+                    if (t) {
+                        if (r && !r.endsWith(' ') && !t.startsWith(' ')) r += ' ';
+                        r += t;
+                    }
+                }
+                return r.replace(/\\s+/g, ' ').trim();
+            }
             const els = document.querySelectorAll('*');
             const map = {};
             for (let i = 0; i < els.length; i++) {
                 const existing = els[i].getAttribute('data-psjba-id');
                 const uid = existing || (Math.random().toString(36) + Math.random().toString(36)).slice(2, 10);
                 if (!existing) els[i].setAttribute('data-psjba-id', uid);
-                map[uid] = (els[i].textContent || '').trim();
+                map[uid] = getFastNodeText(els[i]);
             }
             return map;
         }""")
