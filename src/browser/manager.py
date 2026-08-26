@@ -1099,6 +1099,10 @@ class PlaywrightManager:
         if parts:
             tab_info += " [" + " | ".join(parts) + "]"
 
+        self._set_session_tree(full_tree)
+        self._set_session_refs(refs)
+        return tab_info + "\n" + text
+
     async def _after_click(self, idx: int, ref: int, t0: float) -> str:
         """클릭 성공 후 공통 후처리: 탭 정보 갱신 + dialog 체크."""
         await self._tabs[idx].update_info()
