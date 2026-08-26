@@ -1022,7 +1022,10 @@ class PlaywrightManager:
                         f"Subtree detail: ref #{ref} not found. "
                         "Call browser_snapshot() again to refresh.")
             ref_info["_ref"] = ref
+            t0 = time.monotonic()
             tree = format_subtree_detail(session_tree, ref_info)
+            t1 = time.monotonic()
+            logger.debug("browser_snapshot ref=#%d: format_subtree_detail=%dms", ref, int((t1 - t0) * 1000))
             return tab_info + "\n" + tree
 
         # 전체 트리 요청: 새로 fetch -> format, session에 저장
@@ -1030,15 +1033,24 @@ class PlaywrightManager:
         self._clear_session_tree()
 
         page = self._ensure_page(tab_index)
+        t0 = time.monotonic()
         full_tree = await fetch_full_tree(page)
+        t1 = time.monotonic()
         text, refs = await format_tree(full_tree)
+        t2 = time.monotonic()
 
         if refs:
-            logger.info("a11y snapshot: %d interactive refs", len(refs))
+            logger.info("a11y snapshot: %d interactive refs, fetch=%dms format=%dms total=%dms",
+                        len(refs), int((t1 - t0) * 1000), int((t2 - t1) * 1000),
+                        int((t2 - t0) * 1000))
             for ref, node in refs.items():
                 psjba_id = node.get("__psjba_id", "")
                 if psjba_id:
                     node["_selector"] = f'[data-psjba-id="{psjba_id}"]'
+        else:
+            logger.info("a11y snapshot: 0 refs, fetch=%dms format=%dms total=%dms",
+                        int((t1 - t0) * 1000), int((t2 - t1) * 1000),
+                        int((t2 - t0) * 1000))
 
         self._set_session_tree(full_tree)
         self._set_session_refs(refs)

@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import time
 from typing import Any, Optional
 
 from playwright.async_api import Page
@@ -796,15 +797,24 @@ async def fetch_full_tree(page: Page) -> dict[str, Any]:
 
     manager가 session_id별로 보관하고, subtree detail/재사용에 사용한다.
     """
+    t0 = time.monotonic()
     cdp = await page.context.new_cdp_session(page)
     await cdp.send("Accessibility.enable")
+    t1 = time.monotonic()
     result = await cdp.send("Accessibility.getFullAXTree", {})
+    t2 = time.monotonic()
     raw_nodes = result.get("nodes", [])
     if not raw_nodes:
         return {"role": "Root", "name": "", "children": []}
 
     tree = _cdp_nodes_to_snapshot(raw_nodes)
+    t3 = time.monotonic()
     await _enrich_via_resolve_gather(page, tree)
+    t4 = time.monotonic()
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug("fetch_full_tree timing: enable=%dms getFullAXTree=%dms build=%dms enrich=%dms total=%dms | %d raw nodes",
+                     int((t1 - t0) * 1000), int((t2 - t1) * 1000), int((t3 - t2) * 1000),
+                     int((t4 - t3) * 1000), int((t4 - t0) * 1000), len(raw_nodes))
     return tree
 
 
@@ -813,12 +823,20 @@ async def format_tree(tree: dict[str, Any]) -> tuple[str, dict[int, dict[str, An
 
     refs는 interactive/리프 노드의 맵 (browser_click, browser_get_text 등에서 사용).
     """
+    t0 = time.monotonic()
     _reset_ref_counter()
     pruned = (await _prune_tree(tree)) or tree
+    t1 = time.monotonic()
     collapsed = await _collapse_tree(pruned)
+    t2 = time.monotonic()
     refs: dict[int, dict[str, Any]] = {}
     lines = await _format_tree(collapsed, refs=refs) if collapsed else []
     text = "\n".join(lines)
+    t3 = time.monotonic()
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug("format_tree timing: prune=%dms collapse=%dms format=%dms total=%dms | %d lines",
+                     int((t1 - t0) * 1000), int((t2 - t1) * 1000), int((t3 - t2) * 1000),
+                     int((t3 - t0) * 1000), len(lines))
     return text, refs
 
 
@@ -1011,6 +1029,7 @@ async def _enrich_via_resolve_gather(
 
     cdp = await page.context.new_cdp_session(page)
 
+    t0 = time.monotonic()
     async def _resolve_and_fetch(bid: int) -> Optional[dict[str, Any]]:
         try:
             resolved = await cdp.send("DOM.resolveNode", {"backendNodeId": bid})
@@ -1027,6 +1046,7 @@ async def _enrich_via_resolve_gather(
 
     results = await asyncio.gather(*[_resolve_and_fetch(bid) for bid in all_ids],
                                    return_exceptions=False)
+    t1 = time.monotonic()
 
     # backendNodeId → enrichment info 맵
     bid_to_info: dict[int, dict] = {}
@@ -1070,8 +1090,11 @@ async def _enrich_via_resolve_gather(
             await _fill_node(child)
 
     await _fill_node(snapshot)
-    logger.debug("_enrich_via_resolve_gather: %d/%d nodes enriched",
-                 len(bid_to_info), len(all_ids))
+    t2 = time.monotonic()
+    logger.debug("_enrich_via_resolve_gather: %d/%d nodes enriched, cdp=%dms fill=%dms total=%dms",
+                 len(bid_to_info), len(all_ids),
+                 int((t1 - t0) * 1000), int((t2 - t1) * 1000),
+                 int((t2 - t0) * 1000))
 
 
 # ─── CDP raw nodes → Playwright 호환 snapshot 변환 ───
