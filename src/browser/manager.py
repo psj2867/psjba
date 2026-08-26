@@ -26,6 +26,7 @@ from src.browser.accessibility import (
     format_subtree_detail,
     format_tree,
 )
+from src.browser.self_healing import SelfHealingSelector
 from src.chrome.launcher import ChromeLauncher
 
 logger = logging.getLogger("psjba.browser.manager")
@@ -692,6 +693,34 @@ class PlaywrightManager:
         except Exception:
             return None
 
+    async def _cdp_resolve_fallback(self, page, node: dict[str, Any]) -> tuple[Any, int, str] | None:
+        """backendNodeId → psjba_id fallback으로 CDP (session, nodeId, objectId) 획득.
+
+        Try 1: backendNodeId → DOM.pushNodesByBackendIdsToFrontend
+        Try 2: psjba_id → _cdp_resolve_psjba
+        Returns (cdp_session, node_id, object_id) or None.
+        """
+        backend_id = node.get("_backendNodeId")
+        if backend_id:
+            try:
+                cdp = await page.context.new_cdp_session(page)
+                pushed = await cdp.send("DOM.pushNodesByBackendIdsToFrontend",
+                                        {"backendNodeIds": [backend_id]})
+                nids = pushed.get("nodeIds", [])
+                if nids and nids[0]:
+                    obj = await cdp.send("DOM.resolveNode", {"nodeId": nids[0]})
+                    oid = obj.get("object", {}).get("objectId")
+                    if oid:
+                        return cdp, nids[0], oid
+            except Exception:
+                pass
+
+        psjba_id = node.get("__psjba_id", "")
+        if psjba_id:
+            return await self._cdp_resolve_psjba(page, psjba_id)
+
+        return None
+
     # ─── 요소 조작 ──────────────────────────────────────────
 
     async def browser_type(
@@ -716,10 +745,10 @@ class PlaywrightManager:
         page = self._ensure_page(tab_index)
         idx = tab_index if tab_index is not None else self._focused_tab_index
 
-        r = await self._cdp_resolve_psjba(page, psjba_id)
+        r = await self._cdp_resolve_fallback(page, node)
         if r is None:
             return (f"Type failed for ref #{ref}: "
-                    f'data-psjba-id="{psjba_id}" not found, page may have changed.')
+                    "could not locate element, page may have changed.")
         cdp, node_id, oid = r
 
         try:
@@ -774,10 +803,10 @@ class PlaywrightManager:
 
         page = self._ensure_page(tab_index)
 
-        r = await self._cdp_resolve_psjba(page, psjba_id)
+        r = await self._cdp_resolve_fallback(page, node)
         if r is None:
             return (f"Select failed for ref #{ref}: "
-                    f'data-psjba-id="{psjba_id}" not found, page may have changed.')
+                    "could not locate element, page may have changed.")
         cdp, node_id, oid = r
 
         try:
@@ -811,10 +840,10 @@ class PlaywrightManager:
         page = self._ensure_page(tab_index)
         idx = tab_index if tab_index is not None else self._focused_tab_index
 
-        r = await self._cdp_resolve_psjba(page, psjba_id)
+        r = await self._cdp_resolve_fallback(page, node)
         if r is None:
             return (f"Hover failed for ref #{ref}: "
-                    f'data-psjba-id="{psjba_id}" not found, page may have changed.')
+                    "could not locate element, page may have changed.")
         cdp, node_id, oid = r
 
         try:
@@ -877,10 +906,10 @@ class PlaywrightManager:
         page = self._ensure_page(tab_index)
         idx = tab_index if tab_index is not None else self._focused_tab_index
 
-        r = await self._cdp_resolve_psjba(page, psjba_id)
+        r = await self._cdp_resolve_fallback(page, node)
         if r is None:
             return (f"Focus failed for ref #{ref}: "
-                    f'data-psjba-id="{psjba_id}" not found, page may have changed.')
+                    "could not locate element, page may have changed.")
         cdp, node_id, oid = r
 
         try:
@@ -1056,11 +1085,25 @@ class PlaywrightManager:
         self._set_session_refs(refs)
         return tab_info + "\n" + text
 
+    async def _after_click(self, idx: int, ref: int, t0: float) -> str:
+        """클릭 성공 후 공통 후처리: 탭 정보 갱신 + dialog 체크."""
+        await self._tabs[idx].update_info()
+        tab = self._tabs[idx]
+        elapsed = int((time.monotonic() - t0) * 1000)
+        result = (f"Clicked ref #{ref} "
+                  f"[url={tab.url}, title={tab.title}] {elapsed}ms")
+        d = await self._tabs[idx].check_dialog()
+        if d:
+            result += f"\n⚠️ Dialog recorded: [{d['type']}] {d.get('message','')}"
+        return result
+
     async def browser_click(self, ref: int, tab_index: Optional[int] = None) -> str:
         """접근성 트리 ref 번호로 요소를 찾아 클릭한다.
 
-        data-psjba-id → CDP querySelector → getBoxModel + dispatchMouseEvent.
-        Viewport 밖 요소(CSS off-screen)는 실패 메시지 반환.
+        Fallback chain:
+          1. backendNodeId → DOM.pushNodesByBackendIdsToFrontend → CDP dispatch
+          2. psjba_id → DOM.querySelector → CDP dispatch
+          3. SelfHealingSelector → Playwright locator click
 
         Args:
             ref: browser_snapshot() 결과에 표시된 [#N] 번호
@@ -1075,8 +1118,15 @@ class PlaywrightManager:
                     "Call browser_snapshot() first to refresh the tree.")
 
         psjba_id = node.get("__psjba_id", "")
-        if not psjba_id:
-            return f"Click by ref #{ref} failed: no data-psjba-id."
+        backend_id = node.get("_backendNodeId")
+        role = node.get("role", "")
+        name = node.get("name", "")
+        aria_label = node.get("_aria_label", "")
+        text_content = node.get("_text_content", "")
+        tag = node.get("tag", "") or node.get("_tag", "")
+
+        if not psjba_id and not backend_id:
+            return f"Click by ref #{ref} failed: no data-psjba-id or backendNodeId."
 
         page = self._ensure_page(tab_index)
         idx = tab_index if tab_index is not None else self._focused_tab_index
@@ -1084,13 +1134,9 @@ class PlaywrightManager:
         # ─── CDP click helper ──────────────────────────────
         async def _cdp_dispatch(cdp_session, nid: int) -> tuple[bool | str, float, float]:
             """CDP nodeId로 scrollIntoView + getBoxModel + mouse click.
-
-            DOM.getBoxModel은 page 좌표계(= viewport + document scroll + ancestors scroll).
-            scrollIntoViewIfNeeded는 nearest scrollable container를 스크롤하지만
-            document scroll과 container scroll 둘 다 보정해야 한다.
             Returns (ok: bool | str, cx: float, cy: float).
             - ok=True: 성공, cx/cy는 viewport 클릭 좌표
-            - ok="outside": viewport 밖, 호출자는 즉시 리턴"""
+            - ok="outside": viewport 밖"""
             try:
                 await cdp_session.send("DOM.scrollIntoViewIfNeeded", {"nodeId": nid})
                 box = await cdp_session.send("DOM.getBoxModel", {"nodeId": nid})
@@ -1101,7 +1147,6 @@ class PlaywrightManager:
                 cx = (content[0] + content[4]) / 2 if len(content) >= 8 else content[0] + content[2] / 2
                 cy = (content[1] + content[5]) / 2 if len(content) >= 8 else content[1] + content[3] / 2
 
-                # getBoxModel = page 좌표 → viewport 좌표 변환
                 diag = await page.evaluate(
                     '(() => {'
                     '  const s = {x: window.pageXOffset || 0, y: window.pageYOffset || 0};'
@@ -1126,7 +1171,6 @@ class PlaywrightManager:
                 cx -= diag['scroll']['x']
                 cy -= diag['scroll']['y']
 
-                # viewport 밖 체크
                 viewport_w = diag.get('viewport', {}).get('w', 0)
                 viewport_h = diag.get('viewport', {}).get('h', 0)
                 inside_viewport = True
@@ -1150,7 +1194,6 @@ class PlaywrightManager:
                             pass
                     return "outside", cx, cy
 
-                # viewport 안: 클릭 실행
                 await cdp_session.send("Input.dispatchMouseEvent", {
                     "type": "mousePressed", "x": cx, "y": cy,
                     "button": "left", "clickCount": 1,
@@ -1175,32 +1218,45 @@ class PlaywrightManager:
                 logger.warning("CDP dispatch failed for nodeId=%s: %s", nid, e)
                 return False, 0, 0
 
-        # ─── data-psjba-id → CDP querySelector → dispatch ──
-        r = await self._cdp_resolve_psjba(page, psjba_id)
-        if r is None:
-            return (f"Click by ref #{ref} failed: "
-                    f'data-psjba-id="{psjba_id}" not found, page may have changed.')
-        cdp, node_id, oid = r
+        # ─── Try 1+2: backendNodeId → psjba_id → CDP dispatch ──
+        r = await self._cdp_resolve_fallback(page, node)
+        if r is not None:
+            cdp, node_id, oid = r
+            ok, cx, cy = await _cdp_dispatch(cdp, node_id)
+            if ok is True:
+                logger.info("browser_click: CDP hit ref #%s (%.0f,%.0f)", ref, cx, cy)
+                return await self._after_click(idx, ref, t0)
+            if ok == "outside":
+                logger.debug("browser_click: CDP outside viewport, fall through")
 
-        ok, cx, cy = await _cdp_dispatch(cdp, node_id)
-        if ok is True:
-            await self._tabs[idx].update_info()
-            tab = self._tabs[idx]
-            elapsed = int((time.monotonic() - t0) * 1000)
-            logger.info("browser_click: clicked ref #%s (%.0f,%.0f) %dms",
-                          ref, cx, cy, elapsed)
-            result = (f"Clicked ref #{ref} [CDP] "
-                      f"[url={tab.url}, title={tab.title}]")
-            d = await self._tabs[idx].check_dialog()
-            if d:
-                result += f"\n⚠️ Dialog recorded: [{d['type']}] {d.get('message','')}"
-            return result
-        if ok == "outside":
-            return (f"Click by ref #{ref} failed: "
-                    "element is outside viewport. "
-                    "The element is not visible on the page.")
+        # ─── Try 3: SelfHealingSelector → Playwright click ──
+        healer = SelfHealingSelector(page)
+        css_selector = tag if tag else "*"
+        if node.get("_id"):
+            css_selector = f"#{node['_id']}"
+        elif node.get("_class"):
+            cls_val = node["_class"].replace(" ", ".")
+            css_selector = f"{tag}{cls_val}" if tag else f".{cls_val}"
+        healing_role = role if role and role.lower() not in ("", "none", "presentation") else None
+        healing_text = name or text_content or None
+        healing_aria = aria_label or None
 
-        logger.error("browser_click: CDP click failed for ref #%s (%dms)",
+        locator = await healer.find_element(
+            css_selector,
+            role=healing_role,
+            text=healing_text,
+            aria_label=healing_aria,
+        )
+        if locator is not None:
+            try:
+                await locator.click(timeout=3000)
+                logger.info("browser_click: healing locator hit ref #%s", ref)
+                return await self._after_click(idx, ref, t0)
+            except Exception as e:
+                logger.debug("browser_click: healing locator click failed: %s", e)
+
+        # ─── All fallbacks failed ──────────────────────────
+        logger.error("browser_click: all fallbacks failed for ref #%s (%dms)",
                       ref, int((time.monotonic() - t0) * 1000))
         return (f"Click by ref #{ref} failed: could not locate element. "
                 "Try browser_snapshot() again to get a fresh ref.")
