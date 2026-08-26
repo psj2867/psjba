@@ -1150,12 +1150,18 @@ async def _enrich_via_batch(
                 const uid = els[i].getAttribute('data-psjba-id');
                 if (!uid) continue;
                 const r = els[i].getBoundingClientRect();
+                const hasSize = r.width > 0 && r.height > 0;
+                const vis = hasSize && (
+                    typeof els[i].checkVisibility === 'function'
+                        ? els[i].checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })
+                        : true
+                );
                 map[uid] = {
                     x: Math.round(r.x),
                     y: Math.round(r.y),
                     w: Math.round(r.width),
                     h: Math.round(r.height),
-                    visible: r.width > 0 && r.height > 0
+                    visible: vis
                 };
             }
             return map;
