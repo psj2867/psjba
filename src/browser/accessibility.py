@@ -21,6 +21,7 @@ CHARS_PER_TOKEN = 4
 NAME_DISPLAY_LEN = 10          # name 표시 최대 길이
 VALUE_DISPLAY_LEN = 60         # value 표시 최대 길이
 DESC_DISPLAY_LEN = 80          # description 표시 최대 길이
+ALT_DISPLAY_LEN = 60           # alt 표시 최대 길이
 
 # _format_tree 텍스트 리프 요약
 TEXT_SUMMARY_MAX = 60          # texts="..." 병합 최대 길이
@@ -224,6 +225,27 @@ def _format_node(
             d += f"... (+{overflow})"
         label_parts.append(f"desc={d}")
 
+    # alt (image 외에도 있으면 표시)
+    alt = node.get("_alt", "")
+    if alt and alt != name:
+        al = alt[:ALT_DISPLAY_LEN] if len(alt) > ALT_DISPLAY_LEN else alt
+        label_parts.append(f'alt="{al}"')
+
+    # visible / hidden
+    vis = node.get("_visible")
+    if vis is True:
+        label_parts.append("[visible]")
+    elif vis is False:
+        label_parts.append("[hidden]")
+
+    # position (x, y, width, height) — 있으면 모두 표시
+    nx = node.get("_x")
+    if nx is not None:
+        ny = node.get("_y", 0)
+        nw = node.get("_w", 0)
+        nh = node.get("_h", 0)
+        label_parts.append(f"[{nx}, {ny}] ({nw}x{nh})")
+
     # 접힌(collapsed) 서브트리 표시 — child_summary와 함께
     collapsed = node.get("_collapsed")
     if collapsed:
@@ -258,10 +280,18 @@ def _format_node(
             "_backendNodeId": node.get("_backendNodeId"),
             "_text_content": node.get("_text_content", "") or "",
             "_nth_of_type": node.get("_nth_of_type", 0),
+            "_alt": node.get("_alt", ""),
+            "_x": node.get("_x", 0),
+            "_y": node.get("_y", 0),
+            "_w": node.get("_w", 0),
+            "_h": node.get("_h", 0),
+            "_visible": node.get("_visible", True),
             "__psjba_id": psjba_id,
         }
         if psjba_id:
             refs[ref]["_selector"] = f'[data-psjba-id="{psjba_id}"]'
+
+        # 필요할 때 position 계산할 수 있도록 rect 계산식 유도는 안 함 (이미 evaluate에서 수집)
 
     # detail 모드에서 추가 정보
     auto = node.get("_autocomplete", "")
@@ -513,6 +543,12 @@ async def _format_tree(
                             "_backendNodeId": leaf_node.get("_backendNodeId"),
                             "_text_content": leaf_node.get("_text_content", "") or "",
                             "_nth_of_type": leaf_node.get("_nth_of_type", 0),
+                            "_alt": leaf_node.get("_alt", ""),
+                            "_x": leaf_node.get("_x", 0),
+                            "_y": leaf_node.get("_y", 0),
+                            "_w": leaf_node.get("_w", 0),
+                            "_h": leaf_node.get("_h", 0),
+                            "_visible": leaf_node.get("_visible", True),
                             "__psjba_id": psjba_id,
                         }
                         if psjba_id:
@@ -787,10 +823,20 @@ async def fetch_full_tree(page: Page) -> dict[str, Any]:
     t3 = time.monotonic()
     await _enrich_via_batch(page, tree)
     t4 = time.monotonic()
+
+    # scroll info 수집
+    try:
+        scroll = await page.evaluate("() => ({y: window.pageYOffset || window.scrollY || 0, h: document.documentElement.scrollHeight || 0})")
+        tree["_scroll_y"] = scroll.get("y", 0)
+        tree["_scroll_h"] = scroll.get("h", 0)
+    except Exception:
+        pass
+
+    t5 = time.monotonic()
     if logger.isEnabledFor(logging.DEBUG):
-        logger.debug("fetch_full_tree timing: enable=%dms getFullAXTree=%dms build=%dms enrich=%dms total=%dms | %d raw nodes",
+        logger.debug("fetch_full_tree timing: enable=%dms getFullAXTree=%dms build=%dms enrich=%dms scroll=%dms total=%dms | %d raw nodes",
                      int((t1 - t0) * 1000), int((t2 - t1) * 1000), int((t3 - t2) * 1000),
-                     int((t4 - t3) * 1000), int((t4 - t0) * 1000), len(raw_nodes))
+                     int((t4 - t3) * 1000), int((t5 - t4) * 1000), int((t5 - t0) * 1000), len(raw_nodes))
     return tree
 
 
@@ -1057,6 +1103,8 @@ async def _enrich_via_batch(
                     info["aria_label"] = val
                 elif key == "name":
                     info["name"] = val
+                elif key == "alt":
+                    info["alt"] = val
                 elif key.startswith("aria-"):
                     if key in ("aria-label",):
                         continue
@@ -1091,17 +1139,48 @@ async def _enrich_via_batch(
 
         bid_to_info[bid] = info
 
+    # Step 3: position + visibility 수집 (getBoundingClientRect, 1 evaluate)
     t1 = time.monotonic()
+    parse_ms = int((t1 - t0) * 1000)
+    try:
+        pos_data: dict[str, dict] = await page.evaluate("""() => {
+            const map = {};
+            const els = document.querySelectorAll('[data-psjba-id]');
+            for (let i = 0; i < els.length; i++) {
+                const uid = els[i].getAttribute('data-psjba-id');
+                if (!uid) continue;
+                const r = els[i].getBoundingClientRect();
+                map[uid] = {
+                    x: Math.round(r.x),
+                    y: Math.round(r.y),
+                    w: Math.round(r.width),
+                    h: Math.round(r.height),
+                    visible: r.width > 0 && r.height > 0
+                };
+            }
+            return map;
+        }""")
+        for bid, info in bid_to_info.items():
+            uid = info.get("uid", "")
+            if uid and uid in pos_data:
+                p = pos_data[uid]
+                info["_x"] = p["x"]
+                info["_y"] = p["y"]
+                info["_w"] = p["w"]
+                info["_h"] = p["h"]
+                info["_visible"] = p["visible"]
+    except Exception:
+        logger.debug("position enrichment failed, skipping")
 
     # a11y snapshot 노드에 속성 채우기 (sync)
     _fill_node_enrich(snapshot, bid_to_info)
     t2 = time.monotonic()
 
     enriched_count = sum(1 for n in _iter_nodes(snapshot) if n.get("__psjba_id"))
-    logger.debug("_enrich_via_batch: %d/%d nodes enriched, parse=%dms fill=%dms total=%dms",
+    total_ms = int((t2 - t0) * 1000)
+    logger.debug("_enrich_via_batch: %d/%d nodes enriched, parse=%dms pos_fill=%dms total=%dms",
                  enriched_count, len(all_ids),
-                 int((t1 - t0) * 1000), int((t2 - t1) * 1000),
-                 int((t2 - t0) * 1000))
+                 parse_ms, total_ms - parse_ms, total_ms)
 
 
 def _iter_nodes(tree: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1131,6 +1210,7 @@ def _fill_node_enrich(node: dict[str, Any], bid_to_info: dict[int, dict[str, Any
         node["_placeholder"] = info.get("placeholder", "")
         node["_aria_label"] = info.get("aria_label", "")
         node["_form_name"] = info.get("name", "")
+        node["_alt"] = info.get("alt", "")
         tc = info.get("textContent", "")
         if tc:
             node["_text_content"] = tc
@@ -1144,6 +1224,17 @@ def _fill_node_enrich(node: dict[str, Any], bid_to_info: dict[int, dict[str, Any
         if aria_attrs:
             for akey, aval in aria_attrs.items():
                 node[akey] = aval
+
+        # position + visibility
+        x = info.get("_x")
+        if x is not None:
+            node["_x"] = x
+            node["_y"] = info.get("_y", 0)
+            node["_w"] = info.get("_w", 0)
+            node["_h"] = info.get("_h", 0)
+        vis = info.get("_visible")
+        if vis is not None:
+            node["_visible"] = vis
 
     for child in node.get("children", []):
         _fill_node_enrich(child, bid_to_info)

@@ -1081,6 +1081,12 @@ class PlaywrightManager:
                         int((t1 - t0) * 1000), int((t2 - t1) * 1000),
                         int((t2 - t0) * 1000))
 
+        # scroll info → tab_info에 추가
+        scroll_y = full_tree.get("_scroll_y")
+        scroll_h = full_tree.get("_scroll_h")
+        if scroll_y is not None and scroll_h:
+            tab_info += f" [Scroll: y={scroll_y} / {scroll_h}]"
+
         self._set_session_tree(full_tree)
         self._set_session_refs(refs)
         return tab_info + "\n" + text
