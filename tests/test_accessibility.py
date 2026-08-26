@@ -6,7 +6,6 @@ from src.browser.accessibility import (
     MAX_TOKEN_ESTIMATE,
     _estimate_tokens,
     _format_node,
-    format_accessibility_tree,
 )
 from src.browser.manager import PlaywrightManager
 

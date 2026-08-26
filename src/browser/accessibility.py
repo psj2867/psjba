@@ -788,24 +788,6 @@ async def _collapse_tree(
     return tree
 
 
-def _truncate_by_token(text: str, max_tokens: int = MAX_TOKEN_ESTIMATE) -> str:
-    """토큰 추정치에 기반하여 텍스트를 자른다."""
-    if _estimate_tokens(text) <= max_tokens:
-        return text
-    lines = text.split('\n')
-    total = len(lines)
-    keep = total
-    while keep > 1 and _estimate_tokens('\n'.join(lines[:keep])) > max_tokens:
-        keep -= 1
-    kept = lines[:keep]
-    # 하단이 잘린 경우 마지막 접힌 줄 표시 + 몇 줄 접었는지
-    folded = total - keep
-    text = '\n'.join(kept)
-    if folded > 0:
-        text += f"\n...(folded {folded} lines — browser_snapshot() to expand)"
-    return text
-
-
 # ─── Public API ──────────────────────────────────
 
 
@@ -837,7 +819,6 @@ async def format_tree(tree: dict[str, Any]) -> tuple[str, dict[int, dict[str, An
     refs: dict[int, dict[str, Any]] = {}
     lines = await _format_tree(collapsed, refs=refs) if collapsed else []
     text = "\n".join(lines)
-    text = _truncate_by_token(text)
     return text, refs
 
 
