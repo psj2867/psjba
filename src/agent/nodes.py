@@ -265,11 +265,14 @@ async def _invoke_llm(
     has_tool_calls = hasattr(response, "tool_calls") and response.tool_calls
     if has_tool_calls:
         tool_names = [tc["name"] for tc in response.tool_calls]
+        content_snippet = (str(response.content or "")[:200]).strip()
         log_msg = (
             f"LLM response ({call_duration:.1f}s) [{model_str}]{tokens_str}: "
             f"{len(response.tool_calls)} tool calls "
             f"→ {tool_names}"
         )
+        if content_snippet:
+            log_msg += f" | reason: \"{content_snippet}\""
         if finish_str:
             log_msg += f" | {finish_str}"
         logger.info(log_msg)
@@ -492,13 +495,13 @@ async def execute_tool(
 
         if logger.isEnabledFor(logging.DEBUG):
             logger.info(
-                f"Tool {tool_name}({tool_args}) → "
+                f"Tool {tool_name}({tool_args}) ← {str(last_ai.content or '')[:120]!r} → "
                 f"{result} "
                 f"({duration_ms}ms)"
             )
         else:
             logger.info(
-                f"Tool {tool_name}({tool_args}) → "
+                f"Tool {tool_name}({tool_args}) ← {str(last_ai.content or '')[:120]!r} → "
                 f"{result[:200]}{'...' if len(str(result)) > 200 else ''} "
                 f"({duration_ms}ms)"
             )

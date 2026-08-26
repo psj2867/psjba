@@ -1022,8 +1022,11 @@ class PlaywrightManager:
             return f"Failed to start Chrome: {result}"
 
     async def browser_snapshot(self, tab_index: Optional[int] = None,
-                              ref: Optional[int] = None) -> str:
-        logger.info("browser_snapshot called (ref=%s)", ref)
+                              ref: Optional[int] = None,
+                              hide_collapsed: bool = False,
+                              context: int = 0) -> str:
+        logger.info("browser_snapshot called (ref=%s, hide_collapsed=%s, context=%d)",
+                     ref, hide_collapsed, context)
         """특정 탭의 접근성 트리를 반환하고 ref 매핑을 저장한다.
 
         ref가 주어지면 session에 저장된 full tree에서 서브트리를 찾아 detail을 반환한다.
@@ -1032,6 +1035,8 @@ class PlaywrightManager:
         Args:
             tab_index: 대상 탭 인덱스 (None이면 포커스 탭)
             ref: 상세 조회할 [#N] ref 번호 (None이면 전체 트리)
+            hide_collapsed: True면 collapsed 컨테이너 플레이스홀더도 출력에서 제거
+            context: 0이면 ref 노드의 서브트리 detail(기본), N>0이면 ref 기준 위아래 N레벨 컨텍스트
         """
         idx = tab_index if tab_index is not None else self._focused_tab_index
         tab_info = self._format_tab_info_line(idx)
@@ -1052,7 +1057,7 @@ class PlaywrightManager:
                         "Call browser_snapshot() again to refresh.")
             ref_info["_ref"] = ref
             t0 = time.monotonic()
-            tree = format_subtree_detail(session_tree, ref_info)
+            tree = format_subtree_detail(session_tree, ref_info, context=context)
             t1 = time.monotonic()
             logger.debug("browser_snapshot ref=#%d: format_subtree_detail=%dms", ref, int((t1 - t0) * 1000))
             return tab_info + "\n" + tree
@@ -1065,7 +1070,7 @@ class PlaywrightManager:
         t0 = time.monotonic()
         full_tree = await fetch_full_tree(page)
         t1 = time.monotonic()
-        text, refs = await format_tree(full_tree)
+        text, refs = await format_tree(full_tree, hide_collapsed=hide_collapsed)
         t2 = time.monotonic()
 
         if refs:
@@ -1081,15 +1086,18 @@ class PlaywrightManager:
                         int((t1 - t0) * 1000), int((t2 - t1) * 1000),
                         int((t2 - t0) * 1000))
 
-        # scroll info → tab_info에 추가
-        scroll_y = full_tree.get("_scroll_y")
-        scroll_h = full_tree.get("_scroll_h")
-        if scroll_y is not None and scroll_h:
-            tab_info += f" [Scroll: y={scroll_y} / {scroll_h}]"
-
-        self._set_session_tree(full_tree)
-        self._set_session_refs(refs)
-        return tab_info + "\n" + text
+        # scroll + viewport info → tab_info에 추가
+        vw = full_tree.get("_viewport_w", 0)
+        vh = full_tree.get("_viewport_h", 0)
+        scroll_y = full_tree.get("_scroll_y", 0)
+        scroll_h = full_tree.get("_scroll_h", 0)
+        parts = []
+        if vw and vh:
+            parts.append(f"Viewport: {vw}×{vh}")
+        if scroll_h:
+            parts.append(f"Scroll: y={scroll_y} / {scroll_h}")
+        if parts:
+            tab_info += " [" + " | ".join(parts) + "]"
 
     async def _after_click(self, idx: int, ref: int, t0: float) -> str:
         """클릭 성공 후 공통 후처리: 탭 정보 갱신 + dialog 체크."""

@@ -96,6 +96,12 @@ def _next_ref() -> int:
     return _REF_COUNTER["n"]
 
 
+def node_first_psjba(refs: dict[int, dict], ref_num: int) -> str | None:
+    """refs 맵에서 ref 번호에 해당하는 __psjba_id를 반환."""
+    n = refs.get(ref_num, {})
+    return n.get("__psjba_id", "") or None
+
+
 def _is_interactive(role: str) -> bool:
     return role in _INTERACTIVE_ROLES
 
@@ -231,11 +237,9 @@ def _format_node(
         al = alt[:ALT_DISPLAY_LEN] if len(alt) > ALT_DISPLAY_LEN else alt
         label_parts.append(f'alt="{al}"')
 
-    # visible / hidden
+    # visible / hidden (hidden만 표시)
     vis = node.get("_visible")
-    if vis is True:
-        label_parts.append("[visible]")
-    elif vis is False:
+    if vis is False:
         label_parts.append("[hidden]")
 
     # position (x, y, width, height) — 있으면 모두 표시
@@ -263,8 +267,10 @@ def _format_node(
     # 모든 노드에 ref 부여 (리프=텍스트 조회, 인터랙티브=클릭, 컨테이너=드릴다운)
     if refs is not None:
         ref = _next_ref()
-        label_parts.append(f"[#{ref}]")
         psjba_id = node.get("__psjba_id", "")
+        # display: psjba_id 앞 6자 (없으면 ref 번호 fallback)
+        id_label = psjba_id[:6] if psjba_id else str(ref)
+        label_parts.append(f"[{id_label}]")
         refs[ref] = {
             "role": role,
             "name": name,
@@ -374,6 +380,7 @@ async def _format_tree(
     refs: Optional[dict[int, dict[str, Any]]] = None,
     detail: bool = False,
     max_depth: int = 999,
+    hide_collapsed: bool = False,
 ) -> list[str]:
     """접근성 스냅샷을 계층적 텍스트 라인 리스트로 변환한다.
 
@@ -388,10 +395,18 @@ async def _format_tree(
         lines.append(f"{indent * depth}... (depth {depth})")
         return lines
 
+    # ── collapsed 처리 (hide_collapsed면 아예 건너뜀) ──
+    if hide_collapsed and snapshot.get("_collapsed"):
+        return lines
+
     # 자기 자신 출력 (루트 포함)
     formatted = _format_node(snapshot, depth, indent, refs=refs, detail=detail)
     if formatted.strip():
         lines.append(formatted)
+
+    # accessibility expanded=false면 자식 생략 (aria-expanded collapsed)
+    if snapshot.get("expanded") is False and not snapshot.get("_collapsed"):
+        return lines
 
     children = snapshot.get("children", [])
 
@@ -509,7 +524,8 @@ async def _format_tree(
                 shown = item[:MAX_CONTAINER_GROUP_PREVIEW]
                 for container_node in shown:
                     await _format_tree(container_node, depth + 1, lines, indent,
-                                       refs=refs, detail=detail, max_depth=max_depth)
+                                       refs=refs, detail=detail, max_depth=max_depth,
+                                       hide_collapsed=hide_collapsed)
                 if n > MAX_CONTAINER_GROUP_PREVIEW:
                     remain = n - MAX_CONTAINER_GROUP_PREVIEW
                     parts = [f"... [{role_display}]", f"×{remain} more"]
@@ -557,7 +573,21 @@ async def _format_tree(
                     if tc:
                         texts.append(tc)
                 parts = [f"[{role_display}]"]
-                parts.append(f"[#{ref_min}-{ref_max}]")
+                # text group: psjba-id 범위
+                id_label = None
+                if ref_min == ref_max:
+                    n = node_first_psjba(refs, ref_min) or ""
+                    if n:
+                        id_label = n[:6]
+                else:
+                    n1 = node_first_psjba(refs, ref_min) or ""
+                    n2 = node_first_psjba(refs, ref_max) or ""
+                    if n1 and n2:
+                        id_label = f"{n1[:4]}-{n2[:4]}"
+                if id_label:
+                    parts.append(f"[{id_label}]")
+                else:
+                    parts.append(f"[#{ref_min}-{ref_max}]")
                 if texts:
                     merged = ", ".join(texts)
                     if len(merged) > TEXT_SUMMARY_MAX:
@@ -582,7 +612,8 @@ async def _format_tree(
                         if _fmt.strip():
                             lines.append(_fmt)
         else:
-            await _format_tree(item, depth + 1, lines, indent, refs=refs, detail=detail, max_depth=max_depth)
+            await _format_tree(item, depth + 1, lines, indent, refs=refs, detail=detail, max_depth=max_depth,
+                               hide_collapsed=hide_collapsed)
 
     return lines
 
@@ -824,11 +855,18 @@ async def fetch_full_tree(page: Page) -> dict[str, Any]:
     await _enrich_via_batch(page, tree)
     t4 = time.monotonic()
 
-    # scroll info 수집
+    # scroll + viewport info 수집
     try:
-        scroll = await page.evaluate("() => ({y: window.pageYOffset || window.scrollY || 0, h: document.documentElement.scrollHeight || 0})")
-        tree["_scroll_y"] = scroll.get("y", 0)
-        tree["_scroll_h"] = scroll.get("h", 0)
+        sv = await page.evaluate("""() => ({
+            y: window.pageYOffset || window.scrollY || 0,
+            h: document.documentElement.scrollHeight || 0,
+            vw: window.innerWidth || 0,
+            vh: window.innerHeight || 0
+        })""")
+        tree["_scroll_y"] = sv.get("y", 0)
+        tree["_scroll_h"] = sv.get("h", 0)
+        tree["_viewport_w"] = sv.get("vw", 0)
+        tree["_viewport_h"] = sv.get("vh", 0)
     except Exception:
         pass
 
@@ -840,10 +878,14 @@ async def fetch_full_tree(page: Page) -> dict[str, Any]:
     return tree
 
 
-async def format_tree(tree: dict[str, Any]) -> tuple[str, dict[int, dict[str, Any]]]:
+async def format_tree(tree: dict[str, Any], hide_collapsed: bool = False) -> tuple[str, dict[int, dict[str, Any]]]:
     """full enriched tree → prune/collapse/format → (text, refs).
 
     refs는 interactive/리프 노드의 맵 (browser_click, browser_get_text 등에서 사용).
+
+    Args:
+        tree: full enriched accessibility tree
+        hide_collapsed: True면 collapsed 컨테이너 플레이스홀더도 출력에서 제거
     """
     t0 = time.monotonic()
     _reset_ref_counter()
@@ -852,7 +894,7 @@ async def format_tree(tree: dict[str, Any]) -> tuple[str, dict[int, dict[str, An
     collapsed = await _collapse_tree(pruned)
     t2 = time.monotonic()
     refs: dict[int, dict[str, Any]] = {}
-    lines = await _format_tree(collapsed, refs=refs) if collapsed else []
+    lines = await _format_tree(collapsed, refs=refs, hide_collapsed=hide_collapsed) if collapsed else []
     text = "\n".join(lines)
     t3 = time.monotonic()
     if logger.isEnabledFor(logging.DEBUG):
@@ -916,12 +958,13 @@ def _find_node_by_psjba_id(tree: dict[str, Any], psjba_id: str) -> Optional[dict
     return None
 
 
-def format_subtree_detail(tree: dict[str, Any], ref_info: dict[str, Any]) -> str:
+def format_subtree_detail(tree: dict[str, Any], ref_info: dict[str, Any], context: int = 0) -> str:
     """저장된 full tree + ref_info로 서브트리 detail 텍스트를 반환한다.
 
     Args:
         tree: fetch_full_tree()로 얻은 enriched tree
         ref_info: refs 맵에 저장된 노드 정보 (__psjba_id, role, name)
+        context: 0이면 ref 노드 서브트리 detail, N>0이면 ref 기준 위아래 N레벨 컨텍스트
 
     Returns:
         포맷된 서브트리 텍스트
@@ -934,6 +977,15 @@ def format_subtree_detail(tree: dict[str, Any], ref_info: dict[str, Any]) -> str
     if psjba_id:
         subtree = _find_node_by_psjba_id(tree, psjba_id)
         if subtree is not None:
+            if context > 0:
+                # context view: 경로 추적 → 컨텍스트 렌더링
+                path = _find_path_to_psjba(tree, psjba_id)
+                lines = _render_context_lines(tree, path, ref_info, context)
+                text = "\n".join(lines)
+                sel = ref_info.get("_selector", "")
+                sel_line = f"\nselector = {sel}" if sel else ""
+                return (f"--- Context for ref #{ref_info.get('_ref', '?')} "
+                        f"({target_role} \"{target_name}\") ---\n{text}{sel_line}")
             lines = [_format_node(subtree, 0, refs=None, detail=True)]
             for child in subtree.get("children", []):
                 _collect_lines(child, 1, lines, detail=True)
@@ -950,6 +1002,10 @@ def format_subtree_detail(tree: dict[str, Any], ref_info: dict[str, Any]) -> str
                 f"({target_role} \"{target_name}\") in tree. "
                 "Try browser_snapshot() again.")
 
+    if context > 0:
+        path = _find_path_to_node(tree, subtree)
+        lines = _render_context_lines(tree, path, ref_info, context)
+        return "\n".join(lines)
     lines = [_format_node(subtree, 0, refs=None, detail=True)]
     for child in subtree.get("children", []):
         _collect_lines(child, 1, lines, detail=True)
@@ -959,13 +1015,6 @@ def format_subtree_detail(tree: dict[str, Any], ref_info: dict[str, Any]) -> str
         text += f"\nselector = {sel}"
     return (f"--- Detail for ref #{ref_info.get('_ref', '?')} "
             f"({target_role} \"{target_name}\") ---\n{text}")
-
-
-def _collect_lines(node: dict[str, Any], depth: int, lines: list[str], detail: bool = False) -> None:
-    """재귀적으로 노드를 포맷하여 라인 리스트에 추가한다."""
-    lines.append(_format_node(node, depth, refs=None, detail=detail))
-    for child in node.get("children", []):
-        _collect_lines(child, depth + 1, lines, detail=detail)
 
 
 # ─── Enrichment: batch CDP (captureSnapshot) ─────────────────
@@ -1246,7 +1295,113 @@ def _fill_node_enrich(node: dict[str, Any], bid_to_info: dict[int, dict[str, Any
         _fill_node_enrich(child, bid_to_info)
 
 
-# ─── Fallback: per-node resolve + callFunctionOn ──────────
+# ─── Ref context helpers ──────────────────────────────
+
+def _find_path_to_psjba(tree: dict[str, Any], psjba_id: str) -> list[dict]:
+    """Root부터 psjba_id를 가진 노드까지의 경로를 반환.
+
+    Returns:
+        각 element는 {'parent': ..., 'child_idx': int, 'node': ...} 형태.
+        마지막 element의 child_idx는 -1 (자기 자신).
+    """
+    def _search(node, path):
+        if node.get("__psjba_id", "") == psjba_id:
+            return path + [{"parent": path[-1]["parent"] if path else None,
+                            "child_idx": path[-1]["child_idx"] if path else -1,
+                            "node": node}]
+        for i, child in enumerate(node.get("children", [])):
+            result = _search(child, path + [{"parent": node, "child_idx": i, "node": child}])
+            if result:
+                return result
+        return None
+
+    result = _search(tree, [])
+    if result:
+        return result
+    return []
+
+
+def _find_path_to_node(tree: dict[str, Any], target: dict) -> list[dict]:
+    """Root부터 target 노드까지의 경로. _find_path_to_psjba의 fallback용."""
+    def _search(node, path):
+        if node is target:
+            return path
+        for i, child in enumerate(node.get("children", [])):
+            p_info = {"parent": node, "child_idx": i, "node": child}
+            result = _search(child, path + [p_info])
+            if result:
+                return result
+        return None
+
+    result = _search(tree, [])
+    if result:
+        return result
+    return []
+
+
+def _render_context_lines(tree: dict, path: list[dict], ref_info: dict, context: int) -> list[str]:
+    """ref 노드 기준 context 레벨 만큼의 부모/형제를 포함한 라인 렌더링.
+
+    path: _find_path_to_psjba 결과
+    context: 보여줄 부모 레벨 수 (형제는 해당 레벨에서 ref 주변만)
+    """
+    lines: list[str] = []
+    if not path:
+        return lines
+
+    # ref 노드 정보
+    ref_depth = len(path)  # root depth=0, ref의 depth
+    # context 레벨: ref_depth - context 이상부터 시작
+    start_level = max(0, ref_depth - context - 1)
+
+    # 각 레벨별로 렌더링
+    for level in range(start_level, ref_depth + 1):
+        if level == 0:
+            # root
+            lines.append(_format_node(tree, 0, refs=None))
+            continue
+        p_info = path[level - 1]
+        parent = p_info["parent"]
+        child_idx = p_info["child_idx"]
+        siblings = parent.get("children", [])
+
+        # Is this the ref's direct ancestor level (level == ref_depth - 1)?
+        is_ref_level = (level == ref_depth - 1)
+
+        for si, sib in enumerate(siblings):
+            if is_ref_level and si == child_idx:
+                # ref 노드: >>> 마커 + 서브트리 detail (2레벨)
+                prefix = "  " * level + ">>> "
+                lines.append(prefix + _format_node(sib, 0, refs=None, detail=True))
+                for child in sib.get("children", []):
+                    _collect_lines(child, level + 1, lines, detail=True)
+            else:
+                # 형제 노드: 한 줄만
+                prefix = "  " * level
+                fmt = _format_node(sib, 0, refs=None)
+                lines.append(prefix + fmt)
+        # sibling 렌더링 이후 parent 레벨 건너뜀 (이미 siblings 아래에 렌더링됨)
+        # ref_depth 직전까지만 sibling 렌더링하고,
+        # ref_depth-1에서 ref 노드 서브트리 detail 포함되었으므로 종료
+        if is_ref_level:
+            break
+
+    # 만약 context가 0이거나 ref_depth가 0이면 path가 비거나 start_level이 ref_depth
+    # 그냥 기본 detail view와 동일하게 서브트리 detail만
+    if not lines:
+        node = path[-1]["node"] if path else tree
+        lines.append(_format_node(node, 0, refs=None, detail=True))
+        for child in node.get("children", []):
+            _collect_lines(child, 1, lines, detail=True)
+
+    return lines
+
+
+def _collect_lines(node: dict[str, Any], depth: int, lines: list[str], detail: bool = False) -> None:
+    """재귀적으로 노드를 포맷하여 라인 리스트에 추가한다."""
+    lines.append(_format_node(node, depth, refs=None, detail=detail))
+    for child in node.get("children", []):
+        _collect_lines(child, depth + 1, lines, detail=detail)
 
 _ENRICH_FN = rf"""function() {{
     function getFastNodeText(n) {{
